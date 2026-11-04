@@ -1,0 +1,41 @@
+# Private data: NEVER commit
+*.csv
+!recipients_template.csv
+*.bak.csv
+*.json
+!version.json
+*.pem
+*.key
+credentials*
+service_account*
+.env
+
+# Runs, logs, history, backups
+logs/
+runs/
+history.csv
+backups/
+*.log
+*.lock
+
+# Debug and dev files
+dev/
+debug_*
+*.backup
+subject_probe_report.txt
+
+# Python / environment
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.idea/
+.vscode/
+
+# Browser / Crisp login profile
+.crisp_email_agent/
+browser_profile/
+
+# Release output
+dist/
+*.zip

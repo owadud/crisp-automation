@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Crisp new conversation (mock)</title>
+<style>
+  body { font-family: sans-serif; padding: 40px; }
+  input { display: block; width: 520px; margin: 6px 0 14px; padding: 8px; }
+  .menu { border: 1px solid #888; width: 536px; }
+  .c-base-select-menu-item__wrapper { padding: 8px; cursor: pointer; }
+  .c-base-select-menu-item__wrapper:hover { background: #eee; }
+</style></head>
+<body>
+<!--
+  Mimics the parts of Crisp's "Create a new conversation" dialog the agent uses:
+  - clicking the EMPTY subject opens a menu of saved subjects (it may not list them all)
+  - typing filters the menu and also offers the typed text itself as a row
+  - clicking a row puts that row's text in the input and closes the menu
+  - "Create Conversation" records the subject and closes the dialog
+-->
+<div id="dialog">
+  <input placeholder="Enter the email of the user…" id="email">
+  <input placeholder="Enter the full name of the user…" id="name">
+  <input placeholder="Enter the subject of the email…" id="subject" autocomplete="off">
+  <div class="menu" id="menu" hidden></div>
+  <button id="create">Create Conversation</button>
+</div>
+<script>
+  const SHOWN_ON_EMPTY = JSON.parse(new URLSearchParams(location.search).get("empty") || "[]");
+  const SAVED = JSON.parse(new URLSearchParams(location.search).get("saved") || "[]");
+  const input = document.getElementById("subject");
+  const menu = document.getElementById("menu");
+  window.created = null;
+
+  function show(rows) {
+    menu.innerHTML = "";
+    for (const text of rows) {
+      const w = document.createElement("div");
+      w.className = "c-base-select-menu-item__wrapper";
+      const l = document.createElement("span");
+      l.className = "c-base-select-menu-item__label";
+      l.textContent = text;
+      w.appendChild(l);
+      w.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        input.value = text;
+        menu.hidden = true;
+      });
+      menu.appendChild(w);
+    }
+    menu.hidden = rows.length === 0;
+  }
+  input.addEventListener("click", () => { if (!input.value) show(SHOWN_ON_EMPTY); });
+  input.addEventListener("input", () => {
+    const q = input.value.toLowerCase();
+    if (!q) { show(SHOWN_ON_EMPTY); return; }
+    const matches = SAVED.filter((s) => s.toLowerCase().includes(q));
+    show([input.value, ...matches.filter((m) => m !== input.value)]);
+  });
+  document.getElementById("create").addEventListener("click", () => {
+    window.created = input.value;
+    document.getElementById("dialog").remove();
+  });
+</script>
+</body>
+</html>

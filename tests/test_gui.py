@@ -1,0 +1,423 @@
+"""End-to-end GUI tests (offscreen). Run: python -m pytest tests -v
+
+The window drives tests/fake_agent.py, which prints the real agent's lines,
+so every click below goes through the same code paths as a real run.
+"""
+
+import csv
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from PySide6.QtCore import QSettings, Qt  # noqa: E402
+from PySide6.QtGui import QGuiApplication  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+from PySide6.QtWidgets import QApplication, QFileDialog  # noqa: E402
+
+from crisp_gui import run_state as rs  # noqa: E402
+from crisp_gui import widgets as W  # noqa: E402
+from crisp_gui.config import CAMPAIGN_DEFAULTS, Preferences  # noqa: E402
+from crisp_gui.main_window import MainWindow  # noqa: E402
+from crisp_gui.theme import DARK, LIGHT, ThemeManager  # noqa: E402
+
+FAKE = ROOT / "tests" / "fake_agent.py"
+
+
+@pytest.fixture(scope="session")
+def app():
+    a = QApplication.instance() or QApplication([])
+    a.setStyle("Fusion")
+    return a
+
+
+@pytest.fixture
+def dialogs():
+    """Answer dialogs automatically and record them."""
+    record = {"answers": [], "seen": []}
+
+    def hook(title, body, details, confirm):
+        record["seen"].append(title)
+        return record["answers"].pop(0) if record["answers"] else True
+
+    W.DIALOG_HOOK = hook
+    yield record
+    W.DIALOG_HOOK = None
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    for k in ("FAKE_FAIL_EMAIL", "FAKE_LOGIN_WAIT", "FAKE_STEP_DELAY"):
+        monkeypatch.delenv(k, raising=False)
+    out = tmp_path / "env.json"
+    monkeypatch.setenv("FAKE_ENV_OUT", str(out))
+    return out
+
+
+def make_csv(path, n=3, sent=(), ref="Shahriar"):
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["Full Name", "Contact Email", "Reference", "Mail Sent"])
+        for i in range(n):
+            w.writerow([f"User {i}", f"u{i}@example.com", ref, "TRUE" if i in sent else ""])
+        w.writerow(["Other", "o@example.com", "Someone", ""])
+    return path
+
+
+def read_sent(path):
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        return [r["Mail Sent"] for r in csv.DictReader(f)]
+
+
+@pytest.fixture
+def win(app, tmp_path, dialogs, env):
+    settings = QSettings(str(tmp_path / "prefs.ini"), QSettings.IniFormat)
+    prefs = Preferences(settings)
+    tm = ThemeManager(app, "light")
+    csv_path = make_csv(tmp_path / "recipients.csv")
+    prefs.set_campaign_value("csv", str(csv_path))
+    w = MainWindow(tm, prefs, agent_script=FAKE, profile_dir=tmp_path / "profile")
+    w.resize(1240, 820)
+    w.show()
+    QTest.qWaitForWindowExposed(w)
+    w._csv = csv_path
+    w._tmp = tmp_path
+    yield w
+    if w.runner.is_running():
+        w.runner.force_stop()
+        w.runner.proc.waitForFinished(3000)
+    w.close()
+
+
+def wait_until(cond, timeout=15.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        QApplication.processEvents()
+        if cond():
+            return True
+        QTest.qWait(20)
+    return cond()
+
+
+def run_to_end(w, timeout=20):
+    assert wait_until(lambda: w.runner.is_running() or w.last_state is not None, 5)
+    assert wait_until(lambda: not w.runner.is_running(), timeout), "agent did not finish"
+    QTest.qWait(50)
+    return w.last_state
+
+
+# ================================================================ navigation
+def test_every_nav_item_works(win):
+    titles = ["Dashboard", "Campaign Setup", "Activity Logs", "Settings"]
+    for i, b in enumerate(win.nav_buttons):
+        QTest.mouseClick(b, Qt.LeftButton)
+        assert win.stack.currentIndex() == i
+        assert win.page_title.text() == titles[i]
+        assert b.isChecked()
+    for i in range(4):
+        QTest.keyClick(win, Qt.Key_1 + i, Qt.ControlModifier)
+        assert win.stack.currentIndex() == i
+
+
+def test_dashboard_links(win):
+    win.navigate(0)
+    QTest.mouseClick(win.dashboard.open_logs, Qt.LeftButton)
+    assert win.stack.currentIndex() == 2
+    win.navigate(0)
+    QTest.mouseClick(win.dashboard.edit_campaign, Qt.LeftButton)
+    assert win.stack.currentIndex() == 1
+
+
+# ================================================================ campaign
+def test_campaign_inputs_persist_and_validate(win, app, tmp_path):
+    c = win.campaign
+    c.subject.edit.setText("Hello subject")
+    c.shortcut.edit.setText("my-shortcut")
+    c.segment.edit.setText("my-seg")
+    c.reference.edit.setText("Shahriar")
+    assert win.dashboard.kv.values["subject"].text() == "Hello subject"
+    # persisted: a fresh window loads the same values
+    prefs2 = Preferences(QSettings(str(tmp_path / "prefs.ini"), QSettings.IniFormat))
+    assert prefs2.campaign()["shortcut"] == "my-shortcut"
+    # required validation
+    c.subject.edit.setText("")
+    assert c.subject.message.objectName() == "fieldError"
+    assert c.subject.edit.property("invalid") is True
+    c.subject.edit.setText("ok")
+    assert c.subject.edit.property("invalid") is False
+
+
+def test_csv_stats_and_reference_filter(win):
+    win.refresh_csv()
+    assert win.dashboard.m_total.value.text() == "4"
+    assert win.dashboard.m_eligible.value.text() == "3"
+    win.campaign.reference.edit.setText("Someone")
+    win.refresh_csv()
+    assert win.dashboard.m_eligible.value.text() == "1"
+    win.campaign.csv.edit.setText(str(win._tmp / "missing.csv"))
+    win.refresh_csv()
+    assert win.dashboard.m_total.value.text() == "—"
+    assert win.dashboard.csv_banner.isVisibleTo(win.dashboard)
+    assert "File not found" in win.campaign.csv.message.text()
+
+
+def test_browse_csv(win, monkeypatch):
+    other = make_csv(win._tmp / "other.csv", n=5)
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (str(other), ""))
+    QTest.mouseClick(win.campaign.browse, Qt.LeftButton)
+    assert win.campaign.csv.text() == str(other)
+    assert win.dashboard.m_eligible.value.text() == "5"
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: ("", ""))
+    QTest.mouseClick(win.campaign.browse, Qt.LeftButton)       # cancel keeps value
+    assert win.campaign.csv.text() == str(other)
+
+
+def test_reload_button_rereads_csv(win):
+    make_csv(win._csv, n=6)
+    QTest.mouseClick(win.campaign.reload, Qt.LeftButton)
+    assert win.dashboard.m_eligible.value.text() == "6"
+
+
+def test_reset_to_defaults(win, dialogs):
+    win.campaign.subject.edit.setText("changed")
+    dialogs["answers"] = [False]
+    QTest.mouseClick(win.campaign.reset, Qt.LeftButton)
+    assert win.campaign.subject.text() == "changed"
+    dialogs["answers"] = [True]
+    QTest.mouseClick(win.settings.reset, Qt.LeftButton)
+    assert win.campaign.subject.text() == CAMPAIGN_DEFAULTS["subject"]
+
+
+def test_dry_run_defaults_on_every_launch(win, app, tmp_path):
+    win.campaign.dry.setChecked(False)
+    win.close()
+    prefs = Preferences(QSettings(str(tmp_path / "prefs.ini"), QSettings.IniFormat))
+    w2 = MainWindow(win.tm, prefs, agent_script=FAKE)
+    assert w2.campaign.dry.isChecked()
+    w2.close()
+
+
+def test_invalid_campaign_blocks_start(win, dialogs):
+    win.campaign.shortcut.edit.setText("")
+    QTest.mouseClick(win.run_button, Qt.LeftButton)
+    assert not win.runner.is_running()
+    assert win.stack.currentIndex() == 1
+    assert dialogs["seen"] == ["Check the campaign settings"]
+
+
+def test_no_eligible_blocks_start(win, dialogs):
+    make_csv(win._csv, n=2, sent=(0, 1))
+    QTest.mouseClick(win.run_button, Qt.LeftButton)
+    assert not win.runner.is_running()
+    assert dialogs["seen"] == ["No eligible recipients"]
+
+
+# ================================================================ dry run
+def test_dry_run_on_sends_nothing(win, dialogs, env):
+    before = read_sent(win._csv)
+    assert win.run_button.text() == "Start dry run"
+    QTest.mouseClick(win.run_button, Qt.LeftButton)
+    s = run_to_end(win)
+    assert dialogs["seen"] == []                                  # no confirmation in dry run
+    assert json.loads(env.read_text())["CRISP_DRY_RUN"] == "true"
+    assert s.phase == rs.FINISHED and s.dry_run
+    assert s.completed == 3 and s.sent_confirmed == 0
+    assert read_sent(win._csv) == before                          # CSV untouched
+    assert win.dashboard.m_sent.value.text() == "0"
+    assert "Dry run" in win.dashboard.m_sent.caption.text()
+    assert win.status.text == "Finished"
+    assert win.activity.s_done.title.text() == "Passed (dry run)"
+    assert win.activity.progress.value() == 1000
+
+
+def test_real_send_requires_confirmation(win, dialogs, env):
+    win.campaign.dry.setChecked(False)
+    assert win.run_button.text() == "Start sending"
+    assert win.campaign.mode_banner.isVisibleTo(win.campaign)
+    dialogs["answers"] = [False]
+    QTest.mouseClick(win.run_button, Qt.LeftButton)
+    assert dialogs["seen"] == ["Send 3 real emails?"]
+    assert not win.runner.is_running()
+    assert not env.exists()                                       # agent never launched
+
+
+def test_dry_run_off_sends_and_reports_confirmed(win, dialogs, env):
+    win.campaign.dry.setChecked(False)
+    dialogs["answers"] = [True]
+    QTest.mouseClick(win.campaign.start, Qt.LeftButton)
+    s = run_to_end(win)
+    assert json.loads(env.read_text())["CRISP_DRY_RUN"] == "false"
+    assert s.phase == rs.FINISHED and not s.dry_run
+    assert s.sent_confirmed == 3
+    assert read_sent(win._csv) == ["TRUE", "TRUE", "TRUE", ""]
+    assert win.dashboard.m_sent.value.text() == "3"
+    assert win.dashboard.m_eligible.value.text() == "0"           # refreshed from CSV
+    last = win.prefs.last_run()
+    assert last["mode"] == "real" and int(last["sent"]) == 3
+
+
+def test_failure_is_reported_not_success(win, dialogs, env, monkeypatch):
+    monkeypatch.setenv("FAKE_FAIL_EMAIL", "u1@example.com")
+    win.campaign.dry.setChecked(False)
+    dialogs["answers"] = [True]
+    QTest.mouseClick(win.run_button, Qt.LeftButton)
+    s = run_to_end(win)
+    assert win.runner.proc.exitCode() == 0          # agent exits 0 even on failure…
+    assert s.phase == rs.FAILED                     # …but the GUI reports the failure
+    assert s.sent_confirmed == 1 and s.failed == 1
+    assert win.status.text == "Failed"
+    assert win.dashboard.m_failed.value.text() == "1"
+    assert win.dashboard.m_sent.value.text() == "1"
+    assert win.activity.unconfirmed_banner.isVisibleTo(win.activity)
+    assert "u1@example.com" in win.activity.unconfirmed_banner.text.text()
+    assert win.activity.error_banner.isVisibleTo(win.activity)
+    assert read_sent(win._csv) == ["TRUE", "", "", ""]
+
+
+def test_inputs_locked_while_running(win, monkeypatch):
+    monkeypatch.setenv("FAKE_STEP_DELAY", "0.1")
+    QTest.mouseClick(win.run_button, Qt.LeftButton)
+    assert wait_until(lambda: win.runner.is_running(), 5)
+    assert not win.campaign.subject.edit.isEnabled()
+    assert not win.campaign.dry.isEnabled()
+    assert win.campaign.locked_banner.isVisibleTo(win.campaign)
+    assert win.run_button.text() == "Stop"
+    run_to_end(win)
+    assert win.campaign.subject.edit.isEnabled()
+    assert win.run_button.text() == "Start dry run"
+
+
+def test_live_progress_and_current_recipient(win, monkeypatch):
+    monkeypatch.setenv("FAKE_STEP_DELAY", "0.05")
+    QTest.mouseClick(win.run_button, Qt.LeftButton)
+    assert wait_until(lambda: win.runner.state and win.runner.state.position == 2, 10)
+    assert "Recipient 2 of 3: u1@example.com" in win.activity.recipient.text()
+    assert 300 <= win.activity.progress.value() < 700
+    run_to_end(win)
+
+
+# ================================================================ stop
+def test_graceful_stop_finishes_current_recipient(win, dialogs, monkeypatch):
+    monkeypatch.setenv("FAKE_STEP_DELAY", "0.08")
+    QTest.mouseClick(win.run_button, Qt.LeftButton)
+    assert wait_until(lambda: win.runner.state and win.runner.state.position == 1, 10)
+    QTest.mouseClick(win.activity.stop, Qt.LeftButton)
+    assert dialogs["seen"][-1] == "Stop the run?"
+    assert win.runner.state.phase == rs.STOPPING
+    assert win.run_button.text() == "Force stop"
+    s = run_to_end(win)
+    assert s.phase == rs.STOPPED
+    assert s.completed == 1 and s.position == 1            # finished #1, never started #2
+    assert win.status.text == "Stopped"
+
+
+def test_stop_declined_keeps_running(win, dialogs, monkeypatch):
+    monkeypatch.setenv("FAKE_STEP_DELAY", "0.05")
+    QTest.mouseClick(win.run_button, Qt.LeftButton)
+    assert wait_until(lambda: win.runner.state and win.runner.state.position == 1, 10)
+    dialogs["answers"] = [False]
+    QTest.mouseClick(win.run_button, Qt.LeftButton)
+    s = run_to_end(win)
+    assert s.phase == rs.FINISHED and s.completed == 3
+
+
+def test_stop_during_login_kills_immediately(win, dialogs, monkeypatch):
+    monkeypatch.setenv("FAKE_LOGIN_WAIT", "60")
+    QTest.mouseClick(win.run_button, Qt.LeftButton)
+    assert wait_until(lambda: win.runner.state and win.runner.state.phase == rs.WAITING_LOGIN, 10)
+    assert win.status.text == "Waiting for login"
+    t = time.time()
+    QTest.mouseClick(win.run_button, Qt.LeftButton)
+    s = run_to_end(win, timeout=5)
+    assert time.time() - t < 5
+    assert s.phase == rs.STOPPED and s.completed == 0
+
+
+def test_force_stop(win, dialogs, monkeypatch):
+    monkeypatch.setenv("FAKE_STEP_DELAY", "0.3")
+    QTest.mouseClick(win.run_button, Qt.LeftButton)
+    assert wait_until(lambda: win.runner.state and win.runner.state.position == 1, 10)
+    QTest.mouseClick(win.run_button, Qt.LeftButton)             # graceful
+    QTest.mouseClick(win.run_button, Qt.LeftButton)             # force
+    assert dialogs["seen"][-1] == "Force stop now?"
+    s = run_to_end(win, timeout=5)
+    assert s.phase == rs.STOPPED
+
+
+def test_close_while_running(win, dialogs, monkeypatch):
+    monkeypatch.setenv("FAKE_LOGIN_WAIT", "60")
+    QTest.mouseClick(win.run_button, Qt.LeftButton)
+    assert wait_until(lambda: win.runner.is_running(), 5)
+    dialogs["answers"] = [False]
+    win.close()
+    assert win.isVisible() and win.runner.is_running()
+    dialogs["answers"] = [True]
+    win.close()
+    assert not win.runner.is_running()
+
+
+# ================================================================ log controls
+def test_log_clear_copy_save(win, monkeypatch):
+    QTest.mouseClick(win.run_button, Qt.LeftButton)
+    run_to_end(win)
+    text = win.activity.log.toPlainText()
+    assert "SUCCESS." in text and "Run started" in text
+    QTest.mouseClick(win.activity.copy, Qt.LeftButton)
+    assert QGuiApplication.clipboard().text() == text
+    target = win._tmp / "saved.log"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), ""))
+    QTest.mouseClick(win.activity.save, Qt.LeftButton)
+    assert target.read_text(encoding="utf-8") == text
+    QTest.mouseClick(win.activity.clear, Qt.LeftButton)
+    assert win.activity.log.toPlainText() == ""
+
+
+# ================================================================ theme
+def test_theme_switching_everywhere(win, app, tmp_path):
+    seg = win.settings.theme.buttons
+    QTest.mouseClick(seg["dark"], Qt.LeftButton)
+    assert win.tm.palette is DARK
+    assert DARK.bg.lower() in app.styleSheet().lower()
+    assert win.prefs.theme() == "dark"
+    # every page and a dialog render with the dark background
+    for i in range(4):
+        win.navigate(i)
+        img = win.stack.currentWidget().grab().toImage()
+        assert img.pixelColor(img.width() - 20, img.height() - 5).name() == DARK.bg.lower()
+    dlg = W.Dialog(win, "t", "b")
+    dlg.show()
+    QApplication.processEvents()
+    img = dlg.grab().toImage()
+    assert img.pixelColor(3, 3).name() == DARK.surface.lower()
+    dlg.close()
+    QTest.mouseClick(win.theme_toggle, Qt.LeftButton)             # sidebar quick toggle
+    assert win.tm.palette is LIGHT
+    assert win.settings.theme.value() == "light"
+    QTest.mouseClick(seg["system"], Qt.LeftButton)
+    assert win.prefs.theme() == "system"
+    assert win.tm.palette in (LIGHT, DARK)
+
+
+# ================================================================ resizing
+@pytest.mark.parametrize("size", [(880, 600), (1024, 700), (1366, 768), (1920, 1080)])
+def test_resizing_no_horizontal_overflow(win, size):
+    win.resize(*size)
+    for i in range(4):
+        win.navigate(i)
+        QApplication.processEvents()
+        page = win.stack.currentWidget()
+        assert page.horizontalScrollBar().maximum() == 0
+        assert page.widget().width() <= page.viewport().width()
+    cols = win.dashboard.metrics._cols
+    assert cols in (2, 4)
+    if size[0] <= 900:
+        assert cols == 2
+    if size[0] >= 1366:
+        assert cols == 4
