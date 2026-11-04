@@ -33,6 +33,8 @@ CAMPAIGN_DEFAULTS = {
     "segment": "pending-cart",
     "reference": "Shahriar",
     "shortcut": "recommend-offer",
+    "row_from": "",  # blank = from the first row
+    "row_to": "",    # blank = to the last row
 }
 
 THEMES = ("light", "dark", "system")

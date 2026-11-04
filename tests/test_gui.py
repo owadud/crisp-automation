@@ -445,3 +445,26 @@ def test_update_available_shows_button_and_blocks_run_while_installing(win, dial
     win._update_install_failed("Update failed, so version 3.0 was restored.")
     assert dialogs["seen"][-1] == "Update failed"
     assert s.install_update.isEnabled()
+
+
+def test_row_range_preview_validation_and_reset(win, dialogs, tmp_path):
+    c = win.campaign
+    total = win.stats.total
+    c.row_from.edit.setText("1")
+    c.row_to.edit.setText("1")
+    win.refresh_csv()
+    assert win.stats.range_set and win.stats.in_range == 1
+    assert c.csv.message.text().startswith(f"Rows 1–1 of {total}")
+    assert win.prefs.campaign()["row_to"] == "1"
+
+    c.row_to.edit.setText(str(total + 5))           # past the end -> error, run blocked
+    win.refresh_csv()
+    assert "only" in c.row_to.message.text()
+    win.start_run()
+    assert not win.runner.is_running()
+    assert dialogs["seen"][-1] == "Check the campaign settings"
+
+    other = make_csv(tmp_path / "other.csv")        # a different file clears the range
+    c.csv.edit.setText(str(other))
+    assert c.row_from.text() == "" and c.row_to.text() == ""
+    assert win.prefs.campaign()["row_from"] == ""

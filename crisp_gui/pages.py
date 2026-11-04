@@ -4,6 +4,7 @@ MainWindow wires behaviour so all logic lives in one place."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QPlainTextEdit, QProgressBar, QScrollArea,
     QSizePolicy, QVBoxLayout, QWidget,
@@ -146,6 +147,15 @@ class CampaignPage(Page):
         btns.addStretch()
         row.addLayout(btns)
         card.body.addLayout(row)
+        rng = ResponsiveRow(min_item_width=200, spacing=16)
+        self.row_from = Field("From row", "Blank = first row.", placeholder="First")
+        self.row_to = Field("To row", "Blank = last row.", placeholder="Last")
+        for f in (self.row_from, self.row_to):
+            f.edit.setValidator(QIntValidator(1, 10_000_000, f.edit))
+            rng.add(f)
+        card.body.addWidget(rng)
+        card.body.addWidget(label("Row 1 is the first row under the header, counted before any filtering, "
+                                  "so the numbers match the CSV file.", "fieldHelp", wrap=True))
         self.add(card)
 
         # message ------------------------------------------------------------
@@ -199,7 +209,8 @@ class CampaignPage(Page):
 
     def fields(self):
         return {"csv": self.csv, "subject": self.subject, "shortcut": self.shortcut,
-                "reference": self.reference, "segment": self.segment}
+                "reference": self.reference, "segment": self.segment,
+                "row_from": self.row_from, "row_to": self.row_to}
 
 
 # =====================================================================

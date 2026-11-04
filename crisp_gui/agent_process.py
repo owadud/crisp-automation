@@ -62,6 +62,8 @@ class AgentRunner(QObject):
             "CRISP_SEGMENT": settings["segment"],
             "CRISP_REFERENCE_FILTER": settings["reference"],
             "CRISP_SHORTCUT": settings["shortcut"],
+            "CRISP_ROW_FROM": settings.get("row_from", ""),
+            "CRISP_ROW_TO": settings.get("row_to", ""),
             # The ONLY switch that controls real sending in the agent.
             "CRISP_DRY_RUN": "true" if dry_run else "false",
             "CRISP_PROFILE_DIR": str(profile_dir),

@@ -57,6 +57,11 @@ SEGMENT_NAME = os.environ.get("CRISP_SEGMENT", "pending-cart")
 # Keep FALSE: actual email sending.
 DRY_RUN = os.environ.get("CRISP_DRY_RUN", "true").lower() in {"1", "true", "yes", "on"}
 
+# Optional row range. Serial = position among data rows (header excluded,
+# first data row = 1), counted BEFORE any filtering. Blank = all rows.
+ROW_FROM = os.environ.get("CRISP_ROW_FROM", "").strip()
+ROW_TO = os.environ.get("CRISP_ROW_TO", "").strip()
+
 PROFILE_DIR = Path(os.environ.get("CRISP_PROFILE_DIR", str(Path.home() / ".crisp_email_agent" / "browser_profile"))).expanduser().resolve()
 
 CRISP_URL = "https://app.crisp.chat/"
@@ -169,11 +174,30 @@ def save_csv(rows, fieldnames):
     os.replace(temp, CSV_FILE)
 
 
+def row_range(total):
+    """(start, end) as 1-based serials. Must match parse_range() in crisp_gui/csv_stats.py."""
+    if not ROW_FROM and not ROW_TO:
+        return 1, total
+    try:
+        start = int(ROW_FROM) if ROW_FROM else 1
+        end = int(ROW_TO) if ROW_TO else total
+    except ValueError:
+        raise RuntimeError(f"Row range must be whole numbers (got from={ROW_FROM!r}, to={ROW_TO!r}).")
+    if not (1 <= start <= end <= total):
+        raise RuntimeError(f"Invalid row range {start}-{end}: the CSV has {total} rows.")
+    return start, end
+
+
 def get_eligible(rows):
 
     result = []
 
+    start, end = row_range(len(rows))
+
     for index, row in enumerate(rows):
+
+        if not start <= index + 1 <= end:
+            continue
 
         reference = clean(
             row.get("Reference")
@@ -1713,9 +1737,13 @@ def main():
         f"Dry run: {DRY_RUN}"
     )
 
-    print()
-
     rows, fieldnames = load_csv()
+
+    if ROW_FROM or ROW_TO:
+        first, last = row_range(len(rows))
+        print(f"Row range: {first}-{last} of {len(rows)}")
+
+    print()
 
     eligible = get_eligible(
         rows

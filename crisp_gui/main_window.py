@@ -282,7 +282,11 @@ class MainWindow(QMainWindow):
         if self._loading:
             return
         self.prefs.set_campaign_value(key, value.strip())
-        if key in ("csv", "reference"):
+        if key == "csv":
+            # A different file has different rows: forget the old range.
+            for f in (self.campaign.row_from, self.campaign.row_to):
+                f.edit.clear()
+        if key in ("csv", "reference", "row_from", "row_to"):
             self.csv_timer.start()
         self._validate_fields()
         self._update_summary()
@@ -311,7 +315,7 @@ class MainWindow(QMainWindow):
     def refresh_csv(self):
         self.csv_timer.stop()
         v = self.campaign_values()
-        self.stats = read_stats(v["csv"], v["reference"])
+        self.stats = read_stats(v["csv"], v["reference"], v["row_from"], v["row_to"])
         self._validate_fields()
         self._update_metrics()
         self._update_summary()
@@ -321,13 +325,15 @@ class MainWindow(QMainWindow):
         c = self.campaign
         ok = True
         st = self.stats
-        if st.ok:
-            parts = [f"{st.total} rows", f"{st.eligible} eligible", f"{st.marked_sent} already sent"]
-            if st.other_reference:
-                parts.append(f"{st.other_reference} other reference")
-            if st.missing_email:
-                parts.append(f"{st.missing_email} without email")
-            c.csv.set_state("ok", " · ".join(parts))
+        for f in (c.row_from, c.row_to):
+            f.set_state("help")
+        if st.ok and st.range_error:
+            c.csv.set_state("ok", f"{st.total} rows in the file")
+            field = c.row_from if st.range_error_field == "from" else c.row_to
+            field.set_state("error", st.range_error)
+            ok = False
+        elif st.ok:
+            c.csv.set_state("ok", st.preview().replace(", ", " · "))
         else:
             c.csv.set_state("error", st.error)
             ok = False
@@ -401,9 +407,14 @@ class MainWindow(QMainWindow):
         d = self.dashboard
         st = self.stats
         if st.ok:
-            d.m_total.set(st.total, f"{st.marked_sent} marked sent in CSV")
             ref = self.campaign.reference.text() or "(empty)"
-            d.m_eligible.set(st.eligible, f"Reference “{ref}”, not yet sent")
+            if st.range_set and not st.range_error:
+                d.m_total.set(st.total, f"Using rows {st.range_from}–{st.range_to}")
+                d.m_eligible.set(st.eligible, f"Rows {st.range_from}–{st.range_to}, reference “{ref}”")
+            else:
+                d.m_total.set(st.total, f"{st.marked_sent} marked sent in CSV" if not st.range_error
+                              else "Row range is invalid")
+                d.m_eligible.set(st.eligible, f"Reference “{ref}”, not yet sent")
             d.csv_banner.hide()
         else:
             d.m_total.set("—", "CSV not loaded")
@@ -469,7 +480,8 @@ class MainWindow(QMainWindow):
         self.refresh_csv()
         if not self._validate_fields():
             self.navigate(1)
-            problem = self.stats.error if not self.stats.ok else "Fill in the required fields."
+            problem = (self.stats.error if not self.stats.ok
+                       else self.stats.range_error or "Fill in the required fields.")
             W.inform(self, "Check the campaign settings", problem)
             return
         if self.stats.eligible == 0:
@@ -489,7 +501,9 @@ class MainWindow(QMainWindow):
                 self, f"Send {n} real email{'s' if n != 1 else ''}?",
                 "Dry Run is off. The agent will send real emails through Crisp and mark each sent row in the CSV. "
                 "This can't be undone.",
-                details=[("Recipients", str(n)), ("Subject", v["subject"]), ("Shortcut", v["shortcut"]),
+                details=[("Recipients", str(n)),
+                         ("Rows", f"{self.stats.range_from}–{self.stats.range_to} of {self.stats.total}"),
+                         ("Subject", v["subject"]), ("Shortcut", v["shortcut"]),
                          ("Segment", v["segment"]), ("CSV", Path(v["csv"]).name)],
                 confirm=f"Send {n} email{'s' if n != 1 else ''}", tone="danger")
             if not ok:
