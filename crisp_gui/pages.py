@@ -301,6 +301,20 @@ class SettingsPage(Page):
         card.body.addLayout(h)
         self.add(card)
 
+        card = Card("Updates", "New versions download from GitHub. Your settings, CSV files, history, "
+                    "Crisp login and logs are never changed. The old code is kept in backups/.")
+        self.update_status = label("Not checked yet.", "faint", wrap=True)
+        card.body.addWidget(self.update_status)
+        h = QHBoxLayout()
+        self.check_updates = button("Check for updates", None, "refresh", tm, "text_muted")
+        self.install_update = button("Update now", "primary")
+        self.install_update.hide()
+        h.addWidget(self.check_updates)
+        h.addWidget(self.install_update)
+        h.addStretch()
+        card.body.addLayout(h)
+        self.add(card)
+
         card = Card("About")
         self.about = KeyValueList()
         for key, title in (("version", "Version"), ("agent", "Agent script"),

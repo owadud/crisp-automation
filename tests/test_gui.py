@@ -421,3 +421,27 @@ def test_resizing_no_horizontal_overflow(win, size):
         assert cols == 2
     if size[0] >= 1366:
         assert cols == 4
+
+
+def test_update_available_shows_button_and_blocks_run_while_installing(win, dialogs):
+    from crisp_gui.updater import Release
+    s = win.settings
+    assert not s.install_update.isVisibleTo(s)
+    rel = Release(tag="v9.9", version="9.9", zip_name="x.zip", zip_url="https://x/zip")
+    win.updater.release = rel
+    win._update_checked(rel, "Version 9.9 is available.")
+    assert s.install_update.isVisibleTo(s)
+    assert "9.9 available" in win.version_label.text()
+
+    started = []
+    win.updater.install = lambda: started.append(True) or True
+    win.install_update()                       # dialog hook answers "Update and restart"
+    assert started and dialogs["seen"][-1] == "Update to version 9.9?"
+
+    win.updater.busy = True                    # install in progress: no run may start
+    win.start_run()
+    assert not win.runner.is_running()
+    win.updater.busy = False
+    win._update_install_failed("Update failed, so version 3.0 was restored.")
+    assert dialogs["seen"][-1] == "Update failed"
+    assert s.install_update.isEnabled()

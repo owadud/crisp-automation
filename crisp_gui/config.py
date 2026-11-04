@@ -7,9 +7,21 @@ from pathlib import Path
 from PySide6.QtCore import QSettings
 
 APP_NAME = "Crisp Automation"
-APP_VERSION = "3.0"
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def read_version(root: Path = ROOT) -> str:
+    """The VERSION file is the single source of truth for the app version."""
+    try:
+        return (root / "VERSION").read_text(encoding="utf-8").strip() or "0"
+    except OSError:
+        return "0"
+
+
+APP_VERSION = read_version()
+# Public GitHub repo whose Releases the in-app updater reads.
+GITHUB_REPO = "owadud/crisp-automation"
 AGENT_SCRIPT = ROOT / "crisp_email_agent.py"
 # Same location the previous GUI and the agent use, so the Crisp login
 # session is preserved.

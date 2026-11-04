@@ -6,7 +6,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QSize, QTimer, QUrl
+from PySide6.QtCore import QProcess, QSize, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QFileDialog, QFrame, QHBoxLayout, QLabel,
@@ -16,11 +16,12 @@ from PySide6.QtWidgets import (
 from . import run_state as rs
 from . import widgets as W
 from .agent_process import AgentRunner
-from .config import AGENT_SCRIPT, APP_NAME, APP_VERSION, PROFILE_DIR, Preferences
+from .config import AGENT_SCRIPT, APP_NAME, APP_VERSION, GITHUB_REPO, PROFILE_DIR, ROOT, Preferences
 from .csv_stats import CsvStats, read_stats
 from .icons import icon, logo_pixmap
 from .pages import ActivityPage, CampaignPage, DashboardPage, SettingsPage
 from .theme import Palette, ThemeManager
+from .update_controller import UpdateController
 
 PAGES = (
     ("dashboard", "Dashboard", "dashboard", "Overview of your campaign and the latest run."),
@@ -49,6 +50,7 @@ class MainWindow(QMainWindow):
         self.prefs = prefs or Preferences()
         self.profile_dir = Path(profile_dir or PROFILE_DIR)
         self.runner = AgentRunner(agent_script or AGENT_SCRIPT, self)
+        self.updater = UpdateController(GITHUB_REPO, ROOT, APP_VERSION, self)
         self.stats = CsvStats()
         self.last_state: rs.RunState | None = None
         self._loading = False
@@ -114,7 +116,8 @@ class MainWindow(QMainWindow):
         self.theme_toggle.setIconSize(QSize(16, 16))
         side.addWidget(self.theme_toggle)
         side.addSpacing(6)
-        side.addWidget(W.label(f"Version {APP_VERSION}", "sidebarFoot"))
+        self.version_label = W.label(f"Version {APP_VERSION}", "sidebarFoot", wrap=True)
+        side.addWidget(self.version_label)
         h.addWidget(self.sidebar)
 
         # content ----------------------------------------------------------
@@ -197,6 +200,13 @@ class MainWindow(QMainWindow):
             lambda: (QGuiApplication.clipboard().setText(str(self.profile_dir)),
                      self.flash(s.copy_profile, "Copied")))
         s.reset.clicked.connect(self.reset_campaign)
+        s.check_updates.clicked.connect(self.check_updates)
+        s.install_update.clicked.connect(self.install_update)
+        self.updater.checked.connect(self._update_checked)
+        self.updater.check_failed.connect(self._update_status)
+        self.updater.progress.connect(self._update_status)
+        self.updater.installed.connect(self._update_installed)
+        self.updater.install_failed.connect(self._update_install_failed)
 
         self.runner.line.connect(self._agent_line)
         self.runner.state_changed.connect(self._render_state)
@@ -454,7 +464,7 @@ class MainWindow(QMainWindow):
             self.start_run()
 
     def start_run(self):
-        if self.runner.is_running():
+        if self.runner.is_running() or self.updater.busy:
             return
         self.refresh_csv()
         if not self._validate_fields():
@@ -692,6 +702,64 @@ class MainWindow(QMainWindow):
                      details=[("Location", str(path))])
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    # =============================================================== updates
+    def check_updates_on_start(self):
+        """Called by gui_app.py only, so tests never touch the network."""
+        QTimer.singleShot(2000, self.check_updates)
+
+    def check_updates(self):
+        if self.updater.check():
+            self._update_status("Checking for updates…")
+            self.settings.check_updates.setEnabled(False)
+
+    def _update_status(self, text: str):
+        self.settings.update_status.setText(text)
+        self.settings.check_updates.setEnabled(not self.updater.busy)
+
+    def _update_checked(self, release, text: str):
+        self._update_status(text)
+        self.settings.install_update.setVisible(release is not None)
+        foot = f"Version {APP_VERSION}"
+        self.version_label.setText(f"{foot} · v{release.version} available" if release else foot)
+
+    def install_update(self):
+        rel = self.updater.release
+        if rel is None or self.updater.busy:
+            return
+        if self.runner.is_running():
+            W.inform(self, "Stop the run first",
+                     "Updating restarts the app. Wait for the run to finish (or stop it), then update.")
+            return
+        if not W.ask(self, f"Update to version {rel.version}?",
+                     "The app downloads the new version, checks it, backs up the current code, then restarts. "
+                     "Your settings, CSV files, history, Crisp login and logs are not touched. "
+                     "If anything fails, the current version is restored automatically.",
+                     details=[("Current", APP_VERSION), ("New", rel.version), ("Backup", f"backups/{APP_VERSION}")],
+                     confirm="Update and restart"):
+            return
+        if self.updater.install():
+            self.settings.install_update.setEnabled(False)
+            self.campaign.start.setEnabled(False)
+            self.run_button.setEnabled(False)
+            self._update_status(f"Installing version {rel.version}…")
+
+    def _update_install_failed(self, text: str):
+        self._update_status("Update failed. Your current version still works.")
+        self.settings.install_update.setEnabled(True)
+        self.campaign.start.setEnabled(True)
+        self.run_button.setEnabled(True)
+        W.inform(self, "Update failed", text)
+
+    def _update_installed(self, backup: str):
+        self._update_status("Update installed. Restarting…")
+        res = QProcess.startDetached(sys.executable, [str(ROOT / "gui_app.py")], str(ROOT))
+        started = res[0] if isinstance(res, tuple) else bool(res)
+        if not started:
+            W.inform(self, "Update installed", "Close the app and open it again to use the new version.",
+                     details=[("Old code backup", backup)])
+            return
+        self.close()
 
     # ================================================================ close
     def closeEvent(self, event):

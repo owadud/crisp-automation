@@ -32,6 +32,7 @@ def main() -> int:
 
     window = MainWindow(tm, prefs)
     window.show()
+    window.check_updates_on_start()  # background, never blocks the window
     return app.exec()
 
 

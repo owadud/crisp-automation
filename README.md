@@ -1,4 +1,4 @@
-# Crisp Automation Desktop v3.0
+# Crisp Automation Desktop
 
 Cross-platform desktop GUI for the existing Crisp email automation workflow.
 
@@ -102,6 +102,23 @@ If winget is unavailable, install Python 3.12+ from https://www.python.org/downl
 
 The automation clicks the visible **Shortcuts** tab in Crisp. It deliberately does not use Ctrl+K because that opens Crisp's global command palette in the current interface. If the Shortcuts tab cannot be found, the run stops with a clear error rather than opening the wrong panel.
 
-## Private GitHub updates
+## Updates (one click)
 
-After creating a private GitHub repository and granting collaborators access, clone the repository once. Then use `bash update_ubuntu.sh` on Ubuntu or `update_windows.bat` on Windows to pull updates and refresh dependencies.
+**Settings > Updates > Check for updates**, then **Update now**. The app also checks
+quietly at start and shows "vX.Y available" in the sidebar. It downloads the latest
+GitHub Release, verifies its sha256, backs up the current code to `backups/<old version>/`,
+replaces only code files, and restarts. Settings, CSVs, history, logs, keys, `runs/`,
+`.venv/` and the Crisp login are never touched. If anything fails, the old code is
+restored automatically. The version number lives only in the `VERSION` file.
+
+The GitHub repository must be **public** for the updater to read releases without a login.
+
+Fallback (needs git and a clone): `bash update_ubuntu.sh` or `update_windows.bat`.
+
+### How to publish a new version
+
+1. Change the number in `VERSION` (for example `3.1`) and commit + push.
+2. Tag it: `git tag v3.1` then `git push origin v3.1` (the tag must match `VERSION`).
+3. Wait about 1 minute: GitHub Actions builds the zip and `.sha256` and publishes the Release.
+4. Check the repo's **Releases** page shows `crisp-automation-v3.1.zip` and its `.sha256`.
+5. Teammates click **Check for updates > Update now**. (To test the zip locally: `python tools/make_release.py`.)
