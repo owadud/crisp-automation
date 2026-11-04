@@ -1,22 +1,44 @@
 # Push a tag like v3.1 -> builds the zip + sha256 and publishes a GitHub Release.
 # The in-app "Check for updates" reads that release.
+# If a run fails, use Actions > Release > "Run workflow" and type the tag (e.g. v3.0).
 name: Release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish, e.g. v3.0"
+        required: true
 
 permissions:
   contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
       - name: Build zip and checksum
-        run: python3 tools/make_release.py --tag "$GITHUB_REF_NAME"
-      - name: Publish release
+        run: python3 tools/make_release.py --tag "$TAG"
+      - name: Publish release (retries on GitHub server errors)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.zip.sha256 --title "$GITHUB_REF_NAME" --generate-notes
+          GH_REPO: ${{ github.repository }}
+        run: |
+          for i in 1 2 3 4; do
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              gh release upload "$TAG" dist/*.zip dist/*.zip.sha256 --clobber && exit 0
+            else
+              gh release create "$TAG" dist/*.zip dist/*.zip.sha256 --title "$TAG" --generate-notes --verify-tag && exit 0
+            fi
+            echo "GitHub error, retrying in 20 s ($i/4)"
+            sleep 20
+          done
+          exit 1
