@@ -179,6 +179,8 @@ class MainWindow(QMainWindow):
 
         c = self.campaign
         c.browse.clicked.connect(self.browse_csv)
+        c.dnc_browse.clicked.connect(self.browse_dnc)
+        c.skip_failed.toggled.connect(lambda _c: self._update_summary())
         c.reload.clicked.connect(self.refresh_csv)
         c.reset.clicked.connect(self.reset_campaign)
         c.start.clicked.connect(self.start_run)
@@ -218,6 +220,7 @@ class MainWindow(QMainWindow):
         for key, field in self.campaign.fields().items():
             field.edit.setText(values[key])
         self.campaign.dry.setChecked(True)   # always start safe
+        self.campaign.skip_failed.setChecked(False)   # opt-in every launch
         self.settings.theme.set_value(self.tm.mode)
         geo = self.prefs.geometry()
         if geo is not None:
@@ -233,6 +236,19 @@ class MainWindow(QMainWindow):
         self.refresh_csv()
         self._update_mode()
         self._render_state(None)
+        self._show_crash_recovery()
+
+    def _show_crash_recovery(self):
+        rec = self.prefs.recovery()
+        if not rec:
+            return
+        who = rec.get("email") or "before the first recipient"
+        msg = (f"The last run ({rec.get('mode') or 'run'}, started {rec.get('started') or '?'}) did not finish "
+               f"normally. It stopped at {who}. Check Crisp before continuing: that email may or may not have "
+               f"gone out, and its CSV row may not be marked.")
+        for banner in (self.dashboard.unconfirmed_banner, self.activity.unconfirmed_banner):
+            banner.set_text(msg)
+            banner.show()
 
     # ============================================================ navigation
     def navigate(self, index: int):
@@ -286,7 +302,7 @@ class MainWindow(QMainWindow):
             # A different file has different rows: forget the old range.
             for f in (self.campaign.row_from, self.campaign.row_to):
                 f.edit.clear()
-        if key in ("csv", "reference", "row_from", "row_to"):
+        if key in ("csv", "reference", "row_from", "row_to", "dnc"):
             self.csv_timer.start()
         self._validate_fields()
         self._update_summary()
@@ -299,7 +315,20 @@ class MainWindow(QMainWindow):
         return self.campaign.dry.isChecked()
 
     def campaign_values(self) -> dict:
-        return {k: f.text() for k, f in self.campaign.fields().items()}
+        values = {k: f.text() for k, f in self.campaign.fields().items()}
+        values["skip_failed"] = "true" if self.campaign.skip_failed.isChecked() else "false"
+        return values
+
+    def browse_dnc(self):
+        current = self.campaign.dnc.text() or self.campaign.csv.text()
+        start = str(Path(current).expanduser().parent) if current else str(Path.home())
+        if not Path(start).is_dir():
+            start = str(Path.home())
+        path, _ = QFileDialog.getOpenFileName(self, "Choose do-not-contact list", start,
+                                              "CSV or text (*.csv *.txt);;All files (*)")
+        if path:
+            self.campaign.dnc.edit.setText(path)
+            self.refresh_csv()
 
     def browse_csv(self):
         current = self.campaign.csv.text()
@@ -315,7 +344,7 @@ class MainWindow(QMainWindow):
     def refresh_csv(self):
         self.csv_timer.stop()
         v = self.campaign_values()
-        self.stats = read_stats(v["csv"], v["reference"], v["row_from"], v["row_to"])
+        self.stats = read_stats(v["csv"], v["reference"], v["row_from"], v["row_to"], v["dnc"])
         self._validate_fields()
         self._update_metrics()
         self._update_summary()
@@ -333,10 +362,22 @@ class MainWindow(QMainWindow):
             field.set_state("error", st.range_error)
             ok = False
         elif st.ok:
-            c.csv.set_state("ok", st.preview().replace(", ", " · "))
+            text = st.preview().replace(", ", " · ")
+            if st.invalid_rows:
+                shown = "; ".join(f"row {n}: {e or '(blank)'} ({why})" for n, e, why in st.invalid_rows[:3])
+                more = f" and {len(st.invalid_rows) - 3} more" if len(st.invalid_rows) > 3 else ""
+                text += f"\nInvalid (will be skipped): {shown}{more}"
+            c.csv.set_state("ok", text)
         else:
             c.csv.set_state("error", st.error)
             ok = False
+        if st.dnc_error:
+            c.dnc.set_state("error", st.dnc_error)
+            ok = False
+        else:
+            c.dnc.set_state("help")
+        for f in (c.max_skips, c.max_fails_in_row):
+            f.set_state("help")
         for key in ("subject", "shortcut", "segment"):
             f = c.fields()[key]
             if not f.text():
@@ -481,7 +522,7 @@ class MainWindow(QMainWindow):
         if not self._validate_fields():
             self.navigate(1)
             problem = (self.stats.error if not self.stats.ok
-                       else self.stats.range_error or "Fill in the required fields.")
+                       else self.stats.range_error or self.stats.dnc_error or "Fill in the required fields.")
             W.inform(self, "Check the campaign settings", problem)
             return
         if self.stats.eligible == 0:
@@ -515,7 +556,11 @@ class MainWindow(QMainWindow):
         self.last_state = None
         self.activity.error_banner.hide()
         self.activity.unconfirmed_banner.hide()
+        self.activity.retry_banner.hide()
         self.dashboard.unconfirmed_banner.hide()
+        self.prefs.set_recovery(email="", csv=v["csv"], started=f"{datetime.now():%Y-%m-%d %H:%M}",
+                                mode="dry run" if dry else "real sending")
+        self._recovery_email = ""
         self._gui_line(f"Run started {datetime.now():%Y-%m-%d %H:%M:%S} "
                        f"({'DRY RUN, nothing will be sent' if dry else 'REAL SENDING'})")
         self._set_inputs_locked(True)
@@ -676,6 +721,15 @@ class MainWindow(QMainWindow):
         if s.last_error and phase in (rs.FAILED, rs.RUNNING, rs.STOPPING):
             a.error_banner.set_text(s.last_error)
             a.error_banner.show()
+        if self.runner.is_running() and s.current_email and s.current_email != getattr(self, "_recovery_email", ""):
+            self._recovery_email = s.current_email
+            self.prefs.set_recovery(email=s.current_email)
+        if s.retry and not self.runner.is_running():
+            lines = [f"{e} ({why})" if why else e for e, _n, why in s.retry[:5]]
+            more = f" and {len(s.retry) - 5} more" if len(s.retry) > 5 else ""
+            a.retry_banner.set_text(f"Not sent in this run, retry later: {'; '.join(lines)}{more}. "
+                                    "The full list is at the end of the log.")
+            a.retry_banner.show()
         if s.unconfirmed_send:
             msg = (f"Send was clicked for {s.current_email or 'the last recipient'}, but Crisp did not confirm it. "
                    "The email may already have gone out and the CSV row was NOT marked. "
@@ -687,9 +741,12 @@ class MainWindow(QMainWindow):
 
     def _run_finished(self, s: rs.RunState):
         self.last_state = s
+        self.prefs.clear_recovery()
+        self._recovery_email = ""
         self._set_inputs_locked(False)
         text, _ = STATUS[s.phase]
         summary = (f"Run {text.lower()}. Completed {s.completed}, failed {s.failed}"
+                   + (f", skipped {s.skipped}" if s.skipped else "")
                    + ("" if s.dry_run else f", sent and confirmed {s.sent_confirmed}") + ".")
         self._gui_line(summary)
         self.prefs.set_last_run({

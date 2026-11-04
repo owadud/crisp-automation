@@ -98,6 +98,23 @@ If winget is unavailable, install Python 3.12+ from https://www.python.org/downl
 - The persistent browser profile is stored in the user's home directory, not in this project folder.
 - Do not commit recipient CSVs, browser profiles, credentials, or session data to GitHub.
 
+## Safety (3.2)
+
+- **Skipped before the run starts** (shown in the CSV preview and the log): duplicate
+  emails (trimmed, lower-case; an email already marked sent, or repeated in this run),
+  invalid addresses (e.g. `a@b`, `gmial.com`, `.con`) and anything on the optional
+  **do-not-contact** list. Bad rows are flagged; the run does not stop because of them.
+- **CSV backup** before each real run: `recipients.YYYY-MM-DD-HHMM.bak.csv` next to the CSV.
+- **Lock file** `recipients.csv.lock` while a run is active, so two copies cannot send
+  from the same CSV. A lock left by a crashed run on the same PC is replaced automatically.
+- **Skip and continue** (opt-in, off at every launch): only failures *before* the Send
+  click are skipped, up to *Max skipped per run*. A failure at or after Send always stops.
+  The run auto-stops after *N failures in a row*. A retry list is printed at the end.
+- **Crash recovery:** if the app closed during a run, the next start says which
+  recipient it stopped at so you can check Crisp first.
+- Not done yet: checking Crisp for an existing conversation before creating one. It
+  needs a live Crisp page sample to build safely.
+
 ## Shortcut behavior
 
 The automation clicks the visible **Shortcuts** tab in Crisp. It deliberately does not use Ctrl+K because that opens Crisp's global command palette in the current interface. If the Shortcuts tab cannot be found, the run stops with a clear error rather than opening the wrong panel.

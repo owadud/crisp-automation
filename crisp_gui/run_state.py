@@ -61,6 +61,9 @@ class RunState:
     completed: int = 0                # recipients that reached "SUCCESS."
     sent_confirmed: int = 0           # real sends Crisp confirmed
     failed: int = 0
+    skipped: int = 0                  # failed BEFORE Send and skipped (opt-in)
+    retry: list = field(default_factory=list)   # (email, name, reason) not sent
+    precheck: str = ""                # "Skipped before start: ..." from the agent
     warnings: int = 0
     last_error: str = ""
     unconfirmed_send: bool = False    # a send may have gone out unconfirmed
@@ -77,7 +80,7 @@ class RunState:
 
     @property
     def processed(self) -> int:
-        return self.completed + self.failed
+        return self.completed + self.failed + self.skipped
 
     @property
     def progress(self) -> float:
@@ -198,6 +201,26 @@ class RunParser:
                 s.unconfirmed_send = True
             s.step = "Failed"
             s.history.append((s.current_email, "failed"))
+            return
+
+        if line.startswith("SKIPPED:"):
+            s.skipped += 1
+            s.step = "Skipped (failed before Send)"
+            s.history.append((s.current_email, "skipped"))
+            return
+
+        if line.startswith("RETRY:"):
+            parts = [p.strip() for p in line[len("RETRY:"):].split("|", 2)]
+            s.retry.append(tuple(parts + [""] * (3 - len(parts))))
+            return
+
+        if line.startswith("Skipped before start:"):
+            s.precheck = line
+            return
+
+        m = re.match(r"^Skipped:\s*(\d+)$", line)
+        if m:
+            s.skipped = int(m.group(1))
             return
 
         if line == "Email was not sent.":

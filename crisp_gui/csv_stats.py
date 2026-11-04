@@ -3,21 +3,19 @@
 from __future__ import annotations
 
 import csv
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-REQUIRED_COLUMNS = ("Full Name", "Contact Email", "Reference", "Mail Sent")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import recipient_rules as rules  # noqa: E402  (shared with the agent)
+from recipient_rules import SENT_VALUES, is_checked  # noqa: E402,F401
 
-# Must match is_checked() in crisp_email_agent.py (a test enforces this).
-SENT_VALUES = {"true", "1", "yes", "y", "checked", "sent", "x", "✓", "☑"}
+REQUIRED_COLUMNS = ("Full Name", "Contact Email", "Reference", "Mail Sent")
 
 
 def _clean(value) -> str:
     return str(value or "").strip()
-
-
-def is_checked(value) -> bool:
-    return _clean(value).lower() in SENT_VALUES
 
 
 @dataclass
@@ -36,15 +34,23 @@ class CsvStats:
     range_from: int = 0
     range_to: int = 0
     in_range: int = 0        # rows inside the range
-    duplicates: int = 0      # eligible rows whose email appeared earlier in the range
+    duplicates: int = 0      # skipped: email already sent or earlier in this run
+    invalid: int = 0         # skipped: bad email format
+    do_not_contact: int = 0  # skipped: on the do-not-contact list
+    invalid_rows: list = field(default_factory=list)   # (serial, email, reason)
     range_error: str = ""
     range_error_field: str = ""   # "from" or "to"
+    dnc_error: str = ""
 
     def preview(self) -> str:
         """One line for the UI, e.g. 'Rows 200-300: 101 rows, 85 eligible, 3 duplicates, 4 already sent'."""
         parts = [f"{self.in_range} rows", f"{self.eligible} eligible"]
         if self.duplicates:
-            parts.append(f"{self.duplicates} duplicate{'s' if self.duplicates != 1 else ''}")
+            parts.append(f"{self.duplicates} duplicate{'s' if self.duplicates != 1 else ''} skipped")
+        if self.invalid:
+            parts.append(f"{self.invalid} invalid email{'s' if self.invalid != 1 else ''}")
+        if self.do_not_contact:
+            parts.append(f"{self.do_not_contact} do-not-contact")
         parts.append(f"{self.marked_sent} already sent")
         if self.other_reference:
             parts.append(f"{self.other_reference} other reference")
@@ -80,7 +86,8 @@ def parse_range(from_text, to_text, total: int):
     return start, end, "", ""
 
 
-def read_stats(path_text: str, reference_filter: str, row_from: str = "", row_to: str = "") -> CsvStats:
+def read_stats(path_text: str, reference_filter: str, row_from: str = "", row_to: str = "",
+               dnc_path: str = "") -> CsvStats:
     stats = CsvStats()
     if not path_text or not path_text.strip():
         stats.error = "Choose a recipient CSV file."
@@ -114,7 +121,6 @@ def read_stats(path_text: str, reference_filter: str, row_from: str = "", row_to
         stats.error = "Missing columns: " + ", ".join(missing)
         return stats
 
-    ref = _clean(reference_filter).lower()
     stats.total = len(rows)
     start, end, err, which = parse_range(row_from, row_to, stats.total)
     stats.range_set = bool(_clean(row_from) or _clean(row_to))
@@ -124,23 +130,25 @@ def read_stats(path_text: str, reference_filter: str, row_from: str = "", row_to
         return stats
     stats.range_from, stats.range_to = start, end
     stats.in_range = max(0, end - start + 1)
-    seen = set()
-    for row in rows[start - 1:end]:
-        sent = is_checked(row.get("Mail Sent"))
-        if sent:
+
+    dnc = set()
+    if _clean(dnc_path):
+        try:
+            dnc = rules.load_do_not_contact(dnc_path)
+        except (OSError, UnicodeDecodeError, csv.Error) as exc:
+            stats.dnc_error = f"Do-not-contact list could not be read: {getattr(exc, 'strerror', None) or exc}"
+
+    counters = {rules.ELIGIBLE: "eligible", rules.OTHER_REFERENCE: "other_reference",
+                rules.NO_EMAIL: "missing_email", rules.DUPLICATE: "duplicates",
+                rules.INVALID: "invalid", rules.DO_NOT_CONTACT: "do_not_contact"}
+    for index, row, outcome, detail in rules.classify(rows, reference_filter, start, end, dnc):
+        if outcome == rules.OUT_OF_RANGE:
+            continue
+        if is_checked(row.get("Mail Sent")):
             stats.marked_sent += 1
-        if _clean(row.get("Reference")).lower() != ref:
-            stats.other_reference += 1
-            continue
-        if not _clean(row.get("Contact Email")):
-            stats.missing_email += 1
-            continue
-        if sent:
-            continue
-        stats.eligible += 1
-        email = _clean(row.get("Contact Email")).lower()
-        if email in seen:
-            stats.duplicates += 1
-        seen.add(email)
+        if outcome in counters:
+            setattr(stats, counters[outcome], getattr(stats, counters[outcome]) + 1)
+        if outcome == rules.INVALID:
+            stats.invalid_rows.append((index + 1, _clean(row.get("Contact Email")), detail))
     stats.ok = True
     return stats

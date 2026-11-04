@@ -468,3 +468,18 @@ def test_row_range_preview_validation_and_reset(win, dialogs, tmp_path):
     c.csv.edit.setText(str(other))
     assert c.row_from.text() == "" and c.row_to.text() == ""
     assert win.prefs.campaign()["row_from"] == ""
+
+
+def test_crash_recovery_warning_and_clear(win, dialogs):
+    win.prefs.set_recovery(email="", csv="x.csv", started="2026-11-04 10:00", mode="real sending")
+    win.prefs.set_recovery(email="stuck@example.com")
+    win._show_crash_recovery()
+    banner = win.dashboard.unconfirmed_banner
+    assert banner.isVisibleTo(win.dashboard) and "stuck@example.com" in banner.text.text()
+
+    win.start_run()                                   # dry run with the fake agent
+    assert win.prefs.recovery() is not None           # marked while running
+    assert wait_until(lambda: not win.runner.is_running(), 30)
+    QApplication.processEvents()
+    assert win.prefs.recovery() is None               # clean finish clears it
+    assert win.campaign.skip_failed.isChecked() is False

@@ -28,13 +28,20 @@ Only rows with:
 DRY_RUN is intentionally FALSE because real sending is required.
 """
 
+import atexit
 import csv
 import os
 import re
+import socket
+import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import recipient_rules as rules  # noqa: E402  (same rules as the GUI preview)
 
 
 # ============================================================
@@ -61,6 +68,18 @@ DRY_RUN = os.environ.get("CRISP_DRY_RUN", "true").lower() in {"1", "true", "yes"
 # first data row = 1), counted BEFORE any filtering. Blank = all rows.
 ROW_FROM = os.environ.get("CRISP_ROW_FROM", "").strip()
 ROW_TO = os.environ.get("CRISP_ROW_TO", "").strip()
+
+# Optional CSV of emails that must never be contacted.
+DNC_FILE = os.environ.get("CRISP_DNC_FILE", "").strip()
+
+# Default: stop at the first failure. Opt-in: skip a recipient that failed
+# BEFORE the Send click and continue (never after Send: that could resend).
+SKIP_FAILED = os.environ.get("CRISP_SKIP_FAILED", "false").lower() in {"1", "true", "yes", "on"}
+MAX_SKIPS = int(os.environ.get("CRISP_MAX_SKIPS", "5") or 5)
+MAX_FAILS_IN_ROW = int(os.environ.get("CRISP_MAX_FAILS_IN_ROW", "3") or 3)
+
+# Set right before Send is clicked for the current recipient.
+SEND_CLICKED = False
 
 PROFILE_DIR = Path(os.environ.get("CRISP_PROFILE_DIR", str(Path.home() / ".crisp_email_agent" / "browser_profile"))).expanduser().resolve()
 
@@ -188,47 +207,104 @@ def row_range(total):
     return start, end
 
 
-def get_eligible(rows):
+def load_dnc():
+    if not DNC_FILE:
+        return set()
+    try:
+        return rules.load_do_not_contact(DNC_FILE)
+    except (OSError, UnicodeDecodeError, csv.Error) as exc:
+        raise RuntimeError(f"Do-not-contact list could not be read: {DNC_FILE} ({exc})")
 
-    result = []
 
+def classify_rows(rows):
     start, end = row_range(len(rows))
+    return rules.classify(rows, REFERENCE_FILTER, start, end, load_dnc())
 
-    for index, row in enumerate(rows):
 
-        if not start <= index + 1 <= end:
-            continue
+def get_eligible(rows):
+    return [(index, row) for index, row, outcome, _ in classify_rows(rows) if outcome == rules.ELIGIBLE]
 
-        reference = clean(
-            row.get("Reference")
-        )
 
-        email = clean(
-            row.get("Contact Email")
-        )
+def print_precheck(rows):
+    """Report rows skipped before any browser work (never stops the run)."""
+    counts = {}
+    for index, row, outcome, detail in classify_rows(rows):
+        counts[outcome] = counts.get(outcome, 0) + 1
+        if outcome == rules.INVALID:
+            print(f"INVALID EMAIL row {index + 1}: {clean(row.get('Contact Email'))} ({detail}). Skipped.")
+    parts = []
+    for key, label in ((rules.DUPLICATE, "duplicates"), (rules.INVALID, "invalid emails"),
+                       (rules.DO_NOT_CONTACT, "do-not-contact")):
+        if counts.get(key):
+            parts.append(f"{counts[key]} {label}")
+    if parts:
+        print("Skipped before start: " + ", ".join(parts))
 
-        sent = row.get(
-            "Mail Sent",
-            ""
-        )
 
-        if (
-            reference.lower()
-            != REFERENCE_FILTER.lower()
-        ):
-            continue
+# ------------------------------------------------------------ CSV safety
+def lock_path():
+    return CSV_FILE.with_name(CSV_FILE.name + ".lock")
 
-        if not email:
-            continue
 
-        if is_checked(sent):
-            continue
+def _pid_alive(pid):
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
-        result.append(
-            (index, row)
-        )
 
-    return result
+def acquire_lock():
+    """One run per CSV. A lock left by a crashed run on this PC is replaced."""
+    path = lock_path()
+    me = f"pid={os.getpid()}\nhost={socket.gethostname()}\nstarted={datetime.now():%Y-%m-%d %H:%M:%S}\n"
+    for _ in range(2):
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            text = path.read_text(encoding="utf-8")
+            info = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+            pid = int(info.get("pid", "0") or 0)
+            if info.get("host") == socket.gethostname() and not _pid_alive(pid):
+                path.unlink(missing_ok=True)
+                print("Removed a stale lock left by a run that stopped unexpectedly.")
+                continue
+            raise RuntimeError(
+                f"This CSV is already in use by another run (host {info.get('host', '?')}, "
+                f"started {info.get('started', '?')}). If no other copy is running, delete {path}")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(me)
+        atexit.register(release_lock)
+        return path
+    raise RuntimeError(f"Could not create the lock file {path}")
+
+
+def release_lock():
+    try:
+        path = lock_path()
+        if path.exists() and f"pid={os.getpid()}" in path.read_text(encoding="utf-8"):
+            path.unlink()
+    except OSError:
+        pass
+
+
+def backup_csv():
+    """recipients.YYYY-MM-DD-HHMM.bak.csv next to the CSV, before a real run."""
+    target = CSV_FILE.with_name(f"{CSV_FILE.stem}.{datetime.now():%Y-%m-%d-%H%M}.bak.csv")
+    target.write_bytes(CSV_FILE.read_bytes())
+    print(f"CSV backup: {target.name}")
+    return target
 
 
 # ============================================================
@@ -1389,6 +1465,9 @@ def send_message(page):
         "  Clicking Send..."
     )
 
+    global SEND_CLICKED
+    SEND_CLICKED = True
+
     button.click(
         force=True
     )
@@ -1703,6 +1782,20 @@ def process_recipient(
     return True
 
 
+def recover_page(page):
+    """After a failure BEFORE Send: close dialogs and return to the Inbox."""
+    try:
+        for _ in range(3):
+            page.keyboard.press("Escape")
+            time.sleep(0.3)
+        page.goto(CRISP_URL, wait_until="domcontentloaded", timeout=60000)
+        wait_for_crisp(page)
+        return True
+    except Exception as exc:
+        print(f"  WARNING: recovery failed: {exc}")
+        return False
+
+
 # ============================================================
 # MAIN
 # ============================================================
@@ -1742,6 +1835,12 @@ def main():
     if ROW_FROM or ROW_TO:
         first, last = row_range(len(rows))
         print(f"Row range: {first}-{last} of {len(rows)}")
+
+    acquire_lock()
+    print_precheck(rows)
+
+    if not DRY_RUN and get_eligible(rows):
+        backup_csv()
 
     print()
 
@@ -1815,6 +1914,9 @@ def main():
 
         completed = 0
         failed = 0
+        skipped = 0
+        fails_in_row = 0
+        retry = []   # (email, name, reason) not sent this run
 
         for position, (
             row_index,
@@ -1846,6 +1948,9 @@ def main():
             )
 
             print("=" * 60)
+
+            global SEND_CLICKED
+            SEND_CLICKED = False
 
             try:
 
@@ -1937,6 +2042,7 @@ def main():
                         )
 
                 completed += 1
+                fails_in_row = 0
 
                 print(
                     "  SUCCESS."
@@ -1953,11 +2059,33 @@ def main():
 
             except Exception as e:
 
+                reason = f"{type(e).__name__}: {e}"
+                fails_in_row += 1
+
+                if (
+                    SKIP_FAILED
+                    and not SEND_CLICKED
+                    and skipped < MAX_SKIPS
+                    and fails_in_row < MAX_FAILS_IN_ROW
+                ):
+                    skipped += 1
+                    retry.append((email, name, reason))
+                    print(f"  SKIPPED: {reason}")
+                    print("  Failed before Send, so nothing was sent. Continuing with the next recipient.")
+                    if not recover_page(page):
+                        print("  Could not get Crisp back to the Inbox. Stopping.")
+                        break
+                    continue
+
                 failed += 1
+                retry.append((email, name, reason))
+
+                if SKIP_FAILED and fails_in_row >= MAX_FAILS_IN_ROW:
+                    print(f"  {fails_in_row} failures in a row: auto-stop.")
 
                 print(
                     f"  FAILED: "
-                    f"{type(e).__name__}: {e}"
+                    f"{reason}"
                 )
 
                 print(
@@ -1989,6 +2117,14 @@ def main():
         print(
             f"Failed:    {failed}"
         )
+
+        if skipped:
+            print(f"Skipped:   {skipped}")
+
+        if retry:
+            print("Retry list (not sent in this run):")
+            for r_email, r_name, r_reason in retry:
+                print(f"RETRY: {r_email} | {r_name} | {r_reason}")
 
         print(
             f"CSV:       {CSV_FILE}"

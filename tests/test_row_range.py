@@ -57,8 +57,8 @@ def test_preview_counts_only_rows_in_range(tmp_path):
 
     whole = read_stats(str(p), "R")
     # a@x.com (row 1) and "A@X.com " (row 3) are the same email
-    assert (whole.total, whole.eligible, whole.duplicates) == (7, 4, 1)
-    assert "1 duplicate" in whole.preview() and not whole.preview().startswith("Rows")
+    assert (whole.total, whole.eligible, whole.duplicates) == (7, 3, 1)  # duplicate skipped (Phase 3)
+    assert "1 duplicate skipped" in whole.preview() and not whole.preview().startswith("Rows")
 
 
 def test_invalid_range_is_reported_not_crashed(tmp_path):

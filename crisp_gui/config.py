@@ -35,6 +35,9 @@ CAMPAIGN_DEFAULTS = {
     "shortcut": "recommend-offer",
     "row_from": "",  # blank = from the first row
     "row_to": "",    # blank = to the last row
+    "dnc": "",                 # optional do-not-contact CSV
+    "max_skips": "5",          # used only when "skip and continue" is on
+    "max_fails_in_row": "3",   # auto-stop after this many failures in a row
 }
 
 THEMES = ("light", "dark", "system")
@@ -66,6 +69,23 @@ class Preferences:
         for key in CAMPAIGN_DEFAULTS:
             self._s.remove(f"campaign/{key}")
         return dict(CAMPAIGN_DEFAULTS)
+
+    # crash recovery --------------------------------------------------------
+    def recovery(self) -> dict | None:
+        """Set while a run is active; still set at startup = the app did not exit cleanly."""
+        if str(self._s.value("recovery/active", "0")) != "1":
+            return None
+        return {k: str(self._s.value(f"recovery/{k}", "")) for k in ("email", "csv", "started", "mode")}
+
+    def set_recovery(self, **values) -> None:
+        self._s.setValue("recovery/active", "1")
+        for key, value in values.items():
+            self._s.setValue(f"recovery/{key}", value)
+        self._s.sync()
+
+    def clear_recovery(self) -> None:
+        self._s.remove("recovery")
+        self._s.sync()
 
     # theme ---------------------------------------------------------------
     def theme(self) -> str:

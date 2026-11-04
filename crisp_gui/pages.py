@@ -176,6 +176,44 @@ class CampaignPage(Page):
         card.body.addWidget(grid)
         self.add(card)
 
+        # safety ---------------------------------------------------------------
+        card = Card("Safety", "Duplicate emails, invalid addresses and do-not-contact emails are always skipped "
+                    "before the run starts.")
+        self.dnc = Field("Do-not-contact list (optional)",
+                         "A CSV with emails that must never be contacted. Any cell containing @ counts.",
+                         placeholder="No list")
+        self.dnc.edit.setMinimumWidth(120)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(self.dnc, 1)
+        holder_btn = QVBoxLayout()
+        holder_btn.addSpacing(self.dnc.title.sizeHint().height() + 6)
+        self.dnc_browse = button("Browse…", None, "folder", tm, "text_muted")
+        holder_btn.addWidget(self.dnc_browse)
+        holder_btn.addStretch()
+        row.addLayout(holder_btn)
+        card.body.addLayout(row)
+        line = QHBoxLayout()
+        line.setSpacing(16)
+        texts = QVBoxLayout()
+        texts.setSpacing(3)
+        texts.addWidget(label("Skip failed recipients and continue", "fieldLabel"))
+        texts.addWidget(label(
+            "Off (default): the run stops at the first failure. On: a recipient that fails BEFORE Send is skipped "
+            "and listed for retry. A failure at or after Send always stops the run.", "fieldHelp", wrap=True))
+        line.addLayout(texts, 1)
+        self.skip_failed = ToggleSwitch(tm)
+        line.addWidget(self.skip_failed, 0, Qt.AlignVCenter)
+        card.body.addLayout(line)
+        limits = ResponsiveRow(min_item_width=200, spacing=16)
+        self.max_skips = Field("Max skipped per run", "Stop after this many skips.")
+        self.max_fails_in_row = Field("Stop after failures in a row", "Auto-stop when this many fail back to back.")
+        for f in (self.max_skips, self.max_fails_in_row):
+            f.edit.setValidator(QIntValidator(1, 1000, f.edit))
+            limits.add(f)
+        card.body.addWidget(limits)
+        self.add(card)
+
         # mode -----------------------------------------------------------------
         card = Card("Sending mode")
         line = QHBoxLayout()
@@ -210,7 +248,8 @@ class CampaignPage(Page):
     def fields(self):
         return {"csv": self.csv, "subject": self.subject, "shortcut": self.shortcut,
                 "reference": self.reference, "segment": self.segment,
-                "row_from": self.row_from, "row_to": self.row_to}
+                "row_from": self.row_from, "row_to": self.row_to, "dnc": self.dnc,
+                "max_skips": self.max_skips, "max_fails_in_row": self.max_fails_in_row}
 
 
 # =====================================================================
@@ -221,6 +260,8 @@ class ActivityPage(Page):
         self.error_banner.hide()
         self.unconfirmed_banner = self.add(Banner(tm, "warning"))
         self.unconfirmed_banner.hide()
+        self.retry_banner = self.add(Banner(tm, "warning"))
+        self.retry_banner.hide()
 
         card = Card("Progress")
         self.stop = button("Stop", "dangerOutline", "stop", tm)

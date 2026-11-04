@@ -64,6 +64,10 @@ class AgentRunner(QObject):
             "CRISP_SHORTCUT": settings["shortcut"],
             "CRISP_ROW_FROM": settings.get("row_from", ""),
             "CRISP_ROW_TO": settings.get("row_to", ""),
+            "CRISP_DNC_FILE": settings.get("dnc", ""),
+            "CRISP_SKIP_FAILED": settings.get("skip_failed", "false"),
+            "CRISP_MAX_SKIPS": settings.get("max_skips", "") or "5",
+            "CRISP_MAX_FAILS_IN_ROW": settings.get("max_fails_in_row", "") or "3",
             # The ONLY switch that controls real sending in the agent.
             "CRISP_DRY_RUN": "true" if dry_run else "false",
             "CRISP_PROFILE_DIR": str(profile_dir),
