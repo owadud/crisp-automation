@@ -83,7 +83,7 @@ def win(app, tmp_path, dialogs, env):
     tm = ThemeManager(app, "light")
     csv_path = make_csv(tmp_path / "recipients.csv")
     prefs.set_campaign_value("csv", str(csv_path))
-    w = MainWindow(tm, prefs, agent_script=FAKE, profile_dir=tmp_path / "profile")
+    w = MainWindow(tm, prefs, agent_script=FAKE, profile_dir=tmp_path / "profile", data_dir=tmp_path / "data")
     w.resize(1240, 820)
     w.show()
     QTest.qWaitForWindowExposed(w)
@@ -115,7 +115,7 @@ def run_to_end(w, timeout=20):
 
 # ================================================================ navigation
 def test_every_nav_item_works(win):
-    titles = ["Dashboard", "Campaign Setup", "Activity Logs", "Settings"]
+    titles = ["Dashboard", "Campaign Setup", "Activity Logs", "Settings", "History"]
     for i, b in enumerate(win.nav_buttons):
         QTest.mouseClick(b, Qt.LeftButton)
         assert win.stack.currentIndex() == i
@@ -199,7 +199,7 @@ def test_dry_run_defaults_on_every_launch(win, app, tmp_path):
     win.campaign.dry.setChecked(False)
     win.close()
     prefs = Preferences(QSettings(str(tmp_path / "prefs.ini"), QSettings.IniFormat))
-    w2 = MainWindow(win.tm, prefs, agent_script=FAKE)
+    w2 = MainWindow(win.tm, prefs, agent_script=FAKE, data_dir=tmp_path / "data")
     assert w2.campaign.dry.isChecked()
     w2.close()
 
@@ -483,3 +483,48 @@ def test_crash_recovery_warning_and_clear(win, dialogs):
     QApplication.processEvents()
     assert win.prefs.recovery() is None               # clean finish clears it
     assert win.campaign.skip_failed.isChecked() is False
+
+
+def test_sending_control_validation_and_run_folder(win, dialogs, tmp_path):
+    c = win.campaign
+    c.send_window.edit.setText("10-18")
+    win.refresh_csv()
+    assert "HH:MM" in c.send_window.message.text()
+    win.start_run()
+    assert not win.runner.is_running() and dialogs["seen"][-1] == "Check the campaign settings"
+    c.send_window.edit.setText("")
+    c.start_at.edit.setText("07:30")
+    win.refresh_csv()
+    assert c.start_at.message.text().startswith("Starts ")
+    c.start_at.edit.setText("")
+    win.refresh_csv()
+
+    win.start_run()                                    # dry run, fake agent
+    assert wait_until(lambda: not win.runner.is_running(), 30)
+    QApplication.processEvents()
+    run = win.run_dir
+    assert run and (run / "settings.json").exists() and (run / "run.log").exists()
+    assert (run / "summary.json").exists()
+    assert "Eligible recipients" in (run / "run.log").read_text(encoding="utf-8")
+    win.navigate(4)
+    assert win.history.table.rowCount() == 1
+    assert win.history.table.item(0, 1).text() == "Dry run"
+
+
+def test_retry_button_and_diagnostics(win, dialogs, tmp_path):
+    path = win._csv
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+    rows[0]["Status"] = "Failed"
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(rows)
+    win.refresh_csv()
+    assert win.campaign.retry_failed.isEnabled()
+    assert win.campaign.retry_failed.text() == "Retry failed only (1)"
+
+    win.navigate(4)
+    QTest.mouseClick(win.history.copy_diag, Qt.LeftButton)
+    zips = list((tmp_path / "data" / "diagnostics").glob("diagnostics-*.zip"))
+    assert len(zips) == 1 and str(zips[0]) == QGuiApplication.clipboard().text()

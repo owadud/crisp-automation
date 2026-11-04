@@ -115,6 +115,30 @@ If winget is unavailable, install Python 3.12+ from https://www.python.org/downl
 - Not done yet: checking Crisp for an existing conversation before creating one. It
   needs a live Crisp page sample to build safely.
 
+## Sending control and records (3.3)
+
+Campaign Setup > **Sending control** (all times are Dhaka time, UTC+6):
+
+- **Delay between emails** (default 3 s) or a **random 20–60 s** delay.
+- **Max emails per run** and a **daily cap** (real sends per Dhaka day, counted from `history.csv`).
+- **Send window**, e.g. `10:00-18:00`: waits if it is too early, stops cleanly when the window ends.
+- **Start at**, e.g. `10:00`: the run waits, then opens Crisp at that time. Only works if
+  this computer is on and awake and the Crisp login is still valid.
+- **Retry failed only**: re-runs rows whose Status is Failed or Skipped. Unconfirmed rows
+  are never retried automatically (that email may already have gone out).
+
+Records:
+
+- Real runs add CSV columns **Sent At, Status** (Sent/Failed/Skipped/Invalid/Unconfirmed),
+  **Error** and **Conversation link**.
+- `history.csv` gets one line per recipient (time, email, result, subject, dry/live). The
+  Dashboard shows real sends in the last 7 days.
+- One folder per run in `runs/`: `run.log`, `settings.json`, `recipients_before.csv`,
+  `recipients_after.csv`, `report.csv`, `summary.json` and failure screenshots. Runs older
+  than 30 days are deleted automatically.
+- **History** page: list of runs, Open folder, Export report, and **Copy diagnostics** (a zip
+  with the log masked, versions, settings and a self-test; never the Crisp login or CSVs).
+
 ## Shortcut behavior
 
 The automation clicks the visible **Shortcuts** tab in Crisp. It deliberately does not use Ctrl+K because that opens Crisp's global command palette in the current interface. If the Shortcuts tab cannot be found, the run stops with a clear error rather than opening the wrong panel.

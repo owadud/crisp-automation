@@ -6,8 +6,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QPlainTextEdit, QProgressBar, QScrollArea,
-    QSizePolicy, QVBoxLayout, QWidget,
+    QAbstractItemView, QFrame, QHBoxLayout, QHeaderView, QPlainTextEdit, QProgressBar, QScrollArea,
+    QSizePolicy, QTableWidget, QVBoxLayout, QWidget,
 )
 
 from .config import APP_VERSION
@@ -156,6 +156,12 @@ class CampaignPage(Page):
         card.body.addWidget(rng)
         card.body.addWidget(label("Row 1 is the first row under the header, counted before any filtering, "
                                   "so the numbers match the CSV file.", "fieldHelp", wrap=True))
+        retry_row = QHBoxLayout()
+        self.retry_failed = button("Retry failed only", None, "refresh", tm, "text_muted")
+        self.retry_failed.setToolTip("Only rows whose Status is Failed or Skipped. Unconfirmed rows are never retried.")
+        retry_row.addWidget(self.retry_failed)
+        retry_row.addStretch()
+        card.body.addLayout(retry_row)
         self.add(card)
 
         # message ------------------------------------------------------------
@@ -214,6 +220,34 @@ class CampaignPage(Page):
         card.body.addWidget(limits)
         self.add(card)
 
+        # sending control ------------------------------------------------------
+        card = Card("Sending control", "Times are Dhaka time. Scheduled start and the send window only work while "
+                    "this computer is on and the Crisp login is still valid.")
+        grid = ResponsiveRow(min_item_width=200, spacing=16)
+        self.delay = Field("Delay between emails (s)", "Default 3.")
+        self.max_per_run = Field("Max emails per run", "Blank = no limit.", placeholder="No limit")
+        self.daily_cap = Field("Daily cap (real sends)", "Counts today's sends in history.", placeholder="No limit")
+        self.send_window = Field("Send window", "e.g. 10:00-18:00. Blank = any time.", placeholder="Any time")
+        self.start_at = Field("Start at", "e.g. 10:00. Blank = start now.", placeholder="Now")
+        self.delay.edit.setValidator(QIntValidator(0, 3600, self.delay.edit))
+        for f in (self.max_per_run, self.daily_cap):
+            f.edit.setValidator(QIntValidator(1, 100000, f.edit))
+        for f in (self.delay, self.max_per_run, self.daily_cap, self.send_window, self.start_at):
+            grid.add(f)
+        card.body.addWidget(grid)
+        line = QHBoxLayout()
+        line.setSpacing(16)
+        texts = QVBoxLayout()
+        texts.setSpacing(3)
+        texts.addWidget(label("Random delay 20–60 s", "fieldLabel"))
+        texts.addWidget(label("Waits a random 20 to 60 seconds between emails instead of the fixed delay.",
+                              "fieldHelp", wrap=True))
+        line.addLayout(texts, 1)
+        self.random_delay = ToggleSwitch(tm)
+        line.addWidget(self.random_delay, 0, Qt.AlignVCenter)
+        card.body.addLayout(line)
+        self.add(card)
+
         # mode -----------------------------------------------------------------
         card = Card("Sending mode")
         line = QHBoxLayout()
@@ -249,7 +283,9 @@ class CampaignPage(Page):
         return {"csv": self.csv, "subject": self.subject, "shortcut": self.shortcut,
                 "reference": self.reference, "segment": self.segment,
                 "row_from": self.row_from, "row_to": self.row_to, "dnc": self.dnc,
-                "max_skips": self.max_skips, "max_fails_in_row": self.max_fails_in_row}
+                "max_skips": self.max_skips, "max_fails_in_row": self.max_fails_in_row,
+                "delay": self.delay, "max_per_run": self.max_per_run, "daily_cap": self.daily_cap,
+                "send_window": self.send_window, "start_at": self.start_at}
 
 
 # =====================================================================
@@ -378,4 +414,54 @@ class SettingsPage(Page):
         self.finish()
 
 
-__all__ = ["DashboardPage", "CampaignPage", "ActivityPage", "SettingsPage"]
+# =====================================================================
+class HistoryPage(Page):
+    COLUMNS = ("Started", "Mode", "Result", "Sent", "Failed", "Skipped")
+
+    def __init__(self, tm: ThemeManager):
+        super().__init__()
+        card = Card("Runs", "One folder per run: run.log, the CSV before and after, settings, report.csv and "
+                    "failure screenshots. Runs older than 30 days are deleted automatically.")
+        self.refresh = button("", None, "refresh", tm, "text_muted")
+        self.refresh.setToolTip("Reload")
+        self.refresh.setFixedWidth(36)
+        card.head_actions.addWidget(self.refresh)
+        self.sent7 = label("", "muted", wrap=True)
+        card.body.addWidget(self.sent7)
+        self.table = QTableWidget(0, len(self.COLUMNS))
+        self.table.setHorizontalHeaderLabels(self.COLUMNS)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setMinimumHeight(280)
+        card.body.addWidget(self.table)
+        self.empty = label("No runs yet. Each run you start gets its own folder here.", "faint", wrap=True)
+        card.body.addWidget(self.empty)
+        btns = QHBoxLayout()
+        self.open_run = button("Open folder", None, "folder", tm, "text_muted")
+        self.export_report = button("Export report…", None, "save", tm, "text_muted")
+        self.open_runs = button("All runs", "ghost", "folder", tm, "text_muted")
+        card.head_actions.insertWidget(0, self.open_runs)
+        for b in (self.open_run, self.export_report):
+            btns.addWidget(b)
+        btns.addStretch()
+        card.body.addLayout(btns)
+        self.add(card)
+
+        card = Card("Diagnostics", "One zip for asking for help: the log with emails masked, versions, settings "
+                    "and a self-test. It never includes your Crisp login, CSV files or screenshots.")
+        h = QHBoxLayout()
+        self.copy_diag = button("Copy diagnostics", None, "copy", tm, "text_muted")
+        h.addWidget(self.copy_diag)
+        h.addStretch()
+        card.body.addLayout(h)
+        self.diag_status = label("", "faint", wrap=True)
+        self.diag_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        card.body.addWidget(self.diag_status)
+        self.add(card)
+        self.finish()
+
+
+__all__ = ["DashboardPage", "CampaignPage", "ActivityPage", "SettingsPage", "HistoryPage"]

@@ -214,6 +214,15 @@ class RunParser:
             s.retry.append(tuple(parts + [""] * (3 - len(parts))))
             return
 
+        if line.startswith(("Scheduled start:", "Outside send window", "Daily cap reached", "Limit:")):
+            s.step = line.rstrip(".")
+            return
+
+        if line.startswith("Send window") and "has ended" in line:
+            s.stop_requested = True
+            s.step = "Send window ended"
+            return
+
         if line.startswith("Skipped before start:"):
             s.precheck = line
             return

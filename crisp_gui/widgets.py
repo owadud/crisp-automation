@@ -352,7 +352,9 @@ class ResponsiveRow(QWidget):
 
     def columns_for(self, width: int) -> int:
         n = len(self.items) or 1
-        cols = max(1, min(n, (width + self.grid.spacing()) // (self.min_item_width + self.grid.spacing())))
+        # Never fit more columns than the widest child allows (long labels).
+        item_w = max([self.min_item_width] + [w.minimumSizeHint().width() for w in self.items])
+        cols = max(1, min(n, (width + self.grid.spacing()) // (item_w + self.grid.spacing())))
         if n == 4 and cols == 3:
             cols = 2  # 2x2 looks better than 3+1
         return cols

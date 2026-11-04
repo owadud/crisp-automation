@@ -42,6 +42,7 @@ from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import recipient_rules as rules  # noqa: E402  (same rules as the GUI preview)
+import send_control as sc  # noqa: E402  (limits, Dhaka time, history, run folders)
 
 
 # ============================================================
@@ -94,6 +95,22 @@ SHORTCUT_WAIT = 1.5
 SEND_WAIT = 4
 
 BETWEEN_EMAILS = 3
+
+# Sending control (all optional; blank = off).
+DELAY_ENV = os.environ.get("CRISP_DELAY", "").strip()           # seconds between emails
+RANDOM_DELAY = os.environ.get("CRISP_RANDOM_DELAY", "false").lower() in {"1", "true", "yes", "on"}
+MAX_PER_RUN = os.environ.get("CRISP_MAX_PER_RUN", "").strip()
+DAILY_CAP = os.environ.get("CRISP_DAILY_CAP", "").strip()       # real sends per Dhaka day
+SEND_WINDOW = os.environ.get("CRISP_SEND_WINDOW", "").strip()   # "10:00-18:00", Dhaka time
+START_AT = os.environ.get("CRISP_START_AT", "").strip()         # "10:00", Dhaka time
+RETRY_ONLY = os.environ.get("CRISP_RETRY_ONLY", "false").lower() in {"1", "true", "yes", "on"}
+
+# Records.
+RUN_DIR = Path(os.environ["CRISP_RUN_DIR"]) if os.environ.get("CRISP_RUN_DIR", "").strip() else None
+HISTORY_FILE = Path(os.environ.get("CRISP_HISTORY_FILE", "").strip() or str(BASE_DIR / "history.csv"))
+DEBUG_DIR = RUN_DIR or BASE_DIR
+EXTRA_COLUMNS = ["Sent At", "Status", "Error", "Conversation link"]
+REPORT = []   # one dict per processed recipient, written to RUN_DIR/report.csv
 
 # The desktop GUI creates this file to ask for a graceful stop. The agent
 # only checks it BETWEEN recipients, so a send is never interrupted halfway.
@@ -218,7 +235,7 @@ def load_dnc():
 
 def classify_rows(rows):
     start, end = row_range(len(rows))
-    return rules.classify(rows, REFERENCE_FILTER, start, end, load_dnc())
+    return rules.classify(rows, REFERENCE_FILTER, start, end, load_dnc(), retry_only=RETRY_ONLY)
 
 
 def get_eligible(rows):
@@ -297,6 +314,103 @@ def release_lock():
             path.unlink()
     except OSError:
         pass
+
+
+def ensure_columns(fieldnames):
+    for column in EXTRA_COLUMNS:
+        if column not in fieldnames:
+            fieldnames.append(column)
+
+
+def mark_precheck(rows, fieldnames):
+    """Live runs: write Status/Error for rows skipped before the run."""
+    changed = False
+    labels = {rules.INVALID: sc.INVALID, rules.DUPLICATE: sc.SKIPPED, rules.DO_NOT_CONTACT: sc.SKIPPED}
+    reasons = {rules.DUPLICATE: "duplicate email", rules.DO_NOT_CONTACT: "do-not-contact list"}
+    for index, row, outcome, detail in classify_rows(rows):
+        if outcome in labels:
+            status, error = labels[outcome], detail or reasons.get(outcome, "")
+            if row.get("Status") != status or row.get("Error") != error:
+                row["Status"], row["Error"] = status, error
+                changed = True
+    if changed:
+        save_csv(rows, fieldnames)
+
+
+def record(rows, fieldnames, row_index, status, error=""):
+    """Live runs only: Status/Error columns for a recipient that was not sent."""
+    if DRY_RUN:
+        return
+    rows[row_index]["Status"] = status
+    rows[row_index]["Error"] = str(error)[:300]
+    save_csv(rows, fieldnames)
+
+
+def log_result(row_index, row, result, error="", link=""):
+    entry = {"Row": row_index + 1, "Email": clean(row.get("Contact Email")), "Name": clean(row.get("Full Name")),
+             "Result": result, "Error": str(error)[:300], "Time": sc.stamp(), "Conversation link": link}
+    REPORT.append(entry)
+    try:
+        sc.append_history(HISTORY_FILE, Email=entry["Email"], Name=entry["Name"], Result=result,
+                          Subject=SUBJECT, Mode="dry" if DRY_RUN else "live", Error=entry["Error"],
+                          Row=entry["Row"], CSV=CSV_FILE.name)
+    except OSError as exc:
+        print(f"  WARNING: could not write history: {exc}")
+
+
+def failure_screenshot(page, position, email):
+    if not RUN_DIR:
+        return
+    try:
+        safe = re.sub(r"[^A-Za-z0-9]+", "_", email)[:40]
+        path = RUN_DIR / f"failure_{position:03d}_{safe}.png"
+        page.screenshot(path=str(path))
+        print(f"  Screenshot saved: {path.name}")
+    except Exception:
+        pass
+
+
+def write_run_files():
+    if not RUN_DIR:
+        return
+    try:
+        RUN_DIR.mkdir(parents=True, exist_ok=True)
+        (RUN_DIR / "recipients_after.csv").write_bytes(CSV_FILE.read_bytes())
+        with (RUN_DIR / "report.csv").open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["Row", "Email", "Name", "Result", "Error", "Time",
+                                                        "Conversation link"])
+            writer.writeheader()
+            writer.writerows(REPORT)
+        print(f"Report:    {RUN_DIR / 'report.csv'}")
+    except OSError as exc:
+        print(f"WARNING: could not write the run report: {exc}")
+
+
+def between_delay():
+    if RANDOM_DELAY:
+        return sc.random_delay()
+    return float(DELAY_ENV) if DELAY_ENV else BETWEEN_EMAILS
+
+
+def apply_limits(eligible):
+    """Max per run and the daily cap (real sends per Dhaka day, from history.csv)."""
+    limit, notes = None, []
+    per_run = sc.optional_int(MAX_PER_RUN, "Max emails per run")
+    if per_run:
+        limit = per_run
+        notes.append(f"max {per_run} per run")
+    cap = sc.optional_int(DAILY_CAP, "Daily cap")
+    if cap and not DRY_RUN:
+        done = sc.sent_today(HISTORY_FILE)
+        left = max(0, cap - done)
+        notes.append(f"daily cap {cap}, {done} sent today")
+        limit = left if limit is None else min(limit, left)
+        if left == 0:
+            print(f"Daily cap reached: {done} of {cap} sent today (Dhaka time). Nothing more is sent today.")
+    if limit is not None and len(eligible) > limit:
+        print(f"Limit: sending {limit} of {len(eligible)} eligible ({'; '.join(notes)}).")
+        eligible = eligible[:limit]
+    return eligible
 
 
 def backup_csv():
@@ -615,7 +729,7 @@ def _subject_is_full(field):
 
 def _debug_subject(page, tag):
     try:
-        shot = BASE_DIR / f"debug_{tag}.png"
+        shot = DEBUG_DIR / f"debug_{tag}.png"
         page.screenshot(path=str(shot))
         print(f"  Debug screenshot saved: {shot}", flush=True)
     except Exception as exc:
@@ -628,7 +742,7 @@ def _debug_subject(page, tag):
                 return root ? root.outerHTML.slice(0, 6000) : 'NO MENU ELEMENT FOUND';
             }"""
         )
-        out = BASE_DIR / f"debug_{tag}.html"
+        out = DEBUG_DIR / f"debug_{tag}.html"
         out.write_text(html, encoding="utf-8")
         print(f"  Debug menu HTML saved: {out}", flush=True)
     except Exception as exc:
@@ -951,7 +1065,7 @@ def composer_is_empty(page):
 def _debug_dump(page, tag):
     """Save a screenshot and print Shortcut-related elements to help debugging."""
     try:
-        shot = BASE_DIR / f"debug_{tag}.png"
+        shot = DEBUG_DIR / f"debug_{tag}.png"
         page.screenshot(path=str(shot))
         print(f"  Debug screenshot saved: {shot}", flush=True)
     except Exception as exc:
@@ -1501,7 +1615,7 @@ def send_message(page):
     # Not confirmed: collect evidence, but do NOT retry automatically
     # (a retry could send a duplicate email).
     try:
-        shot = BASE_DIR / "debug_send_unconfirmed.png"
+        shot = DEBUG_DIR / "debug_send_unconfirmed.png"
         page.screenshot(path=str(shot))
         print(f"  Debug screenshot saved: {shot}", flush=True)
     except Exception:
@@ -1801,6 +1915,14 @@ def recover_page(page):
 # ============================================================
 
 def main():
+    """Run once; the CSV lock is always released when the run ends."""
+    try:
+        _main()
+    finally:
+        release_lock()
+
+
+def _main():
 
     print("=" * 60)
     print("Crisp Email Agent")
@@ -1836,17 +1958,30 @@ def main():
         first, last = row_range(len(rows))
         print(f"Row range: {first}-{last} of {len(rows)}")
 
+    window = sc.parse_window(SEND_WINDOW)
+    if START_AT:
+        sc.parse_hhmm(START_AT)
+
     acquire_lock()
     print_precheck(rows)
+    if RETRY_ONLY:
+        print("Retry failed only: rows whose Status is Failed or Skipped.")
 
-    if not DRY_RUN and get_eligible(rows):
-        backup_csv()
+    if RUN_DIR:
+        RUN_DIR.mkdir(parents=True, exist_ok=True)
+        (RUN_DIR / "recipients_before.csv").write_bytes(CSV_FILE.read_bytes())
+
+    if not DRY_RUN:
+        ensure_columns(fieldnames)
+        if get_eligible(rows):
+            backup_csv()
+        mark_precheck(rows, fieldnames)
 
     print()
 
-    eligible = get_eligible(
+    eligible = apply_limits(get_eligible(
         rows
-    )
+    ))
 
     print(
         f"Eligible recipients: "
@@ -1862,6 +1997,15 @@ def main():
         )
 
         return
+
+    if START_AT:
+        target = sc.next_occurrence(START_AT)
+        print(f"Scheduled start: waiting until {target:%Y-%m-%d %H:%M} Dhaka time. "
+              "Keep this computer on and awake.")
+        if not sc.sleep_until(target, stop_requested):
+            print("Stop requested. Stopping before the next recipient.")
+            return
+        print("Scheduled time reached.")
 
     print("Launching Chromium. Complete your Crisp login when the browser opens.")
 
@@ -1939,6 +2083,18 @@ def main():
                 print("Stop requested. Stopping before the next recipient.")
                 break
 
+            if window and not sc.in_window(sc.now_dhaka(), window):
+                opens = sc.window_opens_later_today(sc.now_dhaka(), window)
+                if opens is None:
+                    print()
+                    print(f"Send window {SEND_WINDOW} (Dhaka) has ended. Stopping; "
+                          "the remaining recipients were not sent.")
+                    break
+                print(f"Outside send window {SEND_WINDOW} (Dhaka). Waiting until {opens:%H:%M}...")
+                if not sc.sleep_until(opens, stop_requested):
+                    print("Stop requested. Stopping before the next recipient.")
+                    break
+
             print()
             print("=" * 60)
 
@@ -1966,6 +2122,10 @@ def main():
                 if not sent:
 
                     failed += 1
+                    result = sc.UNCONFIRMED if SEND_CLICKED else sc.FAILED
+                    record(rows, fieldnames, row_index, result, "Email was not sent.")
+                    log_result(row_index, row, result, "Email was not sent.")
+                    retry.append((email, name, "Email was not sent."))
 
                     print(
                         "  Email was not sent."
@@ -1981,11 +2141,18 @@ def main():
                 # MAIL SENT CSV UPDATE
                 # ------------------------------------------------
 
+                url = str(getattr(page, "url", "") or "")
+                link = url if "session_" in url else ""
+
                 if not DRY_RUN:
 
                     rows[row_index][
                         "Mail Sent"
                     ] = "TRUE"
+                    rows[row_index]["Sent At"] = sc.stamp()
+                    rows[row_index]["Status"] = sc.SENT
+                    rows[row_index]["Error"] = ""
+                    rows[row_index]["Conversation link"] = link
 
                     save_csv(
                         rows,
@@ -2043,6 +2210,7 @@ def main():
 
                 completed += 1
                 fails_in_row = 0
+                log_result(row_index, row, sc.DRY_RUN if DRY_RUN else sc.SENT, link=link)
 
                 print(
                     "  SUCCESS."
@@ -2071,6 +2239,9 @@ def main():
                     skipped += 1
                     retry.append((email, name, reason))
                     print(f"  SKIPPED: {reason}")
+                    failure_screenshot(page, position, email)
+                    record(rows, fieldnames, row_index, sc.SKIPPED, reason)
+                    log_result(row_index, row, sc.SKIPPED, reason)
                     print("  Failed before Send, so nothing was sent. Continuing with the next recipient.")
                     if not recover_page(page):
                         print("  Could not get Crisp back to the Inbox. Stopping.")
@@ -2079,6 +2250,10 @@ def main():
 
                 failed += 1
                 retry.append((email, name, reason))
+                result = sc.UNCONFIRMED if (SEND_CLICKED or "MAY already have been sent" in reason) else sc.FAILED
+                failure_screenshot(page, position, email)
+                record(rows, fieldnames, row_index, result, reason)
+                log_result(row_index, row, result, reason)
 
                 if SKIP_FAILED and fails_in_row >= MAX_FAILS_IN_ROW:
                     print(f"  {fails_in_row} failures in a row: auto-stop.")
@@ -2103,9 +2278,10 @@ def main():
                 eligible
             ):
 
-                time.sleep(
-                    BETWEEN_EMAILS
-                )
+                wait = between_delay()
+                if wait >= 10:
+                    print(f"  Waiting {wait:.0f} s before the next email...")
+                sc.sleep_seconds(wait, stop_requested)
 
         print()
         print("=" * 60)
@@ -2129,6 +2305,8 @@ def main():
         print(
             f"CSV:       {CSV_FILE}"
         )
+
+        write_run_files()
 
         print("=" * 60)
 

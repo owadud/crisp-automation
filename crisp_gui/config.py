@@ -38,6 +38,11 @@ CAMPAIGN_DEFAULTS = {
     "dnc": "",                 # optional do-not-contact CSV
     "max_skips": "5",          # used only when "skip and continue" is on
     "max_fails_in_row": "3",   # auto-stop after this many failures in a row
+    "delay": "3",              # seconds between emails
+    "max_per_run": "",         # blank = no limit
+    "daily_cap": "",           # real sends per Dhaka day, blank = no limit
+    "send_window": "",         # "10:00-18:00" Dhaka time, blank = any time
+    "start_at": "",            # "10:00" Dhaka time, blank = start now
 }
 
 THEMES = ("light", "dark", "system")
@@ -69,6 +74,13 @@ class Preferences:
         for key in CAMPAIGN_DEFAULTS:
             self._s.remove(f"campaign/{key}")
         return dict(CAMPAIGN_DEFAULTS)
+
+    # sending control -------------------------------------------------------
+    def random_delay(self) -> bool:
+        return str(self._s.value("control/random_delay", "false")) == "true"
+
+    def set_random_delay(self, value: bool) -> None:
+        self._s.setValue("control/random_delay", "true" if value else "false")
 
     # crash recovery --------------------------------------------------------
     def recovery(self) -> dict | None:

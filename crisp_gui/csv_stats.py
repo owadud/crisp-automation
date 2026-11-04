@@ -41,6 +41,7 @@ class CsvStats:
     range_error: str = ""
     range_error_field: str = ""   # "from" or "to"
     dnc_error: str = ""
+    retry_candidates: int = 0   # rows "Retry failed only" would send
 
     def preview(self) -> str:
         """One line for the UI, e.g. 'Rows 200-300: 101 rows, 85 eligible, 3 duplicates, 4 already sent'."""
@@ -150,5 +151,8 @@ def read_stats(path_text: str, reference_filter: str, row_from: str = "", row_to
             setattr(stats, counters[outcome], getattr(stats, counters[outcome]) + 1)
         if outcome == rules.INVALID:
             stats.invalid_rows.append((index + 1, _clean(row.get("Contact Email")), detail))
+    stats.retry_candidates = sum(1 for _i, _r, outcome, _d in
+                                 rules.classify(rows, reference_filter, start, end, dnc, retry_only=True)
+                                 if outcome == rules.ELIGIBLE)
     stats.ok = True
     return stats

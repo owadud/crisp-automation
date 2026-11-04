@@ -65,7 +65,10 @@ def load_agent(tmp_path, monkeypatch):
         csv_path = write_csv(tmp_path / "agent.csv", rows)
         base = {"CRISP_CSV_FILE": str(csv_path), "CRISP_REFERENCE_FILTER": "R", "CRISP_GUI_MODE": "1",
                 "CRISP_DRY_RUN": "true", "CRISP_ROW_FROM": "", "CRISP_ROW_TO": "", "CRISP_DNC_FILE": "",
-                "CRISP_SKIP_FAILED": "false", "CRISP_MAX_SKIPS": "5", "CRISP_MAX_FAILS_IN_ROW": "3"}
+                "CRISP_SKIP_FAILED": "false", "CRISP_MAX_SKIPS": "5", "CRISP_MAX_FAILS_IN_ROW": "3",
+                "CRISP_HISTORY_FILE": str(tmp_path / "history.csv"), "CRISP_RUN_DIR": "",
+                "CRISP_DELAY": "", "CRISP_RANDOM_DELAY": "false", "CRISP_MAX_PER_RUN": "",
+                "CRISP_DAILY_CAP": "", "CRISP_SEND_WINDOW": "", "CRISP_START_AT": "", "CRISP_RETRY_ONLY": "false"}
         base.update(env)
         for k, v in base.items():
             monkeypatch.setenv(k, v)

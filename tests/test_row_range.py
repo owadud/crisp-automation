@@ -77,6 +77,7 @@ def agent_with_range(tmp_path, monkeypatch):
         monkeypatch.setenv("CRISP_REFERENCE_FILTER", "R")
         monkeypatch.setenv("CRISP_ROW_FROM", row_from)
         monkeypatch.setenv("CRISP_ROW_TO", row_to)
+        monkeypatch.setenv("CRISP_HISTORY_FILE", str(tmp_path / "history.csv"))
         sys.modules.pop("crisp_email_agent", None)
         return importlib.import_module("crisp_email_agent"), csv_path
     yield load

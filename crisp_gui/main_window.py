@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import json
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, QSize, QTimer, QUrl
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import send_control as sc  # noqa: E402
+
+from PySide6.QtCore import QProcess, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QTableWidgetItem,
     QApplication, QButtonGroup, QFileDialog, QFrame, QHBoxLayout, QLabel,
     QMainWindow, QStackedWidget, QVBoxLayout, QWidget,
 )
@@ -19,7 +25,8 @@ from .agent_process import AgentRunner
 from .config import AGENT_SCRIPT, APP_NAME, APP_VERSION, GITHUB_REPO, PROFILE_DIR, ROOT, Preferences
 from .csv_stats import CsvStats, read_stats
 from .icons import icon, logo_pixmap
-from .pages import ActivityPage, CampaignPage, DashboardPage, SettingsPage
+from .diagnostics import build_zip
+from .pages import ActivityPage, CampaignPage, DashboardPage, HistoryPage, SettingsPage
 from .theme import Palette, ThemeManager
 from .update_controller import UpdateController
 
@@ -28,6 +35,7 @@ PAGES = (
     ("campaign", "Campaign Setup", "campaign", "Recipients, message and sending mode."),
     ("activity", "Activity Logs", "logs", "Live progress and output from the automation."),
     ("settings", "Settings", "settings", "Appearance, browser session and defaults."),
+    ("history", "History", "file", "Past runs, reports and diagnostics."),
 )
 
 STATUS = {
@@ -44,9 +52,17 @@ STATUS = {
 
 class MainWindow(QMainWindow):
     def __init__(self, tm: ThemeManager, prefs: Preferences | None = None,
-                 agent_script: Path | None = None, profile_dir: Path | None = None):
+                 agent_script: Path | None = None, profile_dir: Path | None = None,
+                 data_dir: Path | None = None):
         super().__init__()
         self.tm = tm
+        # history.csv and runs/ live here (the app folder; never touched by updates).
+        self.data_dir = Path(data_dir or ROOT)
+        self.runs_root = self.data_dir / "runs"
+        self.history_file = self.data_dir / "history.csv"
+        self.run_dir: Path | None = None
+        self._run_log = None
+        self._sent7 = 0
         self.prefs = prefs or Preferences()
         self.profile_dir = Path(profile_dir or PROFILE_DIR)
         self.runner = AgentRunner(agent_script or AGENT_SCRIPT, self)
@@ -155,7 +171,8 @@ class MainWindow(QMainWindow):
         self.campaign = CampaignPage(self.tm)
         self.activity = ActivityPage(self.tm)
         self.settings = SettingsPage(self.tm)
-        for page in (self.dashboard, self.campaign, self.activity, self.settings):
+        self.history = HistoryPage(self.tm)
+        for page in (self.dashboard, self.campaign, self.activity, self.settings, self.history):
             self.stack.addWidget(page)
         v.addWidget(self.stack, 1)
         h.addWidget(content, 1)
@@ -180,6 +197,15 @@ class MainWindow(QMainWindow):
         c = self.campaign
         c.browse.clicked.connect(self.browse_csv)
         c.dnc_browse.clicked.connect(self.browse_dnc)
+        c.retry_failed.clicked.connect(lambda: self.start_run(retry_only=True))
+        c.random_delay.toggled.connect(lambda on: None if self._loading else self.prefs.set_random_delay(on))
+
+        h = self.history
+        h.refresh.clicked.connect(self.refresh_history)
+        h.open_run.clicked.connect(self.open_selected_run)
+        h.open_runs.clicked.connect(lambda: self._open_folder(self.runs_root))
+        h.export_report.clicked.connect(self.export_report)
+        h.copy_diag.clicked.connect(self.copy_diagnostics)
         c.skip_failed.toggled.connect(lambda _c: self._update_summary())
         c.reload.clicked.connect(self.refresh_csv)
         c.reset.clicked.connect(self.reset_campaign)
@@ -221,6 +247,8 @@ class MainWindow(QMainWindow):
             field.edit.setText(values[key])
         self.campaign.dry.setChecked(True)   # always start safe
         self.campaign.skip_failed.setChecked(False)   # opt-in every launch
+        self.campaign.random_delay.setChecked(self.prefs.random_delay())
+        sc.delete_old_runs(self.runs_root, days=30)
         self.settings.theme.set_value(self.tm.mode)
         geo = self.prefs.geometry()
         if geo is not None:
@@ -237,6 +265,7 @@ class MainWindow(QMainWindow):
         self._update_mode()
         self._render_state(None)
         self._show_crash_recovery()
+        self.refresh_history()
 
     def _show_crash_recovery(self):
         rec = self.prefs.recovery()
@@ -266,6 +295,8 @@ class MainWindow(QMainWindow):
                 else "Not created yet. It is created the first time the browser opens.")
         if index in (0, 1) and not self.runner.is_running():
             self.refresh_csv()
+        if self.stack.widget(index) is self.history:
+            self.refresh_history()
         self._refresh_nav_icons()
 
     # ================================================================ theme
@@ -317,6 +348,7 @@ class MainWindow(QMainWindow):
     def campaign_values(self) -> dict:
         values = {k: f.text() for k, f in self.campaign.fields().items()}
         values["skip_failed"] = "true" if self.campaign.skip_failed.isChecked() else "false"
+        values["random_delay"] = "true" if self.campaign.random_delay.isChecked() else "false"
         return values
 
     def browse_dnc(self):
@@ -378,6 +410,25 @@ class MainWindow(QMainWindow):
             c.dnc.set_state("help")
         for f in (c.max_skips, c.max_fails_in_row):
             f.set_state("help")
+        for f, check in ((c.send_window, sc.parse_window),
+                         (c.start_at, lambda t: sc.parse_hhmm(t) if t else None)):
+            try:
+                check(f.text())
+                f.set_state("help")
+            except ValueError as exc:
+                f.set_state("error", str(exc))
+                ok = False
+        if c.start_at.text() and ok:
+            try:
+                when = sc.next_occurrence(c.start_at.text())
+                day = "today" if when.date() == sc.now_dhaka().date() else "tomorrow"
+                c.start_at.set_state("ok", f"Starts {day} at {when:%H:%M} Dhaka time.")
+            except ValueError:
+                pass
+        c.retry_failed.setEnabled(st.ok and not st.range_error and st.retry_candidates > 0
+                                  and not self.runner.is_running())
+        c.retry_failed.setText(f"Retry failed only ({st.retry_candidates})" if st.retry_candidates
+                               else "Retry failed only")
         for key in ("subject", "shortcut", "segment"):
             f = c.fields()[key]
             if not f.text():
@@ -475,6 +526,7 @@ class MainWindow(QMainWindow):
             else:
                 d.m_sent.set(s.sent_confirmed, f"Confirmed by Crisp, {scope}")
             d.m_failed.set(s.failed, "Details in Activity Logs" if s.failed or s.last_error else f"In the {scope}")
+            self._add_sent7()
             return
         last = self.prefs.last_run()
         if last:
@@ -487,6 +539,17 @@ class MainWindow(QMainWindow):
         else:
             d.m_sent.set(0, "No runs yet")
             d.m_failed.set(0, "No runs yet")
+        self._add_sent7()
+
+    def _add_sent7(self):
+        if self._sent7:
+            m = self.dashboard.m_sent
+            current = m.caption.text()
+            note = f"{self._sent7} in the last 7 days"
+            if note not in current:
+                text = f"{current} · {note}" if current else note
+                m.caption.setText(text)
+                m.caption.setToolTip(text)
 
     def _update_summary(self):
         kv = self.dashboard.kv
@@ -515,17 +578,21 @@ class MainWindow(QMainWindow):
         else:
             self.start_run()
 
-    def start_run(self):
+    def start_run(self, retry_only: bool = False):
+        retry_only = retry_only is True   # clicked(bool) passes False here
         if self.runner.is_running() or self.updater.busy:
             return
         self.refresh_csv()
         if not self._validate_fields():
             self.navigate(1)
             problem = (self.stats.error if not self.stats.ok
-                       else self.stats.range_error or self.stats.dnc_error or "Fill in the required fields.")
+                       else self.stats.range_error or self.stats.dnc_error or "Fix the fields marked in red.")
             W.inform(self, "Check the campaign settings", problem)
             return
-        if self.stats.eligible == 0:
+        if retry_only and self.stats.retry_candidates == 0:
+            W.inform(self, "Nothing to retry", "No rows have Status Failed or Skipped (in the selected rows).")
+            return
+        if not retry_only and self.stats.eligible == 0:
             self.navigate(1)
             W.inform(self, "No eligible recipients",
                      "No rows match the reference filter with an email and Mail Sent unchecked. "
@@ -536,21 +603,37 @@ class MainWindow(QMainWindow):
             return
         v = self.campaign_values()
         dry = self.dry_run()
+        n = self.stats.retry_candidates if retry_only else self.stats.eligible
         if not dry:
-            n = self.stats.eligible
             ok = W.ask(
                 self, f"Send {n} real email{'s' if n != 1 else ''}?",
                 "Dry Run is off. The agent will send real emails through Crisp and mark each sent row in the CSV. "
                 "This can't be undone.",
-                details=[("Recipients", str(n)),
+                details=[("Recipients", str(n) + (" (retry failed only)" if retry_only else "")),
+                         ("Limits", self._limits_text(v)),
                          ("Rows", f"{self.stats.range_from}–{self.stats.range_to} of {self.stats.total}"),
                          ("Subject", v["subject"]), ("Shortcut", v["shortcut"]),
                          ("Segment", v["segment"]), ("CSV", Path(v["csv"]).name)],
                 confirm=f"Send {n} email{'s' if n != 1 else ''}", tone="danger")
             if not ok:
                 return
+        v["retry_only"] = "true" if retry_only else "false"
+        v["history_file"] = str(self.history_file)
+        try:
+            self.run_dir = sc.new_run_dir(self.runs_root, dry)
+            v["run_dir"] = str(self.run_dir)
+            settings = {k: val for k, val in v.items()}
+            settings.update({"dry_run": dry, "app_version": APP_VERSION, "started": sc.stamp()})
+            (self.run_dir / "settings.json").write_text(json.dumps(settings, indent=2, ensure_ascii=False),
+                                                         encoding="utf-8")
+            self._run_log = (self.run_dir / "run.log").open("a", encoding="utf-8")
+        except OSError as exc:
+            self.run_dir, self._run_log = None, None
+            v["run_dir"] = ""
+            self._gui_line(f"Could not create the run folder ({exc}); continuing without it.")
         err = self.runner.start(v, dry, self.profile_dir)
         if err:
+            self._close_run_log()
             W.inform(self, "Could not start", err)
             return
         self.last_state = None
@@ -608,6 +691,12 @@ class MainWindow(QMainWindow):
 
     def _agent_line(self, text: str):
         self._append(text)
+        if self._run_log:
+            try:
+                self._run_log.write(text + "\n")
+                self._run_log.flush()
+            except OSError:
+                pass
         stripped = text.strip()
         if stripped in ("Mail Sent marked TRUE.",):
             self.refresh_csv()
@@ -760,9 +849,110 @@ class MainWindow(QMainWindow):
             "error": s.last_error,
         })
         self.prefs.sync()
+        self._close_run_log()
+        if self.run_dir:
+            summary = {"phase": s.phase, "outcome": text, "mode": "dry" if s.dry_run else "live",
+                       "sent": s.sent_confirmed, "completed": s.completed, "failed": s.failed,
+                       "skipped": s.skipped, "eligible": s.eligible, "error": s.last_error,
+                       "finished": sc.stamp()}
+            try:
+                (self.run_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+            except OSError:
+                pass
+        self._sent7 = sc.sent_last_days(self.history_file, 7)
         self.refresh_csv()
         self._render_state(s)
+        self.refresh_history()
         QApplication.alert(self)
+
+    def _close_run_log(self):
+        if self._run_log:
+            try:
+                self._run_log.close()
+            except OSError:
+                pass
+        self._run_log = None
+
+    def _limits_text(self, v: dict) -> str:
+        parts = []
+        if v.get("max_per_run"):
+            parts.append(f"max {v['max_per_run']} per run")
+        if v.get("daily_cap"):
+            parts.append(f"daily cap {v['daily_cap']}")
+        if v.get("send_window"):
+            parts.append(f"window {v['send_window']}")
+        if v.get("start_at"):
+            parts.append(f"starts {v['start_at']}")
+        parts.append("random 20–60 s delay" if v.get("random_delay") == "true" else f"{v.get('delay') or 3} s delay")
+        return ", ".join(parts) + " (Dhaka time)" if (v.get("send_window") or v.get("start_at")) else ", ".join(parts)
+
+    # =============================================================== history
+    def _run_dirs(self) -> list[Path]:
+        if not self.runs_root.is_dir():
+            return []
+        return sorted((p for p in self.runs_root.iterdir() if p.is_dir()), key=lambda p: p.name, reverse=True)
+
+    def refresh_history(self):
+        h = self.history
+        self._sent7 = sc.sent_last_days(self.history_file, 7)
+        h.sent7.setText(f"Real emails sent in the last 7 days: {self._sent7} (from history.csv).")
+        dirs = self._run_dirs()
+        h.table.setRowCount(len(dirs))
+        for r, path in enumerate(dirs):
+            try:
+                info = json.loads((path / "summary.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                info = {"outcome": "Running" if path == self.run_dir and self.runner.is_running() else "Unfinished"}
+            started = path.name[:17].replace("_", " ")
+            started = f"{started[:13]}:{started[13:15]}" if len(started) >= 15 else started
+            mode = info.get("mode") or ("dry" if path.name.endswith("_dry") else "live")
+            values = (started, "Dry run" if mode == "dry" else "Real", str(info.get("outcome", "")),
+                      str(info.get("sent", "")), str(info.get("failed", "")), str(info.get("skipped", "")))
+            for c, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setData(Qt.UserRole, str(path))
+                h.table.setItem(r, c, item)
+        h.empty.setVisible(not dirs)
+        if dirs and h.table.currentRow() < 0:
+            h.table.selectRow(0)
+        self._update_run_metrics()
+
+    def _selected_run(self) -> Path | None:
+        item = self.history.table.item(self.history.table.currentRow(), 0)
+        return Path(item.data(Qt.UserRole)) if item else None
+
+    def _open_folder(self, path: Path):
+        Path(path).mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def open_selected_run(self):
+        path = self._selected_run()
+        if path:
+            self._open_folder(path)
+
+    def export_report(self):
+        path = self._selected_run()
+        report = path / "report.csv" if path else None
+        if not report or not report.exists():
+            W.inform(self, "No report for this run", "A report is written when a run gets past the login step.")
+            return
+        target, _ = QFileDialog.getSaveFileName(self, "Export run report", str(Path.home() / f"report-{path.name}.csv"),
+                                                "CSV files (*.csv)")
+        if target:
+            shutil.copyfile(report, target)
+            self.flash(self.history.export_report, "Exported")
+
+    def copy_diagnostics(self):
+        settings = self.campaign_values()
+        try:
+            path = build_zip(self.data_dir / "diagnostics", ROOT, self.activity.log.toPlainText(), settings,
+                             self.profile_dir, self.history_file)
+        except OSError as exc:
+            W.inform(self, "Could not create diagnostics", str(exc))
+            return
+        QGuiApplication.clipboard().setText(str(path))
+        self.history.diag_status.setText(f"Saved and path copied: {path}")
+        self.flash(self.history.copy_diag, "Copied")
 
     # ============================================================== settings
     def open_profile_folder(self):

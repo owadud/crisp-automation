@@ -22,6 +22,11 @@ DUPLICATE = "duplicate"
 INVALID = "invalid"
 DO_NOT_CONTACT = "do_not_contact"
 OUT_OF_RANGE = "out_of_range"
+NOT_RETRY = "not_retry"          # "Retry failed only": row did not fail last time
+
+# Status values that "Retry failed only" picks up. Unconfirmed is NOT retried:
+# that email may already have gone out.
+RETRY_STATUSES = {"failed", "skipped"}
 
 _EMAIL_RE = re.compile(r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$")
 
@@ -80,7 +85,8 @@ def load_do_not_contact(path_text: str) -> set[str]:
     return found
 
 
-def classify(rows, reference_filter: str, start: int, end: int, do_not_contact=frozenset()):
+def classify(rows, reference_filter: str, start: int, end: int, do_not_contact=frozenset(),
+             retry_only: bool = False):
     """[(index, row, outcome, detail)] for every row, in file order.
 
     start/end are 1-based serials (inclusive). A duplicate is an email that
@@ -109,6 +115,8 @@ def classify(rows, reference_filter: str, start: int, end: int, do_not_contact=f
             out.append((index, row, INVALID, email_problem(email)))
         elif email in already or email in seen:
             out.append((index, row, DUPLICATE, ""))
+        elif retry_only and clean(row.get("Status")).lower() not in RETRY_STATUSES:
+            out.append((index, row, NOT_RETRY, ""))
         else:
             seen.add(email)
             out.append((index, row, ELIGIBLE, ""))
