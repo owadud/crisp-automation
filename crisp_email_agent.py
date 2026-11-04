@@ -30,6 +30,7 @@ DRY_RUN is intentionally FALSE because real sending is required.
 
 import atexit
 import csv
+import json
 import os
 import re
 import socket
@@ -115,6 +116,14 @@ REPORT = []   # one dict per processed recipient, written to RUN_DIR/report.csv
 # The desktop GUI creates this file to ask for a graceful stop. The agent
 # only checks it BETWEEN recipients, so a send is never interrupted halfway.
 STOP_FILE = os.environ.get("CRISP_STOP_FILE", "").strip()
+
+
+HEALTH_CHECK = os.environ.get("CRISP_HEALTH_CHECK", "false").lower() in {"1", "true", "yes", "on"}
+
+
+def emit(event, **data):
+    """Structured line for the GUI: '@@EVENT {json}'. Humans read the text lines."""
+    print("@@EVENT " + json.dumps({"event": event, **data}, ensure_ascii=False), flush=True)
 
 
 def stop_requested():
@@ -488,6 +497,7 @@ def wait_for_crisp(page, timeout_seconds=300):
     text are used to avoid starting while the login page is still loading.
     """
     print("Waiting for Crisp Inbox login...")
+    emit("login_wait")
     deadline = time.time() + timeout_seconds
     last_notice = 0
 
@@ -505,6 +515,7 @@ def wait_for_crisp(page, timeout_seconds=300):
                 # Let the SPA finish rendering the Inbox controls.
                 page.wait_for_timeout(1200)
                 print("Crisp Inbox detected. Starting automatically.")
+                emit("logged_in")
                 return
         except Exception:
             pass
@@ -1608,6 +1619,7 @@ def send_message(page):
 
         if not still_has_text:
             print("  Email sent successfully.", flush=True)
+            emit("sent")
             return True
 
         time.sleep(0.4)
@@ -1922,7 +1934,79 @@ def main():
         release_lock()
 
 
+def health_check():
+    """'Check Crisp': open Crisp and look for the subject dropdown, the
+    Shortcuts tab and the segment field. Never types into a message, never
+    creates a conversation, never sends."""
+    print("Crisp health check: nothing is created or sent.")
+    emit("health_start")
+    results = []
+
+    def report(name, ok, detail):
+        results.append(ok)
+        print(f"HEALTH {'OK' if ok else 'FAIL'}: {name}: {detail}")
+        emit("health", check=name, ok=bool(ok), detail=detail)
+
+    print("Launching Chromium. Complete your Crisp login when the browser opens.")
+    with sync_playwright() as p:
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=str(PROFILE_DIR), headless=False,
+            viewport={"width": 1600, "height": 900}, args=["--start-maximized"])
+        page = context.pages[0] if context.pages else context.new_page()
+        try:
+            page.goto(CRISP_URL, wait_until="domcontentloaded", timeout=60000)
+        except Exception:
+            pass
+        wait_for_crisp(page)
+
+        # 1) New conversation dialog + subject dropdown (dialog is closed, not submitted)
+        try:
+            open_new_conversation(page)
+            _subject_input(page).wait_for(state="visible", timeout=ELEMENT_TIMEOUT)
+            report("Subject dropdown", True, "found in the New conversation dialog")
+        except Exception as exc:
+            report("Subject dropdown", False, f"{type(exc).__name__}: {exc}")
+        finally:
+            for _ in range(2):
+                try:
+                    page.keyboard.press("Escape")
+                    time.sleep(0.3)
+                except Exception:
+                    pass
+
+        # 2+3) need an existing conversation open; the user picks one.
+        print("Open any existing conversation in the Crisp window (90 seconds)...")
+        emit("health_wait", seconds=90)
+        shortcuts = segment = False
+        deadline = time.time() + 90
+        while time.time() < deadline and not (shortcuts and segment) and not stop_requested():
+            try:
+                shortcuts = shortcuts or any(
+                    visible(loc.nth(i))
+                    for loc in (page.get_by_text("Shortcuts", exact=True),)
+                    for i in range(loc.count()))
+                seg = page.locator('input[placeholder*="Segment conversation"]')
+                segment = segment or any(visible(seg.nth(i)) for i in range(seg.count()))
+            except Exception:
+                pass
+            time.sleep(1)
+        report("Shortcuts tab", shortcuts, "visible in the conversation" if shortcuts
+               else "not found (open a conversation and click the message box, then check again)")
+        report("Segment field", segment, "visible in the conversation profile" if segment
+               else "not found (open a conversation with the profile panel visible)")
+        passed = sum(1 for ok in results if ok)
+        print(f"Health check: {passed} of {len(results)} passed.")
+        emit("health_done", passed=passed, total=len(results))
+        try:
+            context.close()
+        except Exception:
+            pass
+
+
 def _main():
+    if HEALTH_CHECK:
+        health_check()
+        return
 
     print("=" * 60)
     print("Crisp Email Agent")
@@ -1951,6 +2035,7 @@ def _main():
     print(
         f"Dry run: {DRY_RUN}"
     )
+    emit("run_start", dry_run=DRY_RUN, csv=CSV_FILE.name, subject=SUBJECT)
 
     rows, fieldnames = load_csv()
 
@@ -1987,6 +2072,7 @@ def _main():
         f"Eligible recipients: "
         f"{len(eligible)}"
     )
+    emit("eligible", count=len(eligible))
 
     print()
 
@@ -1995,6 +2081,7 @@ def _main():
         print(
             "No eligible recipients."
         )
+        emit("no_eligible")
 
         return
 
@@ -2004,6 +2091,7 @@ def _main():
               "Keep this computer on and awake.")
         if not sc.sleep_until(target, stop_requested):
             print("Stop requested. Stopping before the next recipient.")
+            emit("stop_requested")
             return
         print("Scheduled time reached.")
 
@@ -2081,6 +2169,7 @@ def _main():
             if stop_requested():
                 print()
                 print("Stop requested. Stopping before the next recipient.")
+                emit("stop_requested")
                 break
 
             if window and not sc.in_window(sc.now_dhaka(), window):
@@ -2089,10 +2178,12 @@ def _main():
                     print()
                     print(f"Send window {SEND_WINDOW} (Dhaka) has ended. Stopping; "
                           "the remaining recipients were not sent.")
+                    emit("window_ended", window=SEND_WINDOW)
                     break
                 print(f"Outside send window {SEND_WINDOW} (Dhaka). Waiting until {opens:%H:%M}...")
                 if not sc.sleep_until(opens, stop_requested):
                     print("Stop requested. Stopping before the next recipient.")
+                    emit("stop_requested")
                     break
 
             print()
@@ -2102,6 +2193,8 @@ def _main():
                 f"[{position}/{len(eligible)}] "
                 f"{email} | {name}"
             )
+            emit("recipient", position=position, total=len(eligible), email=email, name=name,
+                 row=row_index + 1)
 
             print("=" * 60)
 
@@ -2126,6 +2219,7 @@ def _main():
                     record(rows, fieldnames, row_index, result, "Email was not sent.")
                     log_result(row_index, row, result, "Email was not sent.")
                     retry.append((email, name, "Email was not sent."))
+                    emit("failed", email=email, error="Email was not sent.", unconfirmed=SEND_CLICKED)
 
                     print(
                         "  Email was not sent."
@@ -2211,6 +2305,7 @@ def _main():
                 completed += 1
                 fails_in_row = 0
                 log_result(row_index, row, sc.DRY_RUN if DRY_RUN else sc.SENT, link=link)
+                emit("success", email=email, result=sc.DRY_RUN if DRY_RUN else sc.SENT, link=link)
 
                 print(
                     "  SUCCESS."
@@ -2239,6 +2334,7 @@ def _main():
                     skipped += 1
                     retry.append((email, name, reason))
                     print(f"  SKIPPED: {reason}")
+                    emit("skipped", email=email, error=reason)
                     failure_screenshot(page, position, email)
                     record(rows, fieldnames, row_index, sc.SKIPPED, reason)
                     log_result(row_index, row, sc.SKIPPED, reason)
@@ -2254,6 +2350,7 @@ def _main():
                 failure_screenshot(page, position, email)
                 record(rows, fieldnames, row_index, result, reason)
                 log_result(row_index, row, result, reason)
+                emit("failed", email=email, error=reason, unconfirmed=result == sc.UNCONFIRMED)
 
                 if SKIP_FAILED and fails_in_row >= MAX_FAILS_IN_ROW:
                     print(f"  {fails_in_row} failures in a row: auto-stop.")
@@ -2296,11 +2393,13 @@ def _main():
 
         if skipped:
             print(f"Skipped:   {skipped}")
+        emit("summary", completed=completed, failed=failed, skipped=skipped)
 
         if retry:
             print("Retry list (not sent in this run):")
             for r_email, r_name, r_reason in retry:
                 print(f"RETRY: {r_email} | {r_name} | {r_reason}")
+                emit("retry", email=r_email, name=r_name, error=r_reason)
 
         print(
             f"CSV:       {CSV_FILE}"
@@ -2351,6 +2450,7 @@ if __name__ == "__main__":
             f"\nERROR: "
             f"{type(exc).__name__}: {exc}"
         )
+        emit("error", message=f"{type(exc).__name__}: {exc}")
 
         # In the GUI nobody can press Enter, so waiting here would hang the
         # process forever. Exit with a failure code instead.

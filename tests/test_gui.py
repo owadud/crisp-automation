@@ -528,3 +528,16 @@ def test_retry_button_and_diagnostics(win, dialogs, tmp_path):
     QTest.mouseClick(win.history.copy_diag, Qt.LeftButton)
     zips = list((tmp_path / "data" / "diagnostics").glob("diagnostics-*.zip"))
     assert len(zips) == 1 and str(zips[0]) == QGuiApplication.clipboard().text()
+
+
+def test_event_lines_hidden_and_health_result_shown(win):
+    win._agent_line('@@EVENT {"event": "eligible", "count": 1}')
+    win._agent_line("visible line")
+    text = win.activity.log.toPlainText()
+    assert "@@EVENT" not in text and "visible line" in text
+    st = rs.RunState()
+    st.health = [("Subject dropdown", True, "found"), ("Segment field", False, "not found")]
+    win._health = True
+    win._run_finished(st)
+    assert win.settings.health_result.text() == "✓ Subject dropdown: found\n✗ Segment field: not found"
+    assert win.prefs.last_run() is None          # a health check is not a run

@@ -77,6 +77,7 @@ class AgentRunner(QObject):
             "CRISP_RETRY_ONLY": settings.get("retry_only", "false"),
             "CRISP_RUN_DIR": settings.get("run_dir", ""),
             "CRISP_HISTORY_FILE": settings.get("history_file", ""),
+            "CRISP_HEALTH_CHECK": settings.get("health_check", "false"),
             # The ONLY switch that controls real sending in the agent.
             "CRISP_DRY_RUN": "true" if dry_run else "false",
             "CRISP_PROFILE_DIR": str(profile_dir),

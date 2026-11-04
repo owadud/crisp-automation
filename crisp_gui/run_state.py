@@ -9,8 +9,19 @@ composer (see send_message() in the agent).
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
+
+EVENT_PREFIX = "@@EVENT"
+
+# Text lines whose meaning (counts, positions) is carried by an event too.
+# Once the agent has sent any event, these lines only move the step label,
+# so nothing is counted twice. Without events, the text rules below apply.
+_COVERED = re.compile(
+    r"^(Eligible recipients:|\[\d+/\d+\]|SUCCESS\.$|Email sent successfully\.$|FAILED:|"
+    r"Email was not sent\.$|SKIPPED:|RETRY:|Completed:|Failed:|Skipped:|No eligible recipients\.$|"
+    r"Send window .* has ended|HEALTH (OK|FAIL):)")
 
 
 # Phases of a run, in the order they normally occur.
@@ -72,6 +83,8 @@ class RunState:
     summary_seen: bool = False
     no_eligible: bool = False
     history: list = field(default_factory=list)  # (email, outcome)
+    health: list = field(default_factory=list)   # (check, ok, detail) from "Check Crisp"
+    events_seen: bool = False
 
     # -------------------------------------------------------------- derived
     @property
@@ -133,6 +146,25 @@ class RunParser:
         s = self.state
         line = raw.strip()
         if not line:
+            return
+
+        if line.startswith(EVENT_PREFIX):
+            try:
+                event = json.loads(line[len(EVENT_PREFIX):].strip())
+            except ValueError:
+                return
+            if isinstance(event, dict):
+                s.events_seen = True
+                self.handle_event(event)
+            return
+
+        if s.events_seen and _COVERED.match(line):
+            self._advance(line)
+            return
+
+        m = re.match(r"^HEALTH (OK|FAIL):\s*(.*?):\s*(.*)$", line)
+        if m:
+            s.health.append((m.group(2), m.group(1) == "OK", m.group(3)))
             return
 
         if line.startswith("Dry run:"):
@@ -266,6 +298,74 @@ class RunParser:
             return
 
         self._advance(line)
+
+    def handle_event(self, ev: dict) -> None:
+        """Structured '@@EVENT {json}' lines from the agent (preferred source)."""
+        s = self.state
+        kind = ev.get("event")
+        if kind == "run_start":
+            s.dry_run = bool(ev.get("dry_run", s.dry_run))
+        elif kind == "eligible":
+            s.eligible = int(ev.get("count") or 0)
+        elif kind == "no_eligible":
+            s.no_eligible = True
+            s.step = "No eligible recipients in the CSV"
+        elif kind == "login_wait":
+            if s.phase in (STARTING, WAITING_LOGIN):
+                s.phase = WAITING_LOGIN
+                s.step = "Waiting for Crisp login"
+        elif kind == "logged_in":
+            if s.phase != STOPPING:
+                s.phase = RUNNING
+            s.step = "Signed in to Crisp"
+        elif kind == "recipient":
+            s.position = int(ev.get("position") or 0)
+            s.eligible = int(ev.get("total") or s.eligible)
+            s.current_email = str(ev.get("email") or "")
+            s.current_name = str(ev.get("name") or "")
+            s.step = "Starting recipient"
+            s.step_fraction = 0.0
+            if s.phase != STOPPING:
+                s.phase = RUNNING
+        elif kind == "sent":
+            s.sent_confirmed += 1
+            self._advance("Email sent successfully")
+        elif kind == "success":
+            s.completed += 1
+            s.step_fraction = 1.0
+            s.step = "Dry run passed" if s.dry_run else "Completed"
+            s.history.append((s.current_email, "dry-run" if s.dry_run else "sent"))
+        elif kind == "skipped":
+            s.skipped += 1
+            s.step = "Skipped (failed before Send)"
+            s.history.append((s.current_email, "skipped"))
+        elif kind == "failed":
+            s.failed += 1
+            s.last_error = str(ev.get("error") or "Failed")
+            if ev.get("unconfirmed"):
+                s.unconfirmed_send = True
+            s.step = "Failed"
+            s.history.append((s.current_email, "failed"))
+        elif kind == "retry":
+            s.retry.append((str(ev.get("email") or ""), str(ev.get("name") or ""), str(ev.get("error") or "")))
+        elif kind == "summary":
+            s.summary_seen = True
+            s.completed = int(ev.get("completed") or 0)
+            s.failed = int(ev.get("failed") or 0)
+            s.skipped = int(ev.get("skipped") or 0)
+        elif kind == "stop_requested":
+            s.stop_requested = True
+            s.step = "Stopped before the next recipient"
+        elif kind == "window_ended":
+            s.stop_requested = True
+            s.step = "Send window ended"
+        elif kind == "error":
+            s.last_error = str(ev.get("message") or "Error")
+            s.step = "Error"
+        elif kind == "health":
+            s.health.append((str(ev.get("check")), bool(ev.get("ok")), str(ev.get("detail") or "")))
+        elif kind == "health_wait":
+            s.step = "Open any conversation in the Crisp window"
 
     def _advance(self, line: str) -> None:
         s = self.state

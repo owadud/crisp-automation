@@ -139,6 +139,17 @@ Records:
 - **History** page: list of runs, Open folder, Export report, and **Copy diagnostics** (a zip
   with the log masked, versions, settings and a self-test; never the Crisp login or CSVs).
 
+## Stability (3.4)
+
+- The agent prints structured lines `@@EVENT {"event": ...}` next to its normal log
+  (run_start, eligible, logged_in, recipient, sent, success, skipped, failed, retry,
+  summary, stop_requested, window_ended, error, health). The app reads these first, so
+  changing a log sentence can't break the counts. If no events arrive (an older agent),
+  it falls back to reading the text. Event lines are kept in `run.log` and hidden on screen.
+- **Settings > Check Crisp**: opens Crisp and checks the subject dropdown (New
+  conversation dialog, closed again), the Shortcuts tab and the segment field (open any
+  existing conversation when asked). Nothing is created or sent.
+
 ## Shortcut behavior
 
 The automation clicks the visible **Shortcuts** tab in Crisp. It deliberately does not use Ctrl+K because that opens Crisp's global command palette in the current interface. If the Shortcuts tab cannot be found, the run stops with a clear error rather than opening the wrong panel.

@@ -229,6 +229,7 @@ class MainWindow(QMainWindow):
                      self.flash(s.copy_profile, "Copied")))
         s.reset.clicked.connect(self.reset_campaign)
         s.check_updates.clicked.connect(self.check_updates)
+        s.check_crisp.clicked.connect(self.check_crisp)
         s.install_update.clicked.connect(self.install_update)
         self.updater.checked.connect(self._update_checked)
         self.updater.check_failed.connect(self._update_status)
@@ -690,6 +691,14 @@ class MainWindow(QMainWindow):
         self._append(f"› {text}")
 
     def _agent_line(self, text: str):
+        if text.startswith(rs.EVENT_PREFIX):
+            # Machine-readable; kept in run.log, hidden from the on-screen log.
+            if self._run_log:
+                try:
+                    self._run_log.write(text + "\n")
+                except OSError:
+                    pass
+            return
         self._append(text)
         if self._run_log:
             try:
@@ -828,7 +837,35 @@ class MainWindow(QMainWindow):
                 banner.show()
         self._update_run_metrics()
 
+    def check_crisp(self):
+        """Health check: opens Crisp, never creates or sends anything."""
+        if self.runner.is_running() or self.updater.busy:
+            return
+        v = self.campaign_values()
+        v.update({"health_check": "true", "run_dir": "", "history_file": ""})
+        err = self.runner.start(v, True, self.profile_dir)
+        if err:
+            W.inform(self, "Could not start the check", err)
+            return
+        self._health = True
+        self.settings.check_crisp.setEnabled(False)
+        self.settings.health_result.setText("Checking… sign in to Crisp in the Chromium window if asked, "
+                                            "then open any existing conversation.")
+        self._gui_line("Crisp health check started (nothing is created or sent).")
+        self._render_state(self.runner.state)
+
     def _run_finished(self, s: rs.RunState):
+        if getattr(self, "_health", False):
+            self._health = False
+            self.last_state = s
+            lines = [f"{'✓' if ok else '✗'} {name}: {detail}" for name, ok, detail in s.health]
+            if not lines:
+                lines = [s.last_error or "The check stopped before it finished."]
+            self.settings.health_result.setText("\n".join(lines))
+            self.settings.check_crisp.setEnabled(True)
+            self._gui_line("Crisp health check finished.")
+            self._render_state(s)
+            return
         self.last_state = s
         self.prefs.clear_recovery()
         self._recovery_email = ""

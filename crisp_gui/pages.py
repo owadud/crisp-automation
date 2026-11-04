@@ -403,6 +403,18 @@ class SettingsPage(Page):
         card.body.addLayout(h)
         self.add(card)
 
+        card = Card("Check Crisp", "Opens Crisp and looks for the subject dropdown, the Shortcuts tab and the "
+                    "segment field. Nothing is created or sent. When asked, open any existing conversation.")
+        h = QHBoxLayout()
+        self.check_crisp = button("Check Crisp", None, "check", tm, "text_muted")
+        h.addWidget(self.check_crisp)
+        h.addStretch()
+        card.body.addLayout(h)
+        self.health_result = label("", "faint", wrap=True)
+        self.health_result.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        card.body.addWidget(self.health_result)
+        self.add(card)
+
         card = Card("About")
         self.about = KeyValueList()
         for key, title in (("version", "Version"), ("agent", "Agent script"),
