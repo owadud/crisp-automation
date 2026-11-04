@@ -43,6 +43,8 @@ CAMPAIGN_DEFAULTS = {
     "daily_cap": "",           # real sends per Dhaka day, blank = no limit
     "send_window": "",         # "10:00-18:00" Dhaka time, blank = any time
     "start_at": "",            # "10:00" Dhaka time, blank = start now
+    "sheet_url": "",           # Google Sheet link (source = Google Sheet)
+    "google_key": "",          # service-account key file, kept OUTSIDE the app folder
 }
 
 THEMES = ("light", "dark", "system")
@@ -74,6 +76,21 @@ class Preferences:
         for key in CAMPAIGN_DEFAULTS:
             self._s.remove(f"campaign/{key}")
         return dict(CAMPAIGN_DEFAULTS)
+
+    # source (CSV or Google Sheet) -------------------------------------------
+    def source(self) -> str:
+        value = str(self._s.value("campaign/source", "csv"))
+        return value if value in ("csv", "sheet") else "csv"
+
+    def set_source(self, value: str) -> None:
+        if value in ("csv", "sheet"):
+            self._s.setValue("campaign/source", value)
+
+    def sheet_tab(self) -> str:
+        return str(self._s.value("campaign/sheet_tab", ""))
+
+    def set_sheet_tab(self, value: str) -> None:
+        self._s.setValue("campaign/sheet_tab", value)
 
     # sending control -------------------------------------------------------
     def random_delay(self) -> bool:

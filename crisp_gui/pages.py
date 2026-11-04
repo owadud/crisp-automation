@@ -6,6 +6,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
+    QComboBox,
     QAbstractItemView, QFrame, QHBoxLayout, QHeaderView, QPlainTextEdit, QProgressBar, QScrollArea,
     QSizePolicy, QTableWidget, QVBoxLayout, QWidget,
 )
@@ -126,10 +127,19 @@ class CampaignPage(Page):
         self.locked_banner.hide()
 
         # recipients ---------------------------------------------------------
-        card = Card("Recipients", "A CSV with Full Name, Contact Email, Reference and Mail Sent columns.")
+        card = Card("Recipients", "Columns: Full Name, Contact Email, Reference and Mail Sent.")
+        src_row = QHBoxLayout()
+        src_row.addWidget(label("Source", "fieldLabel"))
+        src_row.addSpacing(8)
+        self.source = SegmentedControl([("csv", "CSV file", "file"), ("sheet", "Google Sheet", "campaign")], tm)
+        src_row.addWidget(self.source)
+        src_row.addStretch()
+        card.body.addLayout(src_row)
         self.csv = Field("CSV file", placeholder="Choose a recipient CSV file")
         self.csv.edit.setMinimumWidth(120)
-        row = QHBoxLayout()
+        self.csv_box = QWidget()
+        row = QHBoxLayout(self.csv_box)
+        row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
         row.addWidget(self.csv, 1)
         btns = QVBoxLayout()
@@ -146,7 +156,50 @@ class CampaignPage(Page):
         btns.addLayout(inner)
         btns.addStretch()
         row.addLayout(btns)
-        card.body.addLayout(row)
+        card.body.addWidget(self.csv_box)
+
+        # Google Sheet source ------------------------------------------------
+        self.sheet_box = QWidget()
+        sv = QVBoxLayout(self.sheet_box)
+        sv.setContentsMargins(0, 0, 0, 0)
+        sv.setSpacing(10)
+        self.sheet_url = Field("Google Sheet link", "Private Sheet shared with the service account as Editor "
+                               "(not 'anyone with the link').", placeholder="https://docs.google.com/spreadsheets/d/…")
+        self.sheet_url.edit.setMinimumWidth(120)
+        sv.addWidget(self.sheet_url)
+        krow = QHBoxLayout()
+        krow.setSpacing(8)
+        self.google_key = Field("Service-account key file", "Keep it outside the app folder.",
+                                placeholder="Choose the .json key")
+        self.google_key.edit.setMinimumWidth(120)
+        krow.addWidget(self.google_key, 1)
+        kb = QVBoxLayout()
+        kb.addSpacing(self.google_key.title.sizeHint().height() + 6)
+        self.key_browse = button("Browse…", None, "folder", tm, "text_muted")
+        kb.addWidget(self.key_browse)
+        kb.addStretch()
+        krow.addLayout(kb)
+        sv.addLayout(krow)
+        trow = QHBoxLayout()
+        trow.setSpacing(8)
+        trow.addWidget(label("Tab", "fieldLabel"))
+        self.sheet_tab = QComboBox()
+        self.sheet_tab.setMinimumWidth(140)
+        self.sheet_tab.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        trow.addWidget(self.sheet_tab, 1)
+        self.load_tabs = button("Load tabs", None, "refresh", tm, "text_muted")
+        trow.addWidget(self.load_tabs)
+        sv.addLayout(trow)
+        hrow = QHBoxLayout()
+        self.test_sheet = button("Test connection", None, "check", tm, "text_muted")
+        hrow.addWidget(self.test_sheet)
+        hrow.addStretch()
+        sv.addLayout(hrow)
+        self.sheet_info = label("", "faint", wrap=True)
+        self.sheet_info.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        sv.addWidget(self.sheet_info)
+        self.sheet_box.hide()
+        card.body.addWidget(self.sheet_box)
         rng = ResponsiveRow(min_item_width=200, spacing=16)
         self.row_from = Field("From row", "Blank = first row.", placeholder="First")
         self.row_to = Field("To row", "Blank = last row.", placeholder="Last")
@@ -285,7 +338,8 @@ class CampaignPage(Page):
                 "row_from": self.row_from, "row_to": self.row_to, "dnc": self.dnc,
                 "max_skips": self.max_skips, "max_fails_in_row": self.max_fails_in_row,
                 "delay": self.delay, "max_per_run": self.max_per_run, "daily_cap": self.daily_cap,
-                "send_window": self.send_window, "start_at": self.start_at}
+                "send_window": self.send_window, "start_at": self.start_at,
+                "sheet_url": self.sheet_url, "google_key": self.google_key}
 
 
 # =====================================================================

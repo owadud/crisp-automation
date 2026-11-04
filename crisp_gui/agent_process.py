@@ -78,6 +78,11 @@ class AgentRunner(QObject):
             "CRISP_RUN_DIR": settings.get("run_dir", ""),
             "CRISP_HISTORY_FILE": settings.get("history_file", ""),
             "CRISP_HEALTH_CHECK": settings.get("health_check", "false"),
+            "CRISP_SOURCE": settings.get("source", "csv"),
+            "CRISP_SHEET_URL": settings.get("sheet_url", ""),
+            "CRISP_SHEET_TAB": settings.get("sheet_tab", ""),
+            "CRISP_GOOGLE_KEY": settings.get("google_key", ""),
+            "CRISP_DATA_DIR": settings.get("data_dir", ""),
             # The ONLY switch that controls real sending in the agent.
             "CRISP_DRY_RUN": "true" if dry_run else "false",
             "CRISP_PROFILE_DIR": str(profile_dir),

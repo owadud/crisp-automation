@@ -1,0 +1,321 @@
+"""Google Sheet as the recipient source (CSV stays the default and fallback).
+
+How a Sheet run works (shared by the agent and the GUI):
+- The Sheet is downloaded into a local working CSV and the agent runs on it
+  exactly as on a normal CSV.
+- Every result is saved locally first, then written to the Sheet row found
+  by EMAIL (never by row number). If that write fails, it goes to a pending
+  queue on disk; the next run retries it first, and those emails count as
+  already sent, so a dropped connection can never cause a re-send.
+- Writes are paced (about 1 per second) with back-off on rate limits.
+- A hidden "_crisp_control" tab holds a lock: "Running: <PC> since 10:02",
+  refreshed every 30 s and treated as stale after 5 minutes.
+
+gspread/google-auth are imported only when a Sheet is used.
+"""
+
+from __future__ import annotations
+
+import csv
+import json
+import re
+import socket
+import threading
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+REQUIRED_COLUMNS = ("Full Name", "Contact Email", "Reference", "Mail Sent")
+CONTROL_TAB = "_crisp_control"
+STALE_MINUTES = 5
+HEARTBEAT_SECONDS = 30
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+
+class SheetError(RuntimeError):
+    """A Sheet problem with a message the user can act on."""
+
+
+def sheet_id(url: str) -> str:
+    m = re.search(r"/spreadsheets/d/([A-Za-z0-9_-]{20,})", str(url or ""))
+    if m:
+        return m.group(1)
+    if re.fullmatch(r"[A-Za-z0-9_-]{20,}", str(url or "").strip()):
+        return str(url).strip()
+    raise SheetError("That is not a Google Sheet link (it should contain /spreadsheets/d/...).")
+
+
+def key_problem(key_path: str, app_root: Path) -> str:
+    """'' if the service-account key file is usable and stored safely."""
+    text = str(key_path or "").strip()
+    if not text:
+        return "Choose the service-account key file (.json)."
+    path = Path(text).expanduser()
+    if not path.is_file():
+        return "Key file not found."
+    try:
+        path.resolve().relative_to(Path(app_root).resolve())
+        return "Move the key file OUTSIDE the app folder (it must never be uploaded or zipped)."
+    except ValueError:
+        pass
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "The key file is not valid JSON."
+    if data.get("type") != "service_account" or "client_email" not in data:
+        return "This is not a service-account key (type must be service_account)."
+    return ""
+
+
+def service_account_email(key_path: str) -> str:
+    try:
+        return json.loads(Path(key_path).expanduser().read_text(encoding="utf-8")).get("client_email", "")
+    except (OSError, ValueError):
+        return ""
+
+
+def _status_code(exc) -> int:
+    resp = getattr(exc, "response", None)
+    return int(getattr(resp, "status_code", 0) or getattr(exc, "code", 0) or 0)
+
+
+class Pacer:
+    """At most one Google request per `interval` seconds; retry 429/5xx with back-off."""
+
+    def __init__(self, interval: float = 1.1, tries: int = 5, clock=None, sleep=None):
+        self.interval, self.tries = interval, tries
+        self.clock = clock or (lambda: time.monotonic())
+        self.sleep = sleep or (lambda seconds: time.sleep(seconds))
+        self._last = -1e9
+        self._lock = threading.Lock()
+
+    def call(self, fn, *args, **kwargs):
+        delay = 2.0
+        for attempt in range(1, self.tries + 1):
+            with self._lock:
+                wait = self._last + self.interval - self.clock()
+                if wait > 0:
+                    self.sleep(wait)
+                self._last = self.clock()
+                try:
+                    return fn(*args, **kwargs)
+                except Exception as exc:  # noqa: BLE001
+                    code = _status_code(exc)
+                    retryable = code in (429, 500, 502, 503) or isinstance(exc, (ConnectionError, TimeoutError, OSError))
+                    if not retryable or attempt == self.tries:
+                        raise SheetError(f"Google Sheets error{f' {code}' if code else ''}: {exc}") from exc
+            self.sleep(delay)
+            delay *= 2
+        raise SheetError("Google Sheets did not respond.")
+
+
+def _a1(row: int, col: int) -> str:
+    letters = ""
+    while col:
+        col, rem = divmod(col - 1, 26)
+        letters = chr(65 + rem) + letters
+    return f"{letters}{row}"
+
+
+class SheetSource:
+    def __init__(self, url: str, tab: str, key_path: str, client=None, pacer: Pacer | None = None):
+        self.url, self.tab, self.key_path = url, tab, key_path
+        self.id = sheet_id(url)
+        self._client = client
+        self.pacer = pacer or Pacer()
+        self.sh = None
+        self.ws = None
+        self.header: list[str] = []
+        self.owner = f"{socket.gethostname()}"
+        self._beat_stop = threading.Event()
+
+    # ------------------------------------------------------------ connect
+    def connect(self):
+        if self._client is None:
+            try:
+                import gspread
+            except ImportError as exc:
+                raise SheetError("Google Sheet support is not installed. Run the update or setup again.") from exc
+            try:
+                self._client = gspread.service_account(filename=str(Path(self.key_path).expanduser()), scopes=SCOPES)
+            except Exception as exc:  # noqa: BLE001
+                raise SheetError(f"Could not use the key file: {exc}") from exc
+        try:
+            self.sh = self.pacer.call(self._client.open_by_key, self.id)
+        except SheetError as exc:
+            who = service_account_email(self.key_path) or "the service account"
+            raise SheetError(f"Could not open the Sheet. Share it with {who} as Editor. ({exc})") from exc
+        return self
+
+    def tabs(self) -> list[str]:
+        return [ws.title for ws in self.pacer.call(self.sh.worksheets) if ws.title != CONTROL_TAB]
+
+    def worksheet(self):
+        if self.ws is None:
+            if not self.tab:
+                raise SheetError("Choose the Sheet tab.")
+            try:
+                self.ws = self.pacer.call(self.sh.worksheet, self.tab)
+            except SheetError as exc:
+                raise SheetError(f"Tab '{self.tab}' not found in the Sheet.") from exc
+        return self.ws
+
+    # ------------------------------------------------------------ rows
+    def download(self) -> tuple[list[dict], list[str]]:
+        values = self.pacer.call(self.worksheet().get_all_values)
+        if not values or not any(values[0]):
+            raise SheetError("The Sheet tab is empty (no header row).")
+        self.header = [h.strip() for h in values[0]]
+        missing = [c for c in REQUIRED_COLUMNS if c not in self.header]
+        if missing:
+            raise SheetError("Missing columns in the Sheet: " + ", ".join(missing))
+        rows = []
+        for raw in values[1:]:
+            raw = list(raw) + [""] * (len(self.header) - len(raw))
+            rows.append({h: raw[i] for i, h in enumerate(self.header) if h})
+        return rows, [h for h in self.header if h]
+
+    @staticmethod
+    def write_local(path: Path, rows: list[dict], fieldnames: list[str]) -> Path:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+        return path
+
+    def ensure_columns(self, columns) -> None:
+        """Add missing header cells (e.g. Sent At, Status) at the end of row 1."""
+        missing = [c for c in columns if c not in self.header]
+        if not missing:
+            return
+        start = len(self.header) + 1
+        self.pacer.call(self.worksheet().update, values=[missing], range_name=_a1(1, start),
+                        value_input_option="RAW")
+        self.header.extend(missing)
+
+    def find_row(self, email: str, prefer_row: int | None = None) -> int | None:
+        """Sheet row number (1 = header) holding this email, re-read fresh."""
+        col = self.header.index("Contact Email") + 1
+        cells = self.pacer.call(self.worksheet().col_values, col)
+        target = str(email or "").strip().lower()
+        matches = [i + 1 for i, v in enumerate(cells) if i > 0 and str(v).strip().lower() == target]
+        if not matches:
+            return None
+        if prefer_row in matches:
+            return prefer_row
+        return min(matches, key=lambda r: abs(r - (prefer_row or r)))
+
+    def push(self, email: str, values: dict, prefer_row: int | None = None) -> int:
+        """Write values into the row with this email. 'TRUE' becomes a ticked checkbox."""
+        row = self.find_row(email, prefer_row)
+        if row is None:
+            raise SheetError(f"{email} is no longer in the Sheet; nothing was written there.")
+        data = [{"range": _a1(row, self.header.index(col) + 1), "values": [[str(val)]]}
+                for col, val in values.items() if col in self.header]
+        if data:
+            self.pacer.call(self.worksheet().batch_update, data, value_input_option="USER_ENTERED")
+        return row
+
+    # ------------------------------------------------------------ lock
+    def _control(self):
+        try:
+            return self.pacer.call(self.sh.worksheet, CONTROL_TAB)
+        except SheetError:
+            ws = self.pacer.call(self.sh.add_worksheet, title=CONTROL_TAB, rows=5, cols=3)
+            try:
+                self.pacer.call(ws.hide)
+            except SheetError:
+                pass
+            return ws
+
+    def acquire_lock(self, now=None) -> None:
+        now = now or datetime.now(timezone.utc)
+        ws = self._control()
+        values = self.pacer.call(ws.get_all_values) or [[]]
+        first = (values[0] + ["", "", ""])[:3] if values else ["", "", ""]
+        text, beat, owner = first
+        if text.startswith("Running:") and owner and owner != self.owner:
+            try:
+                age = now - datetime.fromisoformat(beat)
+            except ValueError:
+                age = timedelta(0)
+            if age < timedelta(minutes=STALE_MINUTES):
+                raise SheetError(f"The Sheet is in use: {text} (last seen {int(age.total_seconds() // 60)} min ago). "
+                                 f"Wait until that run ends, or until it is {STALE_MINUTES} minutes old.")
+        local = now.astimezone(timezone(timedelta(hours=6)))
+        self.pacer.call(ws.update, values=[[f"Running: {self.owner} since {local:%H:%M} (Dhaka)",
+                                            now.isoformat(), self.owner]],
+                        range_name="A1", value_input_option="RAW")
+        self._control_ws = ws
+
+    def heartbeat(self, now=None) -> None:
+        now = now or datetime.now(timezone.utc)
+        self.pacer.call(self._control_ws.update, values=[[now.isoformat()]], range_name="B1",
+                        value_input_option="RAW")
+
+    def start_heartbeat(self, interval: float = HEARTBEAT_SECONDS) -> None:
+        def loop():
+            while not self._beat_stop.wait(interval):
+                try:
+                    self.heartbeat()
+                except Exception:  # noqa: BLE001
+                    pass
+        threading.Thread(target=loop, daemon=True).start()
+
+    def release_lock(self) -> None:
+        self._beat_stop.set()
+        ws = getattr(self, "_control_ws", None)
+        if ws is None:
+            return
+        try:
+            values = self.pacer.call(ws.get_all_values) or [[]]
+            owner = (values[0] + ["", "", ""])[2] if values else ""
+            if owner == self.owner:
+                self.pacer.call(ws.update, values=[["", "", ""]], range_name="A1", value_input_option="RAW")
+        except SheetError:
+            pass
+
+
+class PendingQueue:
+    """Sheet writes that failed; retried first next time. Stored as JSON on disk."""
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+
+    def items(self) -> list[dict]:
+        try:
+            return json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+
+    def _save(self, items):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(items, indent=1, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(self.path)
+
+    def add(self, sheet: str, tab: str, email: str, row: int, values: dict) -> None:
+        items = self.items()
+        items.append({"sheet": sheet, "tab": tab, "email": email, "row": row, "values": values,
+                      "time": datetime.now().isoformat(timespec="seconds")})
+        self._save(items)
+
+    def for_sheet(self, sheet: str, tab: str) -> list[dict]:
+        return [i for i in self.items() if i.get("sheet") == sheet and i.get("tab") == tab]
+
+    def flush(self, source: SheetSource) -> list[dict]:
+        """Try every pending write for this Sheet/tab. Returns those still pending."""
+        keep, remaining = [], []
+        for item in self.items():
+            if item.get("sheet") != source.id or item.get("tab") != source.tab:
+                keep.append(item)
+                continue
+            try:
+                source.push(item["email"], item["values"], item.get("row"))
+            except SheetError:
+                keep.append(item)
+                remaining.append(item)
+        self._save(keep)
+        return remaining

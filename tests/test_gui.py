@@ -541,3 +541,30 @@ def test_event_lines_hidden_and_health_result_shown(win):
     win._run_finished(st)
     assert win.settings.health_result.text() == "✓ Subject dropdown: found\n✗ Segment field: not found"
     assert win.prefs.last_run() is None          # a health check is not a run
+
+
+def test_google_sheet_source_test_connection(win, tmp_path):
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import sheet_source as ss
+    from fake_sheets import FakeClient, FakeSpreadsheet
+    sid = "1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+    book = FakeSpreadsheet({"Customers": [["Full Name", "Contact Email", "Reference", "Mail Sent"],
+                                          ["A", "a@x.com", "Shahriar", ""], ["B", "a@x.com", "Shahriar", ""],
+                                          ["C", "c@x.com", "Shahriar", "TRUE"]]})
+    win._sheet_factory = lambda url, tab, key: ss.SheetSource(url, tab, key, client=FakeClient(book, sid)).connect()
+    key = tmp_path / "key.json"
+    key.write_text(json.dumps({"type": "service_account", "client_email": "bot@p.iam.gserviceaccount.com"}))
+    c = win.campaign
+    win._source_changed("sheet")
+    assert c.sheet_box.isVisibleTo(c) and not c.csv_box.isVisibleTo(c)
+    c.sheet_url.edit.setText(f"https://docs.google.com/spreadsheets/d/{sid}/edit")
+    c.google_key.edit.setText(str(key))
+    win.load_sheet_tabs()
+    assert [c.sheet_tab.itemText(i) for i in range(c.sheet_tab.count())] == ["Customers"]
+    win.test_sheet()
+    assert (win.stats.total, win.stats.eligible, win.stats.duplicates) == (3, 1, 1)
+    assert "Connected as bot@p.iam.gserviceaccount.com" in c.sheet_info.text()
+    v = win.campaign_values()
+    assert (v["source"], v["sheet_tab"]) == ("sheet", "Customers")
+    assert win.prefs.source() == "sheet"
+    win._source_changed("csv")

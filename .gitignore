@@ -10,7 +10,9 @@ credentials*
 service_account*
 .env
 
-# Runs, logs, history, backups
+# Runs, logs, history, backups, Sheet cache, diagnostics
+sheet_cache/
+diagnostics/
 logs/
 runs/
 history.csv

@@ -150,6 +150,27 @@ Records:
   conversation dialog, closed again), the Shortcuts tab and the segment field (open any
   existing conversation when asked). Nothing is created or sent.
 
+## Google Sheet as the source (3.5)
+
+Campaign Setup > Recipients > **Source: Google Sheet**. Same columns as the CSV (Full
+Name, Contact Email, Reference, Mail Sent); the CSV stays available as before.
+
+**One-time Google setup (5 steps):**
+1. console.cloud.google.com: create a project, then enable the **Google Sheets API**.
+2. IAM & Admin > Service accounts > Create; open it > Keys > Add key > JSON (downloads a key file).
+3. Store the key file **outside** the app folder (e.g. Documents\crisp-key.json). The app refuses a key inside it.
+4. In the Sheet: Share > add the service account's email (`...@...iam.gserviceaccount.com`) as **Editor**.
+   Keep the Sheet private (not "anyone with the link"). Select the Mail Sent column > Insert > **Checkbox**.
+5. In the app: paste the Sheet link, choose the key, **Load tabs**, pick the tab, **Test connection**.
+
+How it runs: the tab is downloaded into a local working copy; every result is saved locally
+first and then written to the Sheet row found by **email** (Mail Sent ticked, Sent At, Status,
+Error, Conversation link). If the internet drops, results wait in a local queue and are written
+at the next start; those emails are never sent again. Writes are paced (about 1 per second).
+While a real run is active, a hidden `_crisp_control` tab shows "Running: <PC> since 10:02",
+refreshed every 30 s; another PC can start only when it is older than 5 minutes.
+Dry runs never write to the Sheet.
+
 ## Shortcut behavior
 
 The automation clicks the visible **Shortcuts** tab in Crisp. It deliberately does not use Ctrl+K because that opens Crisp's global command palette in the current interface. If the Shortcuts tab cannot be found, the run stops with a clear error rather than opening the wrong panel.

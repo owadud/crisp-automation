@@ -72,13 +72,15 @@ def test_old_runs_are_deleted(tmp_path):
 
 def test_diagnostics_mask_emails(tmp_path):
     assert mask_emails("to jane.doe@example.com ok") == "to j***@example.com ok"
-    z = build_zip(tmp_path, ROOT, "sent to jane.doe@example.com", {"csv": str(tmp_path / "secret.csv"),
-                                                                    "subject": "Hi"}, tmp_path / "p", tmp_path / "h")
+    z = build_zip(tmp_path, ROOT, "sent to jane.doe@example.com",
+                  {"csv": str(tmp_path / "secret.csv"), "subject": "Hi", "google_key": str(tmp_path / "k.json"),
+                   "sheet_url": "https://docs.google.com/spreadsheets/d/SECRETID/edit"}, tmp_path / "p", tmp_path / "h")
     with zipfile.ZipFile(z) as zf:
         names = set(zf.namelist())
         assert names == {"log_masked.txt", "versions.json", "settings_masked.json", "self_test.txt"}
         assert "jane.doe@" not in zf.read("log_masked.txt").decode()
-        assert str(tmp_path) not in zf.read("settings_masked.json").decode()
+        masked = zf.read("settings_masked.json").decode()
+        assert str(tmp_path) not in masked and "SECRETID" not in masked
 
 
 # ------------------------------------------------------------------ agent

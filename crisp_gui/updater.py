@@ -37,7 +37,7 @@ API_LATEST = "https://api.github.com/repos/{repo}/releases/latest"
 CODE_SUFFIXES = {".py", ".sh", ".bat", ".md", ".txt", ".html"}
 CODE_NAMES = {"VERSION", ".gitignore", ".gitattributes"}
 # Never touched, wherever they appear.
-PROTECTED_DIRS = {".venv", "venv", "backups", "runs", "logs", "dev", "dist", ".git", ".github",
+PROTECTED_DIRS = {".venv", "venv", "backups", "runs", "logs", "dev", "dist", ".git", ".github", "sheet_cache", "diagnostics",
                   "browser_profile", ".crisp_email_agent", "__pycache__", ".pytest_cache"}
 PROTECTED_SUFFIXES = {".csv", ".json", ".pem", ".key", ".log", ".lock", ".env"}
 PROTECTED_PREFIXES = ("credentials", "service_account", ".env", "history", "debug_")

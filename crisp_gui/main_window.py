@@ -10,6 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import send_control as sc  # noqa: E402
+import sheet_source as ss  # noqa: E402  (gspread is imported only when used)
 
 from PySide6.QtCore import QProcess, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QKeySequence, QShortcut
@@ -197,6 +198,11 @@ class MainWindow(QMainWindow):
         c = self.campaign
         c.browse.clicked.connect(self.browse_csv)
         c.dnc_browse.clicked.connect(self.browse_dnc)
+        c.source.changed.connect(self._source_changed)
+        c.key_browse.clicked.connect(self.browse_key)
+        c.load_tabs.clicked.connect(self.load_sheet_tabs)
+        c.test_sheet.clicked.connect(self.test_sheet)
+        c.sheet_tab.currentTextChanged.connect(self._sheet_tab_changed)
         c.retry_failed.clicked.connect(lambda: self.start_run(retry_only=True))
         c.random_delay.toggled.connect(lambda on: None if self._loading else self.prefs.set_random_delay(on))
 
@@ -249,6 +255,10 @@ class MainWindow(QMainWindow):
         self.campaign.dry.setChecked(True)   # always start safe
         self.campaign.skip_failed.setChecked(False)   # opt-in every launch
         self.campaign.random_delay.setChecked(self.prefs.random_delay())
+        tab = self.prefs.sheet_tab()
+        if tab:
+            self.campaign.sheet_tab.addItem(tab)
+        self._apply_source(self.prefs.source())
         sc.delete_old_runs(self.runs_root, days=30)
         self.settings.theme.set_value(self.tm.mode)
         geo = self.prefs.geometry()
@@ -334,7 +344,9 @@ class MainWindow(QMainWindow):
             # A different file has different rows: forget the old range.
             for f in (self.campaign.row_from, self.campaign.row_to):
                 f.edit.clear()
-        if key in ("csv", "reference", "row_from", "row_to", "dnc"):
+        if key in ("sheet_url",):
+            self._sheet_preview_key = None
+        if key in ("csv", "reference", "row_from", "row_to", "dnc", "sheet_url"):
             self.csv_timer.start()
         self._validate_fields()
         self._update_summary()
@@ -350,7 +362,108 @@ class MainWindow(QMainWindow):
         values = {k: f.text() for k, f in self.campaign.fields().items()}
         values["skip_failed"] = "true" if self.campaign.skip_failed.isChecked() else "false"
         values["random_delay"] = "true" if self.campaign.random_delay.isChecked() else "false"
+        values["source"] = self.source()
+        values["sheet_tab"] = self.campaign.sheet_tab.currentText().strip()
+        values["data_dir"] = str(self.data_dir)
         return values
+
+    # ============================================================ Google Sheet
+    def source(self) -> str:
+        return self.campaign.source.value() or "csv"
+
+    def _apply_source(self, value: str):
+        c = self.campaign
+        c.source.set_value(value)
+        c.csv_box.setVisible(value == "csv")
+        c.sheet_box.setVisible(value == "sheet")
+
+    def _source_changed(self, value: str):
+        self.prefs.set_source(value)
+        self._apply_source(value)
+        self.refresh_csv()
+
+    def _sheet_tab_changed(self, value: str):
+        if not self._loading:
+            self.prefs.set_sheet_tab(value.strip())
+            self.refresh_csv()
+
+    def browse_key(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Choose the service-account key", str(Path.home()),
+                                              "JSON key (*.json);;All files (*)")
+        if path:
+            self.campaign.google_key.edit.setText(path)
+
+    def _sheet_factory(self, url: str, tab: str, key: str):
+        return ss.SheetSource(url, tab, key).connect()
+
+    def _open_sheet(self, need_tab: bool):
+        c = self.campaign
+        problem = ss.key_problem(c.google_key.text(), ROOT)
+        if problem:
+            c.google_key.set_state("error", problem)
+            return None
+        try:
+            ss.sheet_id(c.sheet_url.text())
+        except ss.SheetError as exc:
+            c.sheet_url.set_state("error", str(exc))
+            return None
+        tab = c.sheet_tab.currentText().strip()
+        if need_tab and not tab:
+            c.sheet_info.setText("Click Load tabs and choose the tab.")
+            return None
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            return self._sheet_factory(c.sheet_url.text(), tab, c.google_key.text())
+        except ss.SheetError as exc:
+            c.sheet_info.setText(str(exc))
+            return None
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def load_sheet_tabs(self):
+        src = self._open_sheet(need_tab=False)
+        if src is None:
+            return
+        try:
+            tabs = src.tabs()
+        except ss.SheetError as exc:
+            self.campaign.sheet_info.setText(str(exc))
+            return
+        combo = self.campaign.sheet_tab
+        current = combo.currentText()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(tabs)
+        combo.blockSignals(False)
+        if current in tabs:
+            combo.setCurrentText(current)
+        self._sheet_tab_changed(combo.currentText())
+        self.campaign.sheet_info.setText(f"{len(tabs)} tab(s) found. Choose one, then Test connection.")
+
+    def _sheet_preview_path(self) -> Path:
+        return self.data_dir / "sheet_cache" / "preview.csv"
+
+    def test_sheet(self):
+        """Download the tab and show '120 rows, 45 eligible, 3 duplicates'."""
+        src = self._open_sheet(need_tab=True)
+        if src is None:
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            rows, header = src.download()
+            ss.SheetSource.write_local(self._sheet_preview_path(), rows, header)
+        except ss.SheetError as exc:
+            self.campaign.sheet_info.setText(str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._sheet_preview_key = (self.campaign.sheet_url.text(), self.campaign.sheet_tab.currentText().strip())
+        pending = ss.PendingQueue(self.data_dir / "sheet_cache" / "pending.json").for_sheet(src.id, src.tab)
+        self.refresh_csv()
+        note = f" {len(pending)} earlier result(s) still waiting to be written to the Sheet." if pending else ""
+        self.campaign.sheet_info.setText(
+            f"Connected as {ss.service_account_email(self.campaign.google_key.text())}. "
+            f"Tab '{src.tab}': {self.stats.preview() if self.stats.ok else self.stats.error}.{note}")
 
     def browse_dnc(self):
         current = self.campaign.dnc.text() or self.campaign.csv.text()
@@ -377,7 +490,13 @@ class MainWindow(QMainWindow):
     def refresh_csv(self):
         self.csv_timer.stop()
         v = self.campaign_values()
-        self.stats = read_stats(v["csv"], v["reference"], v["row_from"], v["row_to"], v["dnc"])
+        path = v["csv"]
+        if self.source() == "sheet":
+            fresh = getattr(self, "_sheet_preview_key", None) == (v["sheet_url"], v["sheet_tab"])
+            path = str(self._sheet_preview_path()) if fresh and self._sheet_preview_path().exists() else ""
+        self.stats = read_stats(path, v["reference"], v["row_from"], v["row_to"], v["dnc"])
+        if self.source() == "sheet" and not path:
+            self.stats.error = "Click Test connection to read the Sheet."
         self._validate_fields()
         self._update_metrics()
         self._update_summary()
@@ -389,8 +508,15 @@ class MainWindow(QMainWindow):
         st = self.stats
         for f in (c.row_from, c.row_to):
             f.set_state("help")
+        sheet = self.source() == "sheet"
+        target = c.sheet_url if sheet else c.csv
+        if sheet:
+            c.csv.set_state("help")
+            problem = ss.key_problem(c.google_key.text(), ROOT)
+            c.google_key.set_state("error", problem) if problem else c.google_key.set_state("help")
+            ok = ok and not problem
         if st.ok and st.range_error:
-            c.csv.set_state("ok", f"{st.total} rows in the file")
+            target.set_state("ok", f"{st.total} rows in the file")
             field = c.row_from if st.range_error_field == "from" else c.row_to
             field.set_state("error", st.range_error)
             ok = False
@@ -400,9 +526,9 @@ class MainWindow(QMainWindow):
                 shown = "; ".join(f"row {n}: {e or '(blank)'} ({why})" for n, e, why in st.invalid_rows[:3])
                 more = f" and {len(st.invalid_rows) - 3} more" if len(st.invalid_rows) > 3 else ""
                 text += f"\nInvalid (will be skipped): {shown}{more}"
-            c.csv.set_state("ok", text)
+            target.set_state("ok", text)
         else:
-            c.csv.set_state("error", st.error)
+            target.set_state("error", st.error)
             ok = False
         if st.dnc_error:
             c.dnc.set_state("error", st.dnc_error)
@@ -556,7 +682,10 @@ class MainWindow(QMainWindow):
         kv = self.dashboard.kv
         v = self.campaign_values()
         csv_name = Path(v["csv"]).name if v["csv"] else ""
-        kv.set("csv", csv_name, v["csv"])
+        if v.get("source") == "sheet":
+            kv.set("csv", f"Google Sheet · {v.get('sheet_tab') or 'no tab'}", v.get("sheet_url", ""))
+        else:
+            kv.set("csv", csv_name, v["csv"])
         kv.set("subject", v["subject"])
         kv.set("shortcut", v["shortcut"])
         kv.set("segment", v["segment"])
@@ -614,7 +743,9 @@ class MainWindow(QMainWindow):
                          ("Limits", self._limits_text(v)),
                          ("Rows", f"{self.stats.range_from}–{self.stats.range_to} of {self.stats.total}"),
                          ("Subject", v["subject"]), ("Shortcut", v["shortcut"]),
-                         ("Segment", v["segment"]), ("CSV", Path(v["csv"]).name)],
+                         ("Segment", v["segment"]),
+                         ("Source", f"Google Sheet, tab {v['sheet_tab']}" if v.get("source") == "sheet"
+                          else f"CSV {Path(v['csv']).name}")],
                 confirm=f"Send {n} email{'s' if n != 1 else ''}", tone="danger")
             if not ok:
                 return

@@ -84,7 +84,13 @@ def build_zip(dest_dir: Path, root: Path, log_text: str, settings: dict, profile
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     path = dest_dir / f"diagnostics-{datetime.now():%Y-%m-%d_%H%M%S}.zip"
-    safe_settings = {k: (_mask_path(v) if k in ("csv", "dnc") else mask_emails(str(v))) for k, v in settings.items()}
+    def safe(key, value):
+        if key in ("csv", "dnc", "google_key", "run_dir", "history_file", "data_dir"):
+            return _mask_path(str(value))
+        if key == "sheet_url":
+            return "(set)" if value else ""
+        return mask_emails(str(value))
+    safe_settings = {k: safe(k, v) for k, v in settings.items()}
     tests = self_test(root, settings.get("csv", ""), profile_dir, history_file)
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("log_masked.txt", mask_emails(log_text))

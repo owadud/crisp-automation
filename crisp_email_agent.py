@@ -113,6 +113,15 @@ DEBUG_DIR = RUN_DIR or BASE_DIR
 EXTRA_COLUMNS = ["Sent At", "Status", "Error", "Conversation link"]
 REPORT = []   # one dict per processed recipient, written to RUN_DIR/report.csv
 
+# Source: "csv" (default) or "sheet" (Google Sheet, see sheet_source.py).
+SOURCE = os.environ.get("CRISP_SOURCE", "csv").strip().lower() or "csv"
+SHEET_URL = os.environ.get("CRISP_SHEET_URL", "").strip()
+SHEET_TAB = os.environ.get("CRISP_SHEET_TAB", "").strip()
+GOOGLE_KEY = os.environ.get("CRISP_GOOGLE_KEY", "").strip()
+DATA_DIR = Path(os.environ.get("CRISP_DATA_DIR", "").strip() or str(BASE_DIR))
+SHEET = None         # SheetSource while a Sheet run is active
+SHEET_QUEUE = None   # PendingQueue of Sheet writes that failed
+
 # The desktop GUI creates this file to ask for a graceful stop. The agent
 # only checks it BETWEEN recipients, so a send is never interrupted halfway.
 STOP_FILE = os.environ.get("CRISP_STOP_FILE", "").strip()
@@ -325,6 +334,51 @@ def release_lock():
         pass
 
 
+def open_sheet():
+    """Download the Sheet into a local working CSV; the run then uses that file."""
+    global CSV_FILE, SHEET, SHEET_QUEUE
+    import sheet_source as ss
+    problem = ss.key_problem(GOOGLE_KEY, BASE_DIR)
+    if problem:
+        raise RuntimeError(problem)
+    src = ss.SheetSource(SHEET_URL, SHEET_TAB, GOOGLE_KEY).connect()
+    queue = ss.PendingQueue(DATA_DIR / "sheet_cache" / "pending.json")
+    rows, header = src.download()
+    had_pending = bool(queue.for_sheet(src.id, src.tab))
+    remaining = queue.flush(src) if had_pending else []
+    if had_pending:
+        rows, header = src.download()
+    # Results still not in the Sheet count as done locally: never re-send them.
+    for item in remaining:
+        for row in rows:
+            if rules.normalize_email(row.get("Contact Email")) == rules.normalize_email(item["email"]):
+                row.update(item["values"])
+    safe_tab = re.sub(r"[^A-Za-z0-9_-]+", "_", SHEET_TAB)[:40]
+    local = ss.SheetSource.write_local(DATA_DIR / "sheet_cache" / f"{src.id[:12]}_{safe_tab}.csv", rows, header)
+    CSV_FILE = local.resolve()
+    SHEET, SHEET_QUEUE = src, queue
+    print(f"Google Sheet: tab '{SHEET_TAB}', {len(rows)} rows. Working copy: {local.name}")
+    emit("sheet_loaded", tab=SHEET_TAB, rows=len(rows), pending=len(remaining))
+    if remaining:
+        print(f"WARNING: {len(remaining)} earlier result(s) are still not written to the Sheet. "
+              "They are kept as sent here and retried; they will NOT be sent again.")
+
+
+def sync_row(rows, row_index):
+    """Live runs: copy this row's result columns to the Sheet (by email). Never raises."""
+    if SHEET is None or DRY_RUN:
+        return
+    row = rows[row_index]
+    values = {c: row.get(c, "") for c in ("Mail Sent", *EXTRA_COLUMNS)}
+    email = clean(row.get("Contact Email"))
+    try:
+        SHEET.push(email, values, prefer_row=row_index + 2)
+    except Exception as exc:  # noqa: BLE001
+        SHEET_QUEUE.add(SHEET.id, SHEET.tab, email, row_index + 2, values)
+        print(f"  WARNING: Sheet not updated for {email} ({exc}). Saved locally; retried later. "
+              "It will not be sent again.")
+
+
 def ensure_columns(fieldnames):
     for column in EXTRA_COLUMNS:
         if column not in fieldnames:
@@ -334,6 +388,7 @@ def ensure_columns(fieldnames):
 def mark_precheck(rows, fieldnames):
     """Live runs: write Status/Error for rows skipped before the run."""
     changed = False
+    changed_rows = []
     labels = {rules.INVALID: sc.INVALID, rules.DUPLICATE: sc.SKIPPED, rules.DO_NOT_CONTACT: sc.SKIPPED}
     reasons = {rules.DUPLICATE: "duplicate email", rules.DO_NOT_CONTACT: "do-not-contact list"}
     for index, row, outcome, detail in classify_rows(rows):
@@ -342,8 +397,11 @@ def mark_precheck(rows, fieldnames):
             if row.get("Status") != status or row.get("Error") != error:
                 row["Status"], row["Error"] = status, error
                 changed = True
+                changed_rows.append(index)
     if changed:
         save_csv(rows, fieldnames)
+        for index in changed_rows:
+            sync_row(rows, index)
 
 
 def record(rows, fieldnames, row_index, status, error=""):
@@ -353,6 +411,7 @@ def record(rows, fieldnames, row_index, status, error=""):
     rows[row_index]["Status"] = status
     rows[row_index]["Error"] = str(error)[:300]
     save_csv(rows, fieldnames)
+    sync_row(rows, row_index)
 
 
 def log_result(row_index, row, result, error="", link=""):
@@ -1932,6 +1991,8 @@ def main():
         _main()
     finally:
         release_lock()
+        if SHEET is not None:
+            SHEET.release_lock()
 
 
 def health_check():
@@ -2037,6 +2098,9 @@ def _main():
     )
     emit("run_start", dry_run=DRY_RUN, csv=CSV_FILE.name, subject=SUBJECT)
 
+    if SOURCE == "sheet":
+        open_sheet()
+
     rows, fieldnames = load_csv()
 
     if ROW_FROM or ROW_TO:
@@ -2055,6 +2119,12 @@ def _main():
     if RUN_DIR:
         RUN_DIR.mkdir(parents=True, exist_ok=True)
         (RUN_DIR / "recipients_before.csv").write_bytes(CSV_FILE.read_bytes())
+
+    if not DRY_RUN and SHEET is not None:
+        SHEET.ensure_columns(EXTRA_COLUMNS)
+        SHEET.acquire_lock()
+        SHEET.start_heartbeat()
+        print(f"Sheet lock set on tab {SHEET_TAB!r} (refreshed every 30 s).")
 
     if not DRY_RUN:
         ensure_columns(fieldnames)
@@ -2252,6 +2322,7 @@ def _main():
                         rows,
                         fieldnames
                     )
+                    sync_row(rows, row_index)
 
                     print(
                         "  Mail Sent marked TRUE."
@@ -2406,6 +2477,11 @@ def _main():
         )
 
         write_run_files()
+
+        if SHEET is not None and not DRY_RUN:
+            left = SHEET_QUEUE.flush(SHEET)
+            print("Sheet:     all results written." if not left else
+                  f"Sheet:     {len(left)} result(s) not written yet; retried at the next start.")
 
         print("=" * 60)
 
