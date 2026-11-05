@@ -176,6 +176,7 @@ def display_name(row) -> tuple[str, bool]:
 # ------------------------------------------------------------------ who gets an email
 CAMPAIGN_SENT = "campaign_sent"   # already sent in this campaign (history)
 RECENT = "recent"                 # emailed in the last N days (any campaign)
+CLAIMED = "claimed"               # shared Sheet: another runner holds it, or it needs a check in Crisp
 
 ACTIONS = {
     ELIGIBLE: "Send",
@@ -188,6 +189,7 @@ ACTIONS = {
     CAMPAIGN_SENT: "Skip: already sent in this campaign",
     RECENT: "Skip: emailed recently",
     NOT_RETRY: "Skip: not failed last time",
+    CLAIMED: "Skip: claimed by another runner",
 }
 
 
@@ -232,6 +234,8 @@ def classify(rows, reference_filter: str, start: int, end: int, do_not_contact=f
             t, campaign, result = history.recent(email)
             note = "possibly sent (unconfirmed)" if result.lower() == "unconfirmed" else "sent"
             out.append((index, row, RECENT, f"{note} {t} in '{campaign or '?'}'"))
+        elif history is not None and getattr(history, "claimed", None) and history.claimed(email):
+            out.append((index, row, CLAIMED, history.claimed(email)))
         elif retry_only and clean(row.get("Status")).lower() not in RETRY_STATUSES:
             out.append((index, row, NOT_RETRY, ""))
         else:

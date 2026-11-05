@@ -8,8 +8,12 @@ How a Sheet run works (shared by the agent and the GUI):
   queue on disk; the next run retries it first, and those emails count as
   already sent, so a dropped connection can never cause a re-send.
 - Writes are paced (about 1 per second) with back-off on rate limits.
-- A hidden "_crisp_control" tab holds a lock: "Running: <PC> since 10:02",
-  refreshed every 30 s and treated as stale after 5 minutes.
+- Several runners may use one Sheet at the same time: each recipient is
+  claimed separately (see claims.py). There is no whole-Sheet lock any more.
+- The hidden "_crisp_control" tab row 1 says "Running: shared mode" while
+  any 3.8+ runner is active. Older app versions (which only know the old
+  whole-Sheet lock) read that and refuse to start, so they cannot send
+  alongside claim-aware runners. An older version's own lock blocks 3.8+.
 
 gspread/google-auth are imported only when a Sheet is used.
 """
@@ -32,6 +36,8 @@ import recipient_rules as rules  # noqa: E402  (same column rules as CSV files)
 REQUIRED_COLUMNS = ("Contact Email",)   # only the email column is required
 CONTROL_TAB = "_crisp_control"
 STALE_MINUTES = 5
+SHARED_OWNER = "__claims__"     # control-tab owner written by claim-aware (3.8+) runners
+SHARED_TEXT = "Running: shared mode (app 3.8+). Older app versions must update before sending."
 HEARTBEAT_SECONDS = 30
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -321,25 +327,40 @@ class SheetSource:
                 pass
             return ws
 
-    def acquire_lock(self, now=None) -> None:
+    def mark_shared_run(self, now=None) -> None:
+        """Say "shared mode" in the control tab (keeps OLD app versions out).
+        Other claim-aware runners are never blocked. Only an older version's
+        fresh whole-Sheet lock blocks, because that version does not know claims."""
         now = now or datetime.now(timezone.utc)
         ws = self._control()
         values = self.pacer.call(ws.get_all_values) or [[]]
         first = (values[0] + ["", "", ""])[:3] if values else ["", "", ""]
         text, beat, owner = first
-        if text.startswith("Running:") and owner and owner != self.owner:
+        if text.startswith("Running:") and owner and owner not in (self.owner, SHARED_OWNER):
             try:
                 age = now - datetime.fromisoformat(beat)
             except ValueError:
                 age = timedelta(0)
             if age < timedelta(minutes=STALE_MINUTES):
-                raise SheetError(f"The Sheet is in use: {text} (last seen {int(age.total_seconds() // 60)} min ago). "
-                                 f"Wait until that run ends, or until it is {STALE_MINUTES} minutes old.")
-        local = now.astimezone(timezone(timedelta(hours=6)))
-        self.pacer.call(ws.update, values=[[f"Running: {self.owner} since {local:%H:%M} (Dhaka)",
-                                            now.isoformat(), self.owner]],
+                raise SheetError(f"An older version of this app is sending from this Sheet ({text}). "
+                                 "It does not know about shared sending. Update that computer to the "
+                                 "latest version, or wait until its run ends.")
+        self.pacer.call(ws.update, values=[[SHARED_TEXT, now.isoformat(), SHARED_OWNER]],
                         range_name="A1", value_input_option="RAW")
         self._control_ws = ws
+
+    def is_marked_sent(self, email: str) -> bool:
+        """Fresh read: is any row with this email ticked in Mail Sent right now?"""
+        if self._col("Mail Sent") not in self.header:
+            return False
+        ws = self.worksheet()
+        emails = self.pacer.call(ws.col_values, self.header.index(self._col("Contact Email")) + 1)
+        marks = self.pacer.call(ws.col_values, self.header.index(self._col("Mail Sent")) + 1)
+        target = str(email or "").strip().lower()
+        for i, value in enumerate(emails):
+            if i and str(value).strip().lower() == target and i < len(marks) and rules.is_checked(marks[i]):
+                return True
+        return False
 
     def heartbeat(self, now=None) -> None:
         now = now or datetime.now(timezone.utc)
@@ -356,6 +377,8 @@ class SheetSource:
         threading.Thread(target=loop, daemon=True).start()
 
     def release_lock(self) -> None:
+        """Stop the heartbeat. A shared-mode marker is left to go stale by itself
+        (other runners may still be active); an old-style own lock is cleared."""
         self._beat_stop.set()
         ws = getattr(self, "_control_ws", None)
         if ws is None:
@@ -393,6 +416,13 @@ class PendingQueue:
                       "time": datetime.now().isoformat(timespec="seconds")})
         self._save(items)
 
+    def add_claim(self, sheet: str, tab: str, row: list) -> None:
+        """A claims-log row (e.g. Sent) that could not be written; appended later."""
+        items = self.items()
+        items.append({"sheet": sheet, "tab": tab, "kind": "claim", "row": row,
+                      "time": datetime.now().isoformat(timespec="seconds")})
+        self._save(items)
+
     def for_sheet(self, sheet: str, tab: str) -> list[dict]:
         return [i for i in self.items() if i.get("sheet") == sheet and i.get("tab") == tab]
 
@@ -404,7 +434,13 @@ class PendingQueue:
                 keep.append(item)
                 continue
             try:
-                source.push(item["email"], item["values"], item.get("row"))
+                if item.get("kind") == "claim":
+                    import claims as _claims
+                    ws = source.pacer.call(source.sh.worksheet, _claims.CLAIMS_TAB)
+                    source.pacer.call(ws.append_rows, [item["row"]], value_input_option="RAW",
+                                      insert_data_option="INSERT_ROWS", table_range="A1")
+                else:
+                    source.push(item["email"], item["values"], item.get("row"))
             except SheetError:
                 keep.append(item)
                 remaining.append(item)

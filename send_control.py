@@ -177,19 +177,29 @@ class HistoryIndex:
     def __init__(self, path: Path, campaign: str = "", days: int = 0, now: datetime | None = None):
         self.campaign = str(campaign or "").strip().lower()
         self.days = max(0, int(days or 0))
-        cutoff = stamp((now or now_dhaka()) - timedelta(days=self.days)) if self.days else None
+        self._cutoff = stamp((now or now_dhaka()) - timedelta(days=self.days)) if self.days else None
         self._campaign: dict = {}
         self._recent: dict = {}
+        self.blocker = None    # shared Sheet: callable(email) -> reason it is claimed elsewhere
         for r in read_history(path):
-            result = r.get("Result", "")
-            if r.get("Mode") != "live" or result not in (SENT, UNCONFIRMED):
+            if r.get("Mode") != "live":
                 continue
-            email = str(r.get("Email", "")).strip().lower()
-            entry = (r.get("Time", ""), r.get("Campaign", ""), result)
-            if self.campaign and str(r.get("Campaign", "")).strip().lower() == self.campaign:
+            self.add(r.get("Email", ""), r.get("Time", ""), r.get("Campaign", ""), r.get("Result", ""))
+
+    def add(self, email: str, time_text: str, campaign: str, result: str) -> None:
+        """One live send, from history.csv or from the shared Sheet log."""
+        if result not in (SENT, UNCONFIRMED):
+            return
+        email = str(email or "").strip().lower()
+        entry = (str(time_text or ""), str(campaign or ""), result)
+        if self.campaign and entry[1].strip().lower() == self.campaign:
+            if entry[0] >= self._campaign.get(email, ("",))[0]:
                 self._campaign[email] = entry
-            if cutoff and entry[0] >= cutoff and entry[0] >= self._recent.get(email, ("",))[0]:
-                self._recent[email] = entry
+        if self._cutoff and entry[0] >= self._cutoff and entry[0] >= self._recent.get(email, ("",))[0]:
+            self._recent[email] = entry
+
+    def claimed(self, email: str) -> str:
+        return self.blocker(email) if self.blocker else ""
 
     def campaign_sent(self, email: str):
         return self._campaign.get(str(email or "").strip().lower())

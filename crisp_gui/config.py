@@ -52,6 +52,13 @@ CAMPAIGN_DEFAULTS = {
 
 THEMES = ("light", "dark", "system")
 
+# Shared Google Sheet (several people sending from one Sheet at once).
+SHARED_DEFAULTS = {
+    "runner_name": "",       # shown to teammates; blank = this computer's name
+    "claim_batch": "10",     # recipients claimed at a time
+    "claim_expiry": "5",     # minutes without a heartbeat before others may take unsent claims
+}
+
 
 class Preferences:
     """Small typed wrapper around QSettings.
@@ -94,6 +101,14 @@ class Preferences:
 
     def set_sheet_tab(self, value: str) -> None:
         self._s.setValue("campaign/sheet_tab", value)
+
+    # shared Sheet ------------------------------------------------------------
+    def shared(self) -> dict:
+        return {k: str(self._s.value(f"shared/{k}", d) or d) for k, d in SHARED_DEFAULTS.items()}
+
+    def set_shared(self, key: str, value: str) -> None:
+        if key in SHARED_DEFAULTS:
+            self._s.setValue(f"shared/{key}", value)
 
     # sending control -------------------------------------------------------
     def random_delay(self) -> bool:

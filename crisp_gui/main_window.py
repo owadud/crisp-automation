@@ -294,6 +294,11 @@ class MainWindow(QMainWindow):
         self._apply_source(self.prefs.source())
         sc.delete_old_runs(self.runs_root, days=30)
         self.settings.theme.set_value(self.tm.mode)
+        shared = self.prefs.shared()
+        for key, field in (("runner_name", self.settings.runner_name), ("claim_batch", self.settings.claim_batch),
+                           ("claim_expiry", self.settings.claim_expiry)):
+            field.edit.setText(shared[key])
+            field.edit.editingFinished.connect(self._save_shared)
         geo = self.prefs.geometry()
         if geo is not None:
             try:
@@ -400,7 +405,24 @@ class MainWindow(QMainWindow):
         values["source"] = self.source()
         values["sheet_tab"] = self.campaign.sheet_tab.currentText().strip()
         values["data_dir"] = str(self.data_dir)
+        values.update(self._shared_values())
         return values
+
+    def _shared_values(self) -> dict:
+        s = self.settings
+        out = {"runner_name": s.runner_name.text()}
+        for key, field, default, low, high in (("claim_batch", s.claim_batch, 10, 1, 100),
+                                               ("claim_expiry", s.claim_expiry, 5, 2, 120)):
+            try:
+                value = min(high, max(low, int(field.text())))
+            except ValueError:
+                value = default
+            out[key] = str(value)
+        return out
+
+    def _save_shared(self):
+        for key, value in self._shared_values().items():
+            self.prefs.set_shared(key, value)
 
     # ============================================================ Google Sheet
     def source(self) -> str:
@@ -512,6 +534,9 @@ class MainWindow(QMainWindow):
     def _sheet_preview_path(self) -> Path:
         return self.data_dir / "sheet_cache" / "preview.csv"
 
+    def _sheet_shared_path(self) -> Path:
+        return self.data_dir / "sheet_cache" / "preview_shared.json"
+
     def test_sheet(self):
         """Connect, list tabs (pick the first if none chosen), download, show
         '120 rows, 45 eligible, 3 duplicates'. Runs in the background."""
@@ -530,6 +555,9 @@ class MainWindow(QMainWindow):
             src.tab, src.ws = chosen, None
             rows, header = src.download()
             ss.SheetSource.write_local(preview, rows, header)
+            import claims
+            shared = self._sheet_shared_path()
+            shared.write_text(json.dumps(claims.read_raw(src)), encoding="utf-8")
             return tabs, chosen, src.id, len(rows)
         self._run_sheet_job("test", job)
 
@@ -562,9 +590,11 @@ class MainWindow(QMainWindow):
         if self.source() == "sheet":
             fresh = getattr(self, "_sheet_preview_key", None) == (v["sheet_url"], v["sheet_tab"])
             path = str(self._sheet_preview_path()) if fresh and self._sheet_preview_path().exists() else ""
+        shared = str(self._sheet_shared_path()) if self.source() == "sheet" and path else ""
         self.stats = read_stats(path, v["reference"], v["row_from"], v["row_to"], v["dnc"],
                                 history_file=str(self.history_file), campaign=self.campaign_name(v),
-                                recent_days=v.get("recent_days") or 0)
+                                recent_days=v.get("recent_days") or 0, shared_file=shared,
+                                claim_expiry=v.get("claim_expiry") or 5)
         if self.source() == "sheet" and not path:
             self.stats.error = "Click Test connection to read the Sheet."
         self._validate_fields()

@@ -66,6 +66,15 @@ class FakeWorksheet:
                 v = "TRUE"   # a checkbox cell shows ticked
             self._set(row, col, v)
 
+    def append_rows(self, values, value_input_option="RAW", insert_data_option=None, table_range=None):
+        self._check()
+        self.writes += 1
+        last = len(self.values)
+        while last and not any(self.values[last - 1]):
+            last -= 1
+        del self.values[last:]
+        self.values.extend([list(r) for r in values])
+
     def hide(self):
         self.hidden = True
 

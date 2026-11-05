@@ -74,6 +74,8 @@ class RunState:
     sent_confirmed: int = 0           # real sends Crisp confirmed
     failed: int = 0
     skipped: int = 0                  # failed BEFORE Send and skipped (opt-in)
+    elsewhere: int = 0                # shared Sheet: taken by another runner (not sent here)
+    shared_counts: tuple = ()         # (free for me, claimed by others, already sent)
     retry: list = field(default_factory=list)   # (email, name, reason) not sent
     precheck: str = ""                # "Skipped before start: ..." from the agent
     warnings: int = 0
@@ -102,7 +104,7 @@ class RunState:
 
     @property
     def processed(self) -> int:
-        return self.completed + self.failed + self.skipped
+        return self.completed + self.failed + self.skipped + self.elsewhere
 
     @property
     def progress(self) -> float:
@@ -419,6 +421,14 @@ class RunParser:
             s.completed = int(ev.get("checked") or 0)
             s.summary_seen = True
             s.step = f"Checked {s.completed} of {ev.get('total', s.eligible)}"
+        elif kind == "claimed_elsewhere":
+            s.elsewhere += 1
+            s.position = int(ev.get("position") or s.position)
+            s.eligible = int(ev.get("total") or s.eligible)
+            s.step = "Taken by another runner"
+            s.history.append((str(ev.get("email") or ""), "other runner"))
+        elif kind == "shared_counts":
+            s.shared_counts = (int(ev.get("free") or 0), int(ev.get("claimed") or 0), int(ev.get("sent") or 0))
         elif kind == "health_wait":
             s.step = "Open any conversation in the Crisp window"
 

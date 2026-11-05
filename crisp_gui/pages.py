@@ -456,6 +456,19 @@ class SettingsPage(Page):
         card.body.addLayout(btns)
         self.add(card)
 
+        card = Card("Shared Google Sheet", "Teammates can send from the same Sheet at the same time. "
+                    "Each recipient is claimed before sending, so nobody is emailed twice.")
+        row = ResponsiveRow(min_item_width=180)
+        self.runner_name = Field("Your name", "Shown to teammates. Blank = this computer's name.",
+                                 placeholder="e.g. Owadud")
+        self.claim_batch = Field("Batch size", "Recipients claimed at a time.", placeholder="10")
+        self.claim_expiry = Field("Claim expiry (minutes)", "Unsent claims of a runner that stopped "
+                                  "responding are freed after this.", placeholder="5")
+        for f in (self.runner_name, self.claim_batch, self.claim_expiry):
+            row.add(f)
+        card.body.addWidget(row)
+        self.add(card)
+
         card = Card("Campaign defaults", "Restore the subject, shortcut, segment, reference and CSV to the original values.")
         self.reset = button("Reset campaign fields", "dangerOutline")
         h = QHBoxLayout()

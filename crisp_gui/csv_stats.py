@@ -49,6 +49,8 @@ class CsvStats:
     campaign_sent: int = 0   # skipped: already sent in this campaign (history)
     recent: int = 0          # skipped: emailed in the last N days (history)
     recent_days: int = 0
+    claimed: int = 0         # shared Sheet: held by other runners, or waiting for a check in Crisp
+    shared: bool = False     # numbers include the shared Sheet log
     invalid_rows: list = field(default_factory=list)   # (serial, email, reason)
     recent_rows: list = field(default_factory=list)    # (serial, email, detail)
     plan: list = field(default_factory=list)           # per-row preview (dicts)
@@ -69,6 +71,8 @@ class CsvStats:
             parts.append(f"{self.recent} skipped: emailed in the last {self.recent_days} days")
         if self.campaign_sent:
             parts.append(f"{self.campaign_sent} already sent in this campaign")
+        if self.claimed:
+            parts.append(f"{self.claimed} claimed by other runners")
         if self.do_not_contact:
             parts.append(f"{self.do_not_contact} do-not-contact")
         if self.marked_sent:
@@ -77,7 +81,7 @@ class CsvStats:
             parts.append(f"{self.other_reference} other reference")
         if self.missing_email:
             parts.append(f"{self.missing_email} without email")
-        parts.append(f"{self.eligible} to send")
+        parts.append(f"{self.eligible} free for you to send" if self.shared else f"{self.eligible} to send")
         if self.missing_optional:
             parts.append("optional columns missing: " + ", ".join(self.missing_optional))
         head = f"Rows {self.range_from}–{self.range_to} of {self.total}: " if self.range_set else ""
@@ -111,7 +115,8 @@ def parse_range(from_text, to_text, total: int):
 
 
 def read_stats(path_text: str, reference_filter: str, row_from: str = "", row_to: str = "",
-               dnc_path: str = "", history_file: str = "", campaign: str = "", recent_days=0) -> CsvStats:
+               dnc_path: str = "", history_file: str = "", campaign: str = "", recent_days=0,
+               shared_file: str = "", claim_expiry=5) -> CsvStats:
     stats = CsvStats()
     if not path_text or not path_text.strip():
         stats.error = "Choose a recipient CSV file."
@@ -169,13 +174,26 @@ def read_stats(path_text: str, reference_filter: str, row_from: str = "", row_to
         stats.recent_days = max(0, int(_clean(recent_days) or 0))
     except ValueError:
         stats.recent_days = 0
-    history = (sc.HistoryIndex(Path(history_file), campaign, stats.recent_days)
-               if _clean(history_file) else None)
+    history = (sc.HistoryIndex(Path(_clean(history_file) or "no-history.csv"), campaign, stats.recent_days)
+               if _clean(history_file) or _clean(shared_file) else None)
+    if _clean(shared_file) and Path(shared_file).is_file():
+        # Shared Sheet: sends and claims by every runner (read at "Test connection").
+        import json
+        import claims
+        try:
+            raw = json.loads(Path(shared_file).read_text(encoding="utf-8"))
+            snap = claims.snapshot_from_raw(raw, campaign, int(_clean(claim_expiry) or 5), stats.recent_days)
+            for email, at, camp, result in snap.history():
+                history.add(email, at, camp, result)
+            history.blocker = lambda email: snap.blocker(email)
+            stats.shared = True
+        except (OSError, ValueError, TypeError) as exc:
+            stats.dnc_error = stats.dnc_error or f"Could not read who else is sending: {exc}"
 
     counters = {rules.ELIGIBLE: "eligible", rules.OTHER_REFERENCE: "other_reference",
                 rules.NO_EMAIL: "missing_email", rules.DUPLICATE: "duplicates",
                 rules.INVALID: "invalid", rules.DO_NOT_CONTACT: "do_not_contact",
-                rules.CAMPAIGN_SENT: "campaign_sent", rules.RECENT: "recent"}
+                rules.CAMPAIGN_SENT: "campaign_sent", rules.RECENT: "recent", rules.CLAIMED: "claimed"}
     for index, row, outcome, detail in rules.classify(rows, reference_filter, start, end, dnc, history=history):
         if outcome == rules.OUT_OF_RANGE:
             continue

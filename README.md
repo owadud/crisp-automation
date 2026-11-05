@@ -167,9 +167,29 @@ How it runs: the tab is downloaded into a local working copy; every result is sa
 first and then written to the Sheet row found by **email** (Mail Sent ticked, Sent At, Status,
 Error, Conversation link). If the internet drops, results wait in a local queue and are written
 at the next start; those emails are never sent again. Writes are paced (about 1 per second).
-While a real run is active, a hidden `_crisp_control` tab shows "Running: <PC> since 10:02",
-refreshed every 30 s; another PC can start only when it is older than 5 minutes.
 Dry runs never write to the Sheet.
+
+### Several people on one Sheet at the same time (3.8)
+
+Teammates can send from the **same Sheet at the same time**, each on their own computer,
+in the same or different campaigns. There is no "Sheet is in use" lock any more.
+- Each recipient is **claimed by email** (never by row number) in a hidden `_crisp_claims` tab,
+  a small batch at a time (Settings > Shared Google Sheet > Batch size, default 10).
+- Right before every send, the app re-reads Mail Sent and its claim. If someone else has it, or
+  it was ticked meanwhile, it is skipped and logged ("Not sent by this runner").
+- "Sending" is written just before the Send click. A recipient left in **Sending** or
+  **Unconfirmed** (a computer crashed after clicking Send) is never retried automatically:
+  check it in Crisp.
+- Each runner writes a heartbeat to `_crisp_runners` every 30 s. If a runner stops responding
+  for the claim expiry (default 5 minutes), its **unsent** claims are released for others,
+  with the reason written in the Note column.
+- Sends by every runner count for "already sent in this campaign" and "emailed in the last
+  N days". Two runners never email one person on the same day, even in different campaigns.
+- Stop releases only this runner's claims that never reached Sending. Pause keeps them.
+- Do not edit or sort the `_crisp_claims` tab by hand: the order of its rows decides who
+  claimed first.
+- Every computer that sends from a shared Sheet needs version 3.8 or later. An older
+  version is refused while a 3.8 runner is active, and an older version's run blocks 3.8.
 
 ## Email-only files, history rules, pause and ETA (3.6)
 

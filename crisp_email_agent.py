@@ -44,6 +44,7 @@ from playwright.sync_api import sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import recipient_rules as rules  # noqa: E402  (same rules as the GUI preview)
 import send_control as sc  # noqa: E402  (limits, Dhaka time, history, run folders)
+import claims  # noqa: E402  (per-recipient claims on a shared Google Sheet)
 
 
 # ============================================================
@@ -120,6 +121,21 @@ SHEET_TAB = os.environ.get("CRISP_SHEET_TAB", "").strip()
 GOOGLE_KEY = os.environ.get("CRISP_GOOGLE_KEY", "").strip()
 DATA_DIR = Path(os.environ.get("CRISP_DATA_DIR", "").strip() or str(BASE_DIR))
 SHEET = None         # SheetSource while a Sheet run is active
+
+# Shared Sheet: several runners at once, each recipient claimed separately (claims.py).
+RUNNER_NAME = os.environ.get("CRISP_RUNNER_NAME", "").strip()
+try:
+    CLAIM_BATCH = max(1, int(os.environ.get("CRISP_CLAIM_BATCH", "") or claims.DEFAULT_BATCH))
+except ValueError:
+    CLAIM_BATCH = claims.DEFAULT_BATCH
+try:
+    CLAIM_EXPIRY = max(1, int(os.environ.get("CRISP_CLAIM_EXPIRY", "") or claims.DEFAULT_EXPIRY_MIN))
+except ValueError:
+    CLAIM_EXPIRY = claims.DEFAULT_EXPIRY_MIN
+CLAIMS = None        # claims.Claims for a live Sheet run
+SHARED = None        # claims.Snapshot read at the start (live and dry runs)
+CURRENT_EMAIL = ""   # recipient being processed (for the Sending mark)
+SEND_LIMIT = None    # shared Sheet: stop after this many sends (max per run / daily cap)
 
 # History rules (history.csv, all campaigns, all files; only real sends count).
 CAMPAIGN = os.environ.get("CRISP_CAMPAIGN", "").strip() or SUBJECT
@@ -276,7 +292,105 @@ def history_index():
     global _HISTORY_INDEX
     if _HISTORY_INDEX is None:
         _HISTORY_INDEX = sc.HistoryIndex(HISTORY_FILE, CAMPAIGN, RECENT_DAYS)
+        if SHARED is not None:
+            # Shared history: sends by every runner on this Sheet count, not only this PC's.
+            for email, at, campaign, result in SHARED.history():
+                _HISTORY_INDEX.add(email, at, campaign, result)
+            run = CLAIMS.run if CLAIMS is not None else ""
+            _HISTORY_INDEX.blocker = lambda email: SHARED.blocker(email, run)
     return _HISTORY_INDEX
+
+
+def load_shared_state():
+    """Sheet runs: read the claims log (live runs also join as a runner)."""
+    global CLAIMS, SHARED, _HISTORY_INDEX
+    if SHEET is None:
+        return
+    runner = claims.runner_label(RUNNER_NAME)
+    if DRY_RUN:
+        try:
+            SHARED = claims.read_snapshot(SHEET, CAMPAIGN, CLAIM_EXPIRY, RECENT_DAYS)
+        except Exception as exc:  # noqa: BLE001  (a dry run still works without it)
+            print(f"WARNING: could not read who else is sending from this Sheet: {exc}")
+            return
+    else:
+        CLAIMS = claims.Claims(SHEET, CAMPAIGN, runner=runner, batch=CLAIM_BATCH, expiry_min=CLAIM_EXPIRY,
+                               recent_days=RECENT_DAYS)
+        SHARED = CLAIMS.snapshot()
+    _HISTORY_INDEX = None
+    active = [t for t in SHARED.team() if t["state"] in ("Running", "Paused")]
+    print(f"Shared Sheet: runner {runner}, batch {CLAIM_BATCH}, claim expiry {CLAIM_EXPIRY} min. "
+          f"Other runners active now: {len(active)}.")
+    for t in active:
+        print(f"  {t['runner']} | campaign '{t['campaign']}' | {t['state']} | sent {t['sent']}, "
+              f"holding {t['claimed']}")
+    checks = SHARED.needs_check()
+    if checks:
+        print(f"WARNING: {len(checks)} recipient(s) on this Sheet were possibly sent (Sending/Unconfirmed). "
+              "They are never retried automatically. Check them in Crisp:")
+        for c in checks[:10]:
+            print(f"  {c.email} | {c.state} | {c.runner} | '{c.campaign}' | {c.updated_at}")
+
+
+def shared_gate(eligible, index, email):
+    """Shared Sheet, right before a recipient: own the claim (claiming the next
+    small batch if needed) and make sure nobody marked it sent. '' = go ahead."""
+    e = rules.normalize_email(email)
+    if e not in CLAIMS.mine:
+        seen = len(CLAIMS.released_log)
+        CLAIMS.claim_batch([clean(r.get("Contact Email")) for _i, r in eligible[index:]])
+        for line in CLAIMS.released_log[seen:]:
+            print(f"  Claim released: {line}")
+            emit("claim_released", detail=line)
+        if e not in CLAIMS.mine:
+            return "claimed by another runner, or sent by one meanwhile"
+    if SHEET.is_marked_sent(email):
+        CLAIMS.release(e, "already marked Mail Sent in the Sheet")
+        return "already marked Mail Sent in the Sheet"
+    return ""
+
+
+def before_send_click():
+    """Called just before the Send click. Shared Sheet: write Sending and re-check
+    the claim. Raises claims.ClaimLost (nothing is sent) if it was lost."""
+    if CLAIMS is None or DRY_RUN or not CURRENT_EMAIL:
+        return
+    try:
+        CLAIMS.begin_send(CURRENT_EMAIL)
+    except claims.ClaimLost:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise claims.ClaimLost(f"could not record 'Sending' in the Sheet ({exc})") from exc
+
+
+def claim_result(email, result, note=""):
+    """Shared Sheet: record Sent / Failed / Unconfirmed in the claims log.
+    If Google cannot be reached, it is queued on disk and written later."""
+    if CLAIMS is None or DRY_RUN:
+        return
+    try:
+        CLAIMS.finish(email, result, note)
+    except Exception as exc:  # noqa: BLE001
+        state = {sc.SENT: claims.SENT, sc.UNCONFIRMED: claims.UNCONFIRMED}.get(result, claims.FAILED)
+        SHEET_QUEUE.add_claim(SHEET.id, SHEET.tab, CLAIMS._row(email, state, str(note)[:200]))
+        if rules.normalize_email(email) in CLAIMS.mine:
+            CLAIMS.mine.remove(rules.normalize_email(email))
+        print(f"  WARNING: claim result not written to the Sheet ({exc}). Saved locally; written later.")
+
+
+def end_claims(note, state):
+    """Give back claims that never reached Sending; mark this runner finished."""
+    global CLAIMS
+    if CLAIMS is None:
+        return
+    try:
+        n = CLAIMS.release_all(note)
+        if n:
+            print(f"Released {n} claimed recipient(s) that were not sent ({note}).")
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARNING: could not release claims ({exc}); they expire after {CLAIM_EXPIRY} min.")
+    CLAIMS.close(state)
+    CLAIMS = None
 
 
 def classify_rows(rows):
@@ -307,11 +421,18 @@ def print_precheck(rows):
     for key, label in ((rules.DUPLICATE, "duplicates"), (rules.INVALID, "invalid emails"),
                        (rules.DO_NOT_CONTACT, "do-not-contact"),
                        (rules.CAMPAIGN_SENT, "already sent in this campaign"),
-                       (rules.RECENT, f"emailed in the last {RECENT_DAYS} days")):
+                       (rules.RECENT, f"emailed in the last {RECENT_DAYS} days"),
+                       (rules.CLAIMED, "claimed by other runners or waiting for a check")):
         if counts.get(key):
             parts.append(f"{counts[key]} {label}")
     if parts:
         print("Skipped before start: " + ", ".join(parts))
+    if SHARED is not None:
+        sent = counts.get(rules.ALREADY_SENT, 0) + counts.get(rules.CAMPAIGN_SENT, 0) + counts.get(rules.RECENT, 0)
+        print(f"Shared Sheet: {counts.get(rules.ELIGIBLE, 0)} free for this runner · "
+              f"{counts.get(rules.CLAIMED, 0)} claimed by others · {sent} already sent")
+        emit("shared_counts", free=counts.get(rules.ELIGIBLE, 0), claimed=counts.get(rules.CLAIMED, 0),
+             sent=sent)
 
 
 # ------------------------------------------------------------ CSV safety
@@ -406,12 +527,14 @@ def open_sheet():
               "They are kept as sent here and retried; they will NOT be sent again.")
 
 
-def sync_row(rows, row_index):
-    """Live runs: copy this row's result columns to the Sheet (by email). Never raises."""
+def sync_row(rows, row_index, columns=None):
+    """Live runs: copy this row's result columns to the Sheet (by email). Never raises.
+    `columns` limits what is written, so a stale local copy never overwrites
+    Mail Sent written by another runner."""
     if SHEET is None or DRY_RUN:
         return
     row = rows[row_index]
-    values = {c: row.get(c, "") for c in ("Mail Sent", "Reference", *EXTRA_COLUMNS) if c in COLMAP}
+    values = {c: row.get(c, "") for c in (columns or ("Mail Sent", "Reference", *EXTRA_COLUMNS)) if c in COLMAP}
     email = clean(row.get("Contact Email"))
     try:
         SHEET.push(email, values, prefer_row=row_index + 2)
@@ -450,11 +573,13 @@ def mark_precheck(rows, fieldnames):
                 rules.set_cell(row, COLMAP, "Status", status)
                 rules.set_cell(row, COLMAP, "Error", error)
                 changed = True
-                changed_rows.append(index)
+                changed_rows.append((index, outcome))
     if changed:
         save_csv(rows, fieldnames)
-        for index in changed_rows:
-            sync_row(rows, index)
+        for index, outcome in changed_rows:
+            # Shared Sheet: history-based skips are this runner's view only; never write them there.
+            if SHEET is None or outcome in (rules.INVALID, rules.DUPLICATE, rules.DO_NOT_CONTACT):
+                sync_row(rows, index, ("Status", "Error"))
 
 
 def record(rows, fieldnames, row_index, status, error=""):
@@ -464,7 +589,7 @@ def record(rows, fieldnames, row_index, status, error=""):
     rules.set_cell(rows[row_index], COLMAP, "Status", status)
     rules.set_cell(rows[row_index], COLMAP, "Error", str(error)[:300])
     save_csv(rows, fieldnames)
-    sync_row(rows, row_index)
+    sync_row(rows, row_index, ("Status", "Error"))
 
 
 def log_result(row_index, row, result, error="", link=""):
@@ -534,6 +659,11 @@ def apply_limits(eligible):
             print(f"Daily cap reached: {done} of {cap} sent today (Dhaka time). Nothing more is sent today.")
     if limit is not None and len(eligible) > limit:
         print(f"Limit: sending {limit} of {len(eligible)} eligible ({'; '.join(notes)}).")
+        if SHEET is not None and not DRY_RUN:
+            # Shared Sheet: others may take some recipients, so keep the list and count sends.
+            global SEND_LIMIT
+            SEND_LIMIT = limit
+            return eligible if limit else []
         eligible = eligible[:limit]
     return eligible
 
@@ -1702,6 +1832,8 @@ def send_message(page):
             "Refusing to send."
         )
 
+    before_send_click()   # shared Sheet: record "Sending" and re-check the claim
+
     print(
         "  Clicking Send..."
     )
@@ -2046,6 +2178,7 @@ def main():
     try:
         _main()
     finally:
+        end_claims("run ended", "Finished")
         release_lock()
         if SHEET is not None:
             SHEET.release_lock()
@@ -2249,6 +2382,7 @@ def _main():
 
     if SOURCE == "sheet":
         open_sheet()
+        load_shared_state()
 
     rows, fieldnames = load_csv()
 
@@ -2270,10 +2404,20 @@ def _main():
         (RUN_DIR / "recipients_before.csv").write_bytes(CSV_FILE.read_bytes())
 
     if not DRY_RUN and SHEET is not None:
-        SHEET.ensure_columns(["Mail Sent"] + (["Reference"] if REFERENCE_FILTER else []) + EXTRA_COLUMNS)
-        SHEET.acquire_lock()
+        SHEET.mark_shared_run()      # keeps older app versions out; never blocks 3.8+ runners
         SHEET.start_heartbeat()
-        print(f"Sheet lock set on tab {SHEET_TAB!r} (refreshed every 30 s).")
+        CLAIMS.start()
+        wanted = ["Mail Sent"] + (["Reference"] if REFERENCE_FILTER else []) + EXTRA_COLUMNS
+        if [c for c in wanted if c not in SHEET.colmap and c not in SHEET.header]:
+            # Adding columns is the one change that needs everyone else to wait a moment.
+            if not CLAIMS.schema_lock():
+                raise RuntimeError("Another runner is changing the Sheet's columns. Try again in a minute.")
+            try:
+                SHEET.download()                     # fresh header under the lock
+                SHEET.ensure_columns(wanted)
+            finally:
+                CLAIMS.schema_unlock()
+        print(f"Shared sending on tab {SHEET_TAB!r}: recipients are claimed {CLAIM_BATCH} at a time.")
 
     if not DRY_RUN:
         if get_eligible(rows):
@@ -2389,8 +2533,12 @@ def _main():
                 after = last_email or "the start"
                 print(f"Paused after {after}. Waiting for Resume...")
                 emit("paused", after=last_email)
+                if CLAIMS is not None:
+                    CLAIMS.state = "Paused"      # claims are kept; the heartbeat keeps running
                 while Path(PAUSE_FILE).exists() and not stop_requested():
                     time.sleep(0.5)
+                if CLAIMS is not None:
+                    CLAIMS.state = "Running"
                 if not stop_requested():
                     print("Resumed.")
                     emit("resumed")
@@ -2415,6 +2563,22 @@ def _main():
                     emit("stop_requested")
                     break
 
+            if SEND_LIMIT is not None and completed >= SEND_LIMIT:
+                print(f"Limit reached: {completed} sent.")
+                break
+
+            if CLAIMS is not None:
+                try:
+                    why = shared_gate(eligible, position - 1, email)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"Could not check the shared Sheet ({exc}). Stopping; nothing more is sent.")
+                    emit("error", message=f"Shared Sheet not reachable: {exc}")
+                    break
+                if why:
+                    print(f"  Not sent by this runner: {email} ({why}).")
+                    emit("claimed_elsewhere", email=email, reason=why, position=position, total=len(eligible))
+                    continue
+
             print()
             print("=" * 60)
 
@@ -2427,8 +2591,9 @@ def _main():
 
             print("=" * 60)
 
-            global SEND_CLICKED
+            global SEND_CLICKED, CURRENT_EMAIL
             SEND_CLICKED = False
+            CURRENT_EMAIL = email
             last_email = email
 
             try:
@@ -2448,6 +2613,7 @@ def _main():
                     result = sc.UNCONFIRMED if SEND_CLICKED else sc.FAILED
                     record(rows, fieldnames, row_index, result, "Email was not sent.")
                     log_result(row_index, row, result, "Email was not sent.")
+                    claim_result(email, result, "Email was not sent.")
                     retry.append((email, name, "Email was not sent."))
                     emit("failed", email=email, error="Email was not sent.", unconfirmed=SEND_CLICKED)
 
@@ -2537,6 +2703,7 @@ def _main():
                 completed += 1
                 fails_in_row = 0
                 log_result(row_index, row, sc.DRY_RUN if DRY_RUN else sc.SENT, link=link)
+                claim_result(email, sc.SENT, link)
                 emit("success", email=email, result=sc.DRY_RUN if DRY_RUN else sc.SENT, link=link)
 
                 print(
@@ -2551,6 +2718,18 @@ def _main():
                 )
 
                 break
+
+            except claims.ClaimLost as exc:
+                # Lost the claim before the Send click: nothing was sent, and the row
+                # belongs to another runner now, so no Status is written here.
+                print(f"  Not sent by this runner: {email} ({exc}). Nothing was sent.")
+                emit("claimed_elsewhere", email=email, reason=str(exc), position=position, total=len(eligible))
+                if CLAIMS is not None and rules.normalize_email(email) in CLAIMS.mine:
+                    CLAIMS.mine.remove(rules.normalize_email(email))
+                if not recover_page(page):
+                    print("  Could not get Crisp back to the Inbox. Stopping.")
+                    break
+                continue
 
             except Exception as e:
 
@@ -2570,6 +2749,7 @@ def _main():
                     failure_screenshot(page, position, email)
                     record(rows, fieldnames, row_index, sc.SKIPPED, reason)
                     log_result(row_index, row, sc.SKIPPED, reason)
+                    claim_result(email, sc.SKIPPED, reason)
                     print("  Failed before Send, so nothing was sent. Continuing with the next recipient.")
                     if not recover_page(page):
                         print("  Could not get Crisp back to the Inbox. Stopping.")
@@ -2582,6 +2762,7 @@ def _main():
                 failure_screenshot(page, position, email)
                 record(rows, fieldnames, row_index, result, reason)
                 log_result(row_index, row, result, reason)
+                claim_result(email, result, reason)
                 emit("failed", email=email, error=reason, unconfirmed=result == sc.UNCONFIRMED)
 
                 if SKIP_FAILED and fails_in_row >= MAX_FAILS_IN_ROW:
@@ -2639,6 +2820,8 @@ def _main():
         )
 
         write_run_files()
+
+        end_claims("stopped" if stop_requested() else "run ended", "Stopped" if stop_requested() else "Finished")
 
         if SHEET is not None and not DRY_RUN:
             left = SHEET_QUEUE.flush(SHEET)

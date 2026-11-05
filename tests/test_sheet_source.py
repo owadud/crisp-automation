@@ -103,21 +103,29 @@ def test_pacer_spaces_calls_and_retries_rate_limits():
         p.call(lambda: (_ for _ in ()).throw(FakeAPIError(403, "forbidden")))
 
 
-def test_sheet_lock_fresh_stale_and_release():
+def old_version_lock(book, now, owner="OTHER-PC"):
+    """What app 3.7 and older write: one lock for the whole Sheet."""
+    src = source(book)
+    src._control().update(values=[[f"Running: {owner} since 10:00 (Dhaka)", now.isoformat(), owner]],
+                          range_name="A1")
+
+
+def test_shared_marker_never_blocks_new_runners_but_keeps_old_versions_out():
     book = make_sheet(ROWS)
     now = datetime(2026, 11, 4, 4, 0, tzinfo=timezone.utc)
-    other = source(book)
-    other.owner = "OTHER-PC"
-    other.acquire_lock(now)
+    a, b = source(book), source(book)
+    a.owner, b.owner = "PC-A", "PC-B"
+    a.mark_shared_run(now)
+    b.mark_shared_run(now + timedelta(minutes=1))                # a second 3.8+ runner is fine
     ctl = book.tabs[ss.CONTROL_TAB]
-    assert ctl.hidden and ctl.values[0][0].startswith("Running: OTHER-PC since 10:00")
-    me = source(book)
-    with pytest.raises(ss.SheetError, match="in use"):
-        me.acquire_lock(now + timedelta(minutes=2))
-    me.acquire_lock(now + timedelta(minutes=6))                  # stale -> taken over
-    assert ctl.values[0][2] == me.owner
-    me.release_lock()
-    assert ctl.values[0][0] == ""
+    assert ctl.hidden and ctl.values[0][0].startswith("Running:") and ctl.values[0][2] == ss.SHARED_OWNER
+    b.release_lock()
+    assert ctl.values[0][0].startswith("Running:")              # left to go stale: A may still run
+    # an OLD version's fresh lock blocks (it does not know claims); a stale one does not
+    old_version_lock(book, now)
+    with pytest.raises(ss.SheetError, match="older version"):
+        a.mark_shared_run(now + timedelta(minutes=2))
+    a.mark_shared_run(now + timedelta(minutes=6))
 
 
 def test_pending_queue_retries_after_connection_returns(tmp_path):
@@ -194,7 +202,7 @@ def test_live_sheet_run_ticks_mail_sent_and_writes_status(sheet_agent, capsys):
     assert [ws.cell(r, "Status") for r in (2, 3, 4)] == ["Sent", "Skipped", "Sent"]
     assert ws.cell(2, "Sent At") and "Subject not found" in ws.cell(3, "Error")
     assert "Sheet:     all results written." in out
-    assert book.tabs[ss.CONTROL_TAB].values[0][0] == ""          # lock released
+    assert book.tabs[ss.CONTROL_TAB].values[0][2] == ss.SHARED_OWNER   # shared mode, no exclusive lock
 
 
 def test_dropped_connection_never_causes_a_resend(sheet_agent, capsys, tmp_path):
@@ -217,14 +225,14 @@ def test_dropped_connection_never_causes_a_resend(sheet_agent, capsys, tmp_path)
     assert ws.cell(2, "Mail Sent") == "TRUE" and ws.cell(3, "Mail Sent") == "TRUE"
 
 
-def test_other_pc_running_blocks_a_live_run(sheet_agent, capsys):
+def test_an_old_app_version_running_blocks_a_live_run(sheet_agent, capsys):
     book = make_sheet(ROWS)
-    other = source(book)
-    other.owner = "OTHER-PC"
-    other.acquire_lock()
+    old_version_lock(book, datetime.now(timezone.utc))
     mod = sheet_agent(book)
-    with pytest.raises(ss.SheetError, match="in use"):
-        run(mod, capsys, [])
+    sent = []
+    with pytest.raises(ss.SheetError, match="older version"):
+        run(mod, capsys, sent)
+    assert sent == []
 
 
 def test_dry_run_never_writes_to_the_sheet(sheet_agent, capsys):
