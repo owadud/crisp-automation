@@ -171,36 +171,54 @@ def auto_capture(ctx, out, captures, minutes=15, wanted=8) -> None:
     print("  2. This window prints 'Captured conversation N'. Then click the next one.")
     print("  3. Good examples: one only sent, one delivered/read, one replied, one failed (if any).")
     print(f"  4. When finished, just CLOSE the Chromium window (or it stops after {minutes} min / {wanted} captures).")
-    seen, last_key, since = set(), None, time.time()
+    seen, last_key, since, last_note = set(), None, time.time(), 0.0
     end = time.time() + minutes * 60
     while time.time() < end and len(captures) < wanted:
         try:
             pages = [pg for pg in ctx.pages if not pg.is_closed()]
             if not pages:
                 break
-            page = pick_page(ctx)
-            m = re.search(r"session_[A-Za-z0-9-]+", page.url or "")
-            key = m.group(0) if m else None
-        except Exception:
-            break
+            # Read the LIVE address from every tab (Crisp changes it without a reload).
+            page, key = pages[-1], None
+            for pg in pages:
+                href = pg.evaluate("location.href")
+                m = re.search(r"session_[A-Za-z0-9-]+", href or "")
+                if m:
+                    page, key = pg, m.group(0)
+        except Exception as exc:
+            if "closed" in str(exc).lower() or not ctx.pages:
+                break
+            print(f"(waiting: {str(exc)[:120]})")
+            time.sleep(1)
+            continue
+        if time.time() - last_note >= 5:
+            state = ("conversation open" + (" (already captured)" if key in seen else ", reading in a moment...")
+                     if key else "no conversation open yet - click one in the Inbox")
+            print(f"[{datetime.now():%H:%M:%S}] {state}")
+            last_note = time.time()
         if key != last_key:
             last_key, since = key, time.time()
-        elif key and key not in seen and time.time() - since >= 4:
+        elif key and key not in seen and time.time() - since >= 3:
             try:
                 data = page.evaluate(EXTRACT_JS)
             except Exception as exc:
                 if "closed" in str(exc).lower():
                     break
-                time.sleep(1)
+                print(f"Could not read this conversation yet: {str(exc)[:160]}")
+                page.wait_for_timeout(1000)
                 continue
-            if data.get("messages"):
-                seen.add(key)
-                data["label"] = f"conversation {len(captures) + 1}"
-                captures.append(data)
-                save(captures, out)
-                print(f"Captured conversation {len(captures)} ({len(data['messages'])} messages). "
-                      "Click the next one, or close Chromium to finish.")
-        time.sleep(1)
+            seen.add(key)
+            data["label"] = f"conversation {len(captures) + 1}"
+            captures.append(data)
+            save(captures, out)
+            found = len(data.get("messages") or [])
+            print(f"Captured conversation {len(captures)} ({found} messages"
+                  + ("" if found else ", layout not recognised - saved anyway") + "). "
+                  "Click the next one, or close Chromium to finish.")
+        try:
+            page.wait_for_timeout(1000)     # keeps the browser connection updated
+        except Exception:
+            break
 
 
 def main() -> int:
