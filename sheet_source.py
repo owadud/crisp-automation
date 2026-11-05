@@ -74,18 +74,94 @@ def service_account_email(key_path: str) -> str:
         return ""
 
 
+RETRY_CODES = {429, 500, 502, 503, 504}
+HTTP_TIMEOUT = 30   # seconds per Google request; never wait forever
+
+
+def _chain(exc):
+    """The exception and everything it was raised from (gspread wraps 403 in PermissionError)."""
+    seen = []
+    while exc is not None and exc not in seen:
+        seen.append(exc)
+        exc = exc.__cause__ or exc.__context__
+    return seen
+
+
+def google_info(exc) -> dict:
+    """{'code', 'status', 'message', 'reasons', 'activation_url'} from a Google API error."""
+    info = {"code": 0, "status": "", "message": "", "reasons": [], "activation_url": ""}
+    for e in _chain(exc):
+        resp = getattr(e, "response", None)
+        code = int(getattr(resp, "status_code", 0) or 0)
+        if not code:
+            continue
+        info["code"] = code
+        try:
+            err = resp.json().get("error", {})
+        except Exception:  # noqa: BLE001
+            err = {}
+        info["status"] = str(err.get("status") or "")
+        info["message"] = str(err.get("message") or "")
+        for d in err.get("details") or []:
+            if d.get("reason"):
+                info["reasons"].append(d["reason"])
+            url = (d.get("metadata") or {}).get("activationUrl")
+            if url:
+                info["activation_url"] = url
+        break
+    return info
+
+
 def _status_code(exc) -> int:
-    resp = getattr(exc, "response", None)
-    return int(getattr(resp, "status_code", 0) or getattr(exc, "code", 0) or 0)
+    return google_info(exc)["code"]
+
+
+def is_retryable(exc) -> bool:
+    """Only rate limits, Google server errors and network drops. Never 'access denied'."""
+    code = _status_code(exc)
+    if code:
+        return code in RETRY_CODES
+    if isinstance(exc, (PermissionError, FileNotFoundError)):
+        return False
+    try:
+        import requests
+        if isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+            return True
+    except ImportError:
+        pass
+    return isinstance(exc, (ConnectionError, TimeoutError))
+
+
+def describe(exc, who: str = "") -> str:
+    """A message that says what to do, not just what failed."""
+    who = who or "the service account email (inside the key file)"
+    info = google_info(exc)
+    code, msg = info["code"], info["message"]
+    if "SERVICE_DISABLED" in info["reasons"] or "has not been used in project" in msg or "is disabled" in msg:
+        link = info["activation_url"] or "https://console.cloud.google.com/apis/library/sheets.googleapis.com"
+        return ("The Google Sheets API is turned off in your Google Cloud project. "
+                f"Open {link} , click Enable, wait 2 minutes, then try again.")
+    if code == 403 or (not code and isinstance(exc, PermissionError)):
+        return f"Google refused access (403). Open the Sheet > Share > add {who} as Editor, then try again."
+    if code == 404 or type(exc).__name__ == "SpreadsheetNotFound":
+        return f"Sheet not found (404). Check the link, and that the Sheet is shared with {who}."
+    if code == 429:
+        return "Google's rate limit was reached. Wait a minute, then try again."
+    if code:
+        return f"Google Sheets error {code}: {msg or exc}"
+    if is_retryable(exc):
+        return f"Could not reach Google (internet down, blocked or too slow): {type(exc).__name__}: {exc}"
+    return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
 
 
 class Pacer:
-    """At most one Google request per `interval` seconds; retry 429/5xx with back-off."""
+    """At most one Google request per `interval` seconds; retry only temporary errors, with back-off."""
 
-    def __init__(self, interval: float = 1.1, tries: int = 5, clock=None, sleep=None):
+    def __init__(self, interval: float = 1.1, tries: int = 4, clock=None, sleep=None):
         self.interval, self.tries = interval, tries
         self.clock = clock or (lambda: time.monotonic())
         self.sleep = sleep or (lambda seconds: time.sleep(seconds))
+        self.who = ""   # service-account email, used in error messages
         self._last = -1e9
         self._lock = threading.Lock()
 
@@ -100,10 +176,8 @@ class Pacer:
                 try:
                     return fn(*args, **kwargs)
                 except Exception as exc:  # noqa: BLE001
-                    code = _status_code(exc)
-                    retryable = code in (429, 500, 502, 503) or isinstance(exc, (ConnectionError, TimeoutError, OSError))
-                    if not retryable or attempt == self.tries:
-                        raise SheetError(f"Google Sheets error{f' {code}' if code else ''}: {exc}") from exc
+                    if not is_retryable(exc) or attempt == self.tries:
+                        raise SheetError(describe(exc, self.who)) from exc
             self.sleep(delay)
             delay *= 2
         raise SheetError("Google Sheets did not respond.")
@@ -123,6 +197,7 @@ class SheetSource:
         self.id = sheet_id(url)
         self._client = client
         self.pacer = pacer or Pacer()
+        self.pacer.who = service_account_email(key_path)
         self.sh = None
         self.ws = None
         self.header: list[str] = []
@@ -140,11 +215,9 @@ class SheetSource:
                 self._client = gspread.service_account(filename=str(Path(self.key_path).expanduser()), scopes=SCOPES)
             except Exception as exc:  # noqa: BLE001
                 raise SheetError(f"Could not use the key file: {exc}") from exc
-        try:
-            self.sh = self.pacer.call(self._client.open_by_key, self.id)
-        except SheetError as exc:
-            who = service_account_email(self.key_path) or "the service account"
-            raise SheetError(f"Could not open the Sheet. Share it with {who} as Editor. ({exc})") from exc
+            if hasattr(self._client, "set_timeout"):
+                self._client.set_timeout(HTTP_TIMEOUT)
+        self.sh = self.pacer.call(self._client.open_by_key, self.id)
         return self
 
     def tabs(self) -> list[str]:

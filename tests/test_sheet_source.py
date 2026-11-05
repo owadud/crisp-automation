@@ -232,3 +232,46 @@ def test_dry_run_never_writes_to_the_sheet(sheet_agent, capsys):
     mod = sheet_agent(book, CRISP_DRY_RUN="true")
     out, st = run(mod, capsys, [])
     assert st.completed == 3 and book.tabs["Customers"].writes == 0 and ss.CONTROL_TAB not in book.tabs
+
+
+class _Resp:
+    def __init__(self, code, body):
+        self.status_code, self._body = code, body
+
+    def json(self):
+        return self._body
+
+
+def _api_error(code, body):
+    e = FakeAPIError(code)
+    e.response = _Resp(code, body)
+    return e
+
+
+def test_api_disabled_is_explained_and_not_retried():
+    disabled = {"error": {"status": "PERMISSION_DENIED",
+                          "message": "Google Sheets API has not been used in project 41 before or it is disabled.",
+                          "details": [{"reason": "SERVICE_DISABLED",
+                                       "metadata": {"activationUrl": "https://console.developers.google.com/x"}}]}}
+    calls = []
+
+    def open_sheet():
+        calls.append(1)
+        try:
+            raise _api_error(403, disabled)
+        except FakeAPIError as ex:
+            raise PermissionError from ex               # exactly what gspread does
+    p = ss.Pacer(interval=0)
+    with pytest.raises(ss.SheetError, match="Sheets API is turned off.*console.developers.google.com/x"):
+        p.call(open_sheet)
+    assert calls == [1]                                 # a 403 is never retried
+
+
+def test_not_shared_and_not_found_messages():
+    p = ss.Pacer(interval=0)
+    p.who = "bot@p.iam.gserviceaccount.com"
+    with pytest.raises(ss.SheetError, match="Share > add bot@p.iam.gserviceaccount.com as Editor"):
+        p.call(lambda: (_ for _ in ()).throw(_api_error(403, {"error": {"message": "caller lacks permission"}})))
+    with pytest.raises(ss.SheetError, match="Sheet not found"):
+        p.call(lambda: (_ for _ in ()).throw(_api_error(404, {})))
+    assert ss.is_retryable(ConnectionError()) and not ss.is_retryable(PermissionError())

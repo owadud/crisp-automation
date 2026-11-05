@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -12,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import send_control as sc  # noqa: E402
 import sheet_source as ss  # noqa: E402  (gspread is imported only when used)
 
-from PySide6.QtCore import QProcess, QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import QObject, QProcess, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QTableWidgetItem,
@@ -30,6 +31,11 @@ from .diagnostics import build_zip
 from .pages import ActivityPage, CampaignPage, DashboardPage, HistoryPage, SettingsPage
 from .theme import Palette, ThemeManager
 from .update_controller import UpdateController
+
+class _SheetSignal(QObject):
+    """Carries a background Google result back to the window's thread."""
+    done = Signal(str, object, object)   # kind, result, error message
+
 
 PAGES = (
     ("dashboard", "Dashboard", "dashboard", "Overview of your campaign and the latest run."),
@@ -62,6 +68,8 @@ class MainWindow(QMainWindow):
         self.runs_root = self.data_dir / "runs"
         self.history_file = self.data_dir / "history.csv"
         self.run_dir: Path | None = None
+        self._sheet_busy = False
+        self._sheet_signal = _SheetSignal(self)
         self._run_log = None
         self._sent7 = 0
         self.prefs = prefs or Preferences()
@@ -202,6 +210,7 @@ class MainWindow(QMainWindow):
         c.key_browse.clicked.connect(self.browse_key)
         c.load_tabs.clicked.connect(self.load_sheet_tabs)
         c.test_sheet.clicked.connect(self.test_sheet)
+        self._sheet_signal.done.connect(self._sheet_job_done)
         c.sheet_tab.currentTextChanged.connect(self._sheet_tab_changed)
         c.retry_failed.clicked.connect(lambda: self.start_run(retry_only=True))
         c.random_delay.toggled.connect(lambda on: None if self._loading else self.prefs.set_random_delay(on))
@@ -396,74 +405,107 @@ class MainWindow(QMainWindow):
     def _sheet_factory(self, url: str, tab: str, key: str):
         return ss.SheetSource(url, tab, key).connect()
 
-    def _open_sheet(self, need_tab: bool):
+    def _sheet_inputs(self):
+        """(url, key, tab) if the link and key look right, else None (errors shown on the fields)."""
         c = self.campaign
         problem = ss.key_problem(c.google_key.text(), ROOT)
         if problem:
             c.google_key.set_state("error", problem)
+            c.sheet_info.setText(problem)
             return None
         try:
             ss.sheet_id(c.sheet_url.text())
         except ss.SheetError as exc:
             c.sheet_url.set_state("error", str(exc))
-            return None
-        tab = c.sheet_tab.currentText().strip()
-        if need_tab and not tab:
-            c.sheet_info.setText("Click Load tabs and choose the tab.")
-            return None
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            return self._sheet_factory(c.sheet_url.text(), tab, c.google_key.text())
-        except ss.SheetError as exc:
             c.sheet_info.setText(str(exc))
             return None
-        finally:
-            QApplication.restoreOverrideCursor()
+        return c.sheet_url.text(), c.google_key.text(), c.sheet_tab.currentText().strip()
 
-    def load_sheet_tabs(self):
-        src = self._open_sheet(need_tab=False)
-        if src is None:
+    def _run_sheet_job(self, kind: str, job) -> bool:
+        """Google calls run in a background thread so the window never freezes."""
+        if self._sheet_busy:
+            return False
+        self._sheet_busy = True
+        c = self.campaign
+        for b in (c.load_tabs, c.test_sheet):
+            b.setEnabled(False)
+        c.test_sheet.setText("Connecting…")
+        c.sheet_info.setText("Connecting to Google… (this can take up to 30 seconds)")
+
+        def work():
+            try:
+                result, error = job(), None
+            except ss.SheetError as exc:
+                result, error = None, str(exc)
+            except Exception as exc:  # noqa: BLE001
+                result, error = None, ss.describe(exc)
+            self._sheet_signal.done.emit(kind, result, error)
+        threading.Thread(target=work, daemon=True).start()
+        return True
+
+    def _sheet_job_done(self, kind: str, result, error):
+        self._sheet_busy = False
+        c = self.campaign
+        for b in (c.load_tabs, c.test_sheet):
+            b.setEnabled(True)
+        c.test_sheet.setText("Test connection")
+        if error:
+            c.sheet_info.setText(error)
             return
-        try:
-            tabs = src.tabs()
-        except ss.SheetError as exc:
-            self.campaign.sheet_info.setText(str(exc))
-            return
-        combo = self.campaign.sheet_tab
-        current = combo.currentText()
+        tabs, tab, sheet, rows = result
+        combo = c.sheet_tab
         combo.blockSignals(True)
         combo.clear()
         combo.addItems(tabs)
+        if tab in tabs:
+            combo.setCurrentText(tab)
         combo.blockSignals(False)
-        if current in tabs:
-            combo.setCurrentText(current)
         self._sheet_tab_changed(combo.currentText())
-        self.campaign.sheet_info.setText(f"{len(tabs)} tab(s) found. Choose one, then Test connection.")
+        if kind == "tabs":
+            c.sheet_info.setText(f"{len(tabs)} tab(s) found. Choose one, then click Test connection.")
+            return
+        self._sheet_preview_key = (c.sheet_url.text(), tab)
+        pending = ss.PendingQueue(self.data_dir / "sheet_cache" / "pending.json").for_sheet(sheet, tab)
+        self.refresh_csv()
+        note = f" {len(pending)} earlier result(s) still waiting to be written to the Sheet." if pending else ""
+        c.sheet_info.setText(
+            f"Connected as {ss.service_account_email(c.google_key.text())}. "
+            f"Tab '{tab}': {self.stats.preview() if self.stats.ok else self.stats.error}.{note}")
+
+    def load_sheet_tabs(self):
+        inputs = self._sheet_inputs()
+        if inputs is None:
+            return
+        url, key, tab = inputs
+
+        def job():
+            tabs = self._sheet_factory(url, "", key).tabs()
+            return tabs, tab, "", 0
+        self._run_sheet_job("tabs", job)
 
     def _sheet_preview_path(self) -> Path:
         return self.data_dir / "sheet_cache" / "preview.csv"
 
     def test_sheet(self):
-        """Download the tab and show '120 rows, 45 eligible, 3 duplicates'."""
-        src = self._open_sheet(need_tab=True)
-        if src is None:
+        """Connect, list tabs (pick the first if none chosen), download, show
+        '120 rows, 45 eligible, 3 duplicates'. Runs in the background."""
+        inputs = self._sheet_inputs()
+        if inputs is None:
             return
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
+        url, key, tab = inputs
+        preview = self._sheet_preview_path()
+
+        def job():
+            src = self._sheet_factory(url, tab, key)
+            tabs = src.tabs()
+            chosen = tab if tab in tabs else (tabs[0] if tabs else "")
+            if not chosen:
+                raise ss.SheetError("The Sheet has no tabs.")
+            src.tab, src.ws = chosen, None
             rows, header = src.download()
-            ss.SheetSource.write_local(self._sheet_preview_path(), rows, header)
-        except ss.SheetError as exc:
-            self.campaign.sheet_info.setText(str(exc))
-            return
-        finally:
-            QApplication.restoreOverrideCursor()
-        self._sheet_preview_key = (self.campaign.sheet_url.text(), self.campaign.sheet_tab.currentText().strip())
-        pending = ss.PendingQueue(self.data_dir / "sheet_cache" / "pending.json").for_sheet(src.id, src.tab)
-        self.refresh_csv()
-        note = f" {len(pending)} earlier result(s) still waiting to be written to the Sheet." if pending else ""
-        self.campaign.sheet_info.setText(
-            f"Connected as {ss.service_account_email(self.campaign.google_key.text())}. "
-            f"Tab '{src.tab}': {self.stats.preview() if self.stats.ok else self.stats.error}.{note}")
+            ss.SheetSource.write_local(preview, rows, header)
+            return tabs, chosen, src.id, len(rows)
+        self._run_sheet_job("test", job)
 
     def browse_dnc(self):
         current = self.campaign.dnc.text() or self.campaign.csv.text()

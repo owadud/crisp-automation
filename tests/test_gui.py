@@ -559,12 +559,41 @@ def test_google_sheet_source_test_connection(win, tmp_path):
     assert c.sheet_box.isVisibleTo(c) and not c.csv_box.isVisibleTo(c)
     c.sheet_url.edit.setText(f"https://docs.google.com/spreadsheets/d/{sid}/edit")
     c.google_key.edit.setText(str(key))
-    win.load_sheet_tabs()
+    win.test_sheet()                                   # no tab chosen: picks the first tab itself
+    assert wait_until(lambda: not win._sheet_busy, 10)
+    QApplication.processEvents()
     assert [c.sheet_tab.itemText(i) for i in range(c.sheet_tab.count())] == ["Customers"]
-    win.test_sheet()
     assert (win.stats.total, win.stats.eligible, win.stats.duplicates) == (3, 1, 1)
     assert "Connected as bot@p.iam.gserviceaccount.com" in c.sheet_info.text()
     v = win.campaign_values()
     assert (v["source"], v["sheet_tab"]) == ("sheet", "Customers")
     assert win.prefs.source() == "sheet"
+    win._source_changed("csv")
+
+
+def test_sheet_calls_never_freeze_the_window(win, tmp_path):
+    import threading as th
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import sheet_source as ss
+    gate = th.Event()
+
+    def slow_factory(url, tab, key):
+        gate.wait(5)                                   # Google is slow...
+        raise ss.SheetError("The Google Sheets API is turned off in your Google Cloud project.")
+    win._sheet_factory = slow_factory
+    key = tmp_path / "key.json"
+    key.write_text(json.dumps({"type": "service_account", "client_email": "bot@p.iam.gserviceaccount.com"}))
+    c = win.campaign
+    win._source_changed("sheet")
+    c.sheet_url.edit.setText("https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789/edit")
+    c.google_key.edit.setText(str(key))
+    t = time.time()
+    win.load_sheet_tabs()
+    assert time.time() - t < 0.5                       # ...but the click returns at once
+    assert c.test_sheet.text() == "Connecting…" and not c.load_tabs.isEnabled()
+    QApplication.processEvents()                        # window keeps painting/responding
+    gate.set()
+    assert wait_until(lambda: not win._sheet_busy, 10)
+    QApplication.processEvents()
+    assert "API is turned off" in c.sheet_info.text() and c.load_tabs.isEnabled()
     win._source_changed("csv")
