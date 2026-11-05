@@ -77,7 +77,27 @@ EXTRACT_JS = r"""
   for (const el of document.querySelectorAll('body *')) for (const k of cls(el).split(/\s+/)) if (k.startsWith('c-')) counts[k] = (counts[k] || 0) + 1;
   const icons = {};
   for (const u of document.querySelectorAll('use')) { const h = (u.getAttribute('xlink:href') || u.getAttribute('href') || '').split('#')[1]; if (h) icons[h] = (icons[h] || 0) + 1; }
+  // Full structure of the last 12 messages (every child: status line, icons, tooltips, times).
+  const messages = [];
+  const msgEls = [...document.querySelectorAll('[class*="c-conversation-box-content-message "], [class~="c-conversation-box-content-message"]')]
+    .filter(el => /(^|\s)c-conversation-box-content-message(\s|$)/.test(cls(el))).slice(-12);
+  for (const m of msgEls) {
+    const nodes = [];
+    const walk = (el, depth) => {
+      if (nodes.length >= 160 || /^(SCRIPT|STYLE)$/.test(el.tagName)) return;
+      const r = el.getBoundingClientRect();
+      nodes.push({depth, tag: el.tagName, cls: cls(el).slice(0, 220), attrs: attrs(el), text: safeText(own(el)),
+                  visible: r.width > 0 && r.height > 0,
+                  icon: el.tagName.toLowerCase() === 'use' ? ((el.getAttribute('xlink:href') || el.getAttribute('href') || '').split('#')[1] || '') : ''});
+      for (const ch of el.children) walk(ch, depth + 1);
+    };
+    walk(m, 0);
+    messages.push({cls: cls(m), attrs: attrs(m), nodes});
+  }
+  const dates = [...document.querySelectorAll('[class*="c-conversation-box-content__date"]')].slice(-6)
+    .map(el => ({cls: cls(el).slice(0, 120), text: safeText(el.textContent), attrs: attrs(el)}));
   return {
+    messages, dates,
     url_shape: location.pathname.replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, '<uuid>').replace(/session_[A-Za-z0-9-]+/g, 'session_<id>'),
     has_session_in_url: /session_/.test(location.href),
     elements: hits, class_counts: counts, icons: icons,
@@ -117,8 +137,17 @@ def selftest() -> int:
     titles = [e["attrs"].get("title") for e in data["elements"] if e["attrs"].get("title")]
     assert titles == ["Tuesday, November 9, 9999 99:99 AM"], titles
     assert data["icons"] == {"icon-check_double": 1}
+    assert data["messages"] == []  # sample page uses different class names
     print("Self-test OK: status words and time formats kept; message text and emails removed.")
     return 0
+
+
+def pick_page(ctx):
+    """The tab showing a Crisp conversation (not a blank or other tab)."""
+    pages = [p for p in ctx.pages if not p.is_closed()]
+    crisp = [p for p in pages if "app.crisp.chat" in (p.url or "")]
+    conv = [p for p in crisp if "session_" in (p.url or "")]
+    return (conv or crisp or pages)[-1]
 
 
 def wait_for_inbox(page, seconds=300) -> bool:
@@ -151,10 +180,7 @@ def main() -> int:
             page.goto(CRISP_URL, wait_until="domcontentloaded", timeout=60000)
         except Exception:
             pass
-        print("Waiting for the Crisp Inbox (sign in if asked)...")
-        if not wait_for_inbox(page):
-            print("Crisp Inbox not detected within 5 minutes. Nothing saved.")
-            return 1
+        print("Sign in to Crisp in the Chromium window if it asks (only you type there).")
         print()
         print("In the Chromium window, open an example conversation, e.g.:")
         print("  1) sent only   2) delivered or read   3) the customer replied   4) bounced/failed (if any)")
@@ -167,7 +193,7 @@ def main() -> int:
                 break
             if label.lower() in ("q", "quit", "exit"):
                 break
-            page = ctx.pages[-1]
+            page = pick_page(ctx)
             try:
                 page.wait_for_timeout(800)
                 data = page.evaluate(EXTRACT_JS)
@@ -175,10 +201,12 @@ def main() -> int:
                 print(f"Could not read the page: {exc}")
                 continue
             data["label"] = label or f"capture {len(captures) + 1}"
+            if not data["has_session_in_url"] and "/inbox" not in data["url_shape"]:
+                print("Note: this page does not look like an open conversation; saved anyway.")
             captures.append(data)
             save(captures, out)
-            print(f"Saved capture {len(captures)} ({len(data['elements'])} elements, "
-                  f"conversation link has session id: {data['has_session_in_url']}).")
+            print(f"Saved capture {len(captures)}: {len(data['messages'])} messages read "
+                  f"(conversation open: {'yes' if data['has_session_in_url'] else 'NO - open one and try again'}).")
         try:
             ctx.close()
         except Exception:
