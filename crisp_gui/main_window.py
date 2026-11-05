@@ -31,7 +31,9 @@ from .csv_stats import CsvStats, read_stats
 from .icons import icon, logo_pixmap
 from .diagnostics import build_zip
 from .preview_dialog import preview_rows, show_preview
-from .pages import ActivityPage, CampaignPage, DashboardPage, HistoryPage, ResultsPage, SettingsPage
+from . import campaign_store as cs
+from .pages import ActivityPage, CampaignPage, CampaignsPage, DashboardPage, HistoryPage, ResultsPage, SettingsPage
+from .queue_controller import QueueController
 from .theme import Palette, ThemeManager
 from .update_controller import UpdateController
 
@@ -47,6 +49,7 @@ PAGES = (
     ("settings", "Settings", "settings", "Appearance, browser session and defaults."),
     ("history", "History", "file", "Past runs, reports and diagnostics."),
     ("results", "Campaign Results", "send", "Sent, delivered, read and replied, read from Crisp (read-only)."),
+    ("campaigns", "Campaigns", "play", "Saved campaigns and the run queue."),
 )
 
 STATUS = {
@@ -82,6 +85,9 @@ class MainWindow(QMainWindow):
         self.prefs = prefs or Preferences()
         self.profile_dir = Path(profile_dir or PROFILE_DIR)
         self.runner = AgentRunner(agent_script or AGENT_SCRIPT, self)
+        self.campaign_store = cs.CampaignStore(self.data_dir / "campaigns.json")
+        self.queue_ctl = QueueController(self.campaign_store, self.launch_campaign, self.runner,
+                                         agent_script or AGENT_SCRIPT, self.prefs_parallel, self)
         self.updater = UpdateController(GITHUB_REPO, ROOT, APP_VERSION, self)
         self.stats = CsvStats()
         self.last_state: rs.RunState | None = None
@@ -189,7 +195,9 @@ class MainWindow(QMainWindow):
         self.settings = SettingsPage(self.tm)
         self.history = HistoryPage(self.tm)
         self.results_page = ResultsPage(self.tm)
-        for page in (self.dashboard, self.campaign, self.activity, self.settings, self.history, self.results_page):
+        self.campaigns_page = CampaignsPage(self.tm)
+        for page in (self.dashboard, self.campaign, self.activity, self.settings, self.history, self.results_page,
+                     self.campaigns_page):
             self.stack.addWidget(page)
         v.addWidget(self.stack, 1)
         h.addWidget(content, 1)
@@ -276,6 +284,27 @@ class MainWindow(QMainWindow):
         self.updater.installed.connect(self._update_installed)
         self.updater.install_failed.connect(self._update_install_failed)
 
+        cp = self.campaigns_page
+        cp.save_new.clicked.connect(self.save_campaign_new)
+        cp.update_sel.clicked.connect(self.update_campaign)
+        cp.open_sel.clicked.connect(self.open_campaign)
+        cp.duplicate.clicked.connect(lambda: self._campaign_action(self.campaign_store.duplicate))
+        cp.delete.clicked.connect(self.delete_campaign)
+        cp.enqueue.clicked.connect(lambda: self._campaign_action(self.campaign_store.enqueue))
+        cp.dequeue.clicked.connect(lambda: self._campaign_action(self.campaign_store.dequeue))
+        cp.up.clicked.connect(lambda: self._campaign_action(lambda cid: self.campaign_store.move(cid, -1)))
+        cp.down.clicked.connect(lambda: self._campaign_action(lambda cid: self.campaign_store.move(cid, 1)))
+        cp.run_next.clicked.connect(lambda: self._campaign_action(self.campaign_store.run_next))
+        cp.pause.clicked.connect(self.pause_campaign)
+        cp.stop.clicked.connect(self.stop_campaign)
+        cp.checked.clicked.connect(lambda: self._campaign_action(self.campaign_store.mark_checked))
+        cp.run_queue.clicked.connect(self.run_queue)
+        cp.stop_queue.clicked.connect(self.queue_ctl.stop_queue)
+        cp.table.itemSelectionChanged.connect(self._update_campaign_buttons)
+        self.queue_ctl.changed.connect(self.refresh_campaigns)
+        self.queue_ctl.message.connect(self._gui_line)
+        self.queue_ctl.halted.connect(lambda text: W.inform(self, "Queue stopped", text))
+        self.runner.state_changed.connect(lambda _s: self._queue_progress())
         self.runner.line.connect(self._agent_line)
         self.runner.state_changed.connect(self._render_state)
         self.runner.finished.connect(self._run_finished)
@@ -315,6 +344,13 @@ class MainWindow(QMainWindow):
         self._render_state(None)
         self._show_crash_recovery()
         self.refresh_history()
+        self.settings.parallel.edit.setText(str(self.prefs.parallel()))
+        self.settings.parallel.edit.editingFinished.connect(self._save_parallel)
+        notes = self.campaign_store.restore()
+        for n in notes:
+            self._gui_line(n)
+        self._restore_notes = notes
+        self.refresh_campaigns()
 
     def _show_crash_recovery(self):
         rec = self.prefs.recovery()
@@ -874,7 +910,14 @@ class MainWindow(QMainWindow):
             if not ok:
                 return
         v["retry_only"] = "true" if retry_only else "false"
+        err = self._start_agent(v, dry)
+        if err:
+            W.inform(self, "Could not start", err)
+
+    def _start_agent(self, v: dict, dry: bool, label: str = "") -> str | None:
+        """Run folder, settings.json, run.log, then start the agent on the main runner."""
         v["history_file"] = str(self.history_file)
+        v["pace_file"] = str(self.data_dir / "pace.json")
         try:
             self.run_dir = sc.new_run_dir(self.runs_root, dry)
             v["run_dir"] = str(self.run_dir)
@@ -888,10 +931,10 @@ class MainWindow(QMainWindow):
             v["run_dir"] = ""
             self._gui_line(f"Could not create the run folder ({exc}); continuing without it.")
         err = self.runner.start(v, dry, self.profile_dir)
+        self.runner.run_dir = str(self.run_dir or "")
         if err:
             self._close_run_log()
-            W.inform(self, "Could not start", err)
-            return
+            return err
         self.last_state = None
         self.activity.error_banner.hide()
         self.activity.unconfirmed_banner.hide()
@@ -901,10 +944,12 @@ class MainWindow(QMainWindow):
                                 mode="dry run" if dry else "real sending")
         self._recovery_email = ""
         self._gui_line(f"Run started {datetime.now():%Y-%m-%d %H:%M:%S} "
-                       f"({'DRY RUN, nothing will be sent' if dry else 'REAL SENDING'})")
+                       f"({'DRY RUN, nothing will be sent' if dry else 'REAL SENDING'})"
+                       + (f" · {label}" if label else ""))
         self._set_inputs_locked(True)
         self.navigate(2)
         self._render_state(self.runner.state)
+        return None
 
     def stop_run(self):
         if not self.runner.is_running():
@@ -1171,6 +1216,7 @@ class MainWindow(QMainWindow):
         self.refresh_csv()
         self._render_state(s)
         self.refresh_history()
+        self.queue_ctl.runner_finished(self.runner, s)
         QApplication.alert(self)
 
     # ============================================================ campaign results
@@ -1410,6 +1456,304 @@ class MainWindow(QMainWindow):
         self.flash(self.results_page.add_dnc, "Added")
 
     # ============================================================ preview / pause / ETA
+    # ============================================================ campaigns and queue
+    def prefs_parallel(self) -> int:
+        return self.prefs.parallel()
+
+    def _save_parallel(self):
+        try:
+            self.prefs.set_parallel(int(self.settings.parallel.text() or 1))
+            self.settings.parallel.set_state("help")
+        except ValueError:
+            self.settings.parallel.set_state("error", "Enter 1, 2 or 3.")
+        self.settings.parallel.edit.setText(str(self.prefs.parallel()))
+        self.refresh_campaigns()
+
+    def _campaign_action(self, fn):
+        cid = self.campaigns_page.selected_id()
+        if not cid:
+            W.inform(self, "Choose a campaign", "Select a campaign in the list first.")
+            return
+        try:
+            result = fn(cid)
+        except ValueError as exc:
+            W.inform(self, "Not possible", str(exc))
+            return
+        self.refresh_campaigns(select=getattr(result, "id", cid))
+
+    def save_campaign_new(self):
+        v = self.campaign_values()
+        name = self.campaign.campaign_name.text() or v.get("subject", "")
+        c = self.campaign_store.add(name, v)
+        self.prefs.set_editing_campaign(c.id)
+        self._gui_line(f"Campaign '{c.name}' saved ({c.label}).")
+        self.refresh_campaigns(select=c.id)
+
+    def update_campaign(self):
+        def do(cid):
+            c = self.campaign_store.update(cid, self.campaign_values())
+            self._gui_line(f"Campaign '{c.name}' updated from Campaign Setup.")
+            return c
+        self._campaign_action(do)
+
+    def open_campaign(self):
+        cid = self.campaigns_page.selected_id()
+        c = self.campaign_store.get(cid)
+        if c is None:
+            W.inform(self, "Choose a campaign", "Select a campaign in the list first.")
+            return
+        if self.runner.is_running():
+            W.inform(self, "A run is in progress", "Campaign Setup is locked while a run is in progress.")
+            return
+        self._apply_campaign_values(c.settings)
+        self.prefs.set_editing_campaign(c.id)
+        self.navigate(1)
+
+    def _apply_campaign_values(self, values: dict):
+        c = self.campaign
+        for key, f in c.fields().items():
+            if key in values and key not in cs.APP_WIDE:
+                f.edit.setText(values[key])
+        c.skip_failed.setChecked(values.get("skip_failed") == "true")
+        source = values.get("source", "csv")
+        self.prefs.set_source(source)
+        self._apply_source(source)
+        tab = values.get("sheet_tab", "")
+        if tab:
+            if c.sheet_tab.findText(tab) < 0:
+                c.sheet_tab.addItem(tab)
+            c.sheet_tab.setCurrentText(tab)
+        self.refresh_csv()
+
+    def delete_campaign(self):
+        cid = self.campaigns_page.selected_id()
+        c = self.campaign_store.get(cid)
+        if c is None:
+            return
+        if W.ask(self, f"Delete campaign '{c.name}'?", "Its saved settings are removed. History, results and "
+                 "your recipient files are kept.", confirm="Delete", tone="danger"):
+            self._campaign_action(self.campaign_store.remove)
+
+    def pause_campaign(self):
+        cid = self.campaigns_page.selected_id()
+        c = self.campaign_store.get(cid)
+        if c is None:
+            return
+        if c.status == cs.PAUSED:
+            self.queue_ctl.resume(cid)
+        elif not self.queue_ctl.pause(cid):
+            W.inform(self, "Not paused", "This campaign cannot be paused right now.")
+        self.refresh_campaigns(select=cid)
+
+    def stop_campaign(self):
+        cid = self.campaigns_page.selected_id()
+        if self.queue_ctl.stop(cid) == "idle":
+            W.inform(self, "Not running", "Only a running campaign can be stopped. To skip a queued one, "
+                     "remove it from the queue or pause it.")
+        else:
+            self._gui_line("Stop requested for this campaign: it stops before its next recipient.")
+        self.refresh_campaigns(select=cid)
+
+    def _campaign_plan(self, c):
+        """(emails to send, duplicates, note, error) for the queue summary."""
+        s = c.settings
+        path = s.get("csv", "")
+        if s.get("source") == "sheet":
+            fresh = getattr(self, "_sheet_preview_key", None) == (s.get("sheet_url"), s.get("sheet_tab"))
+            if not (fresh and self._sheet_preview_path().exists()):
+                return [], 0, "Google Sheet: counted when it starts", ""
+            path = str(self._sheet_preview_path())
+        try:
+            recent = max(1, int(s.get("recent_days") or 7))
+        except ValueError:
+            recent = 7
+        shared = str(self._sheet_shared_path()) if s.get("source") == "sheet" else ""
+        st = read_stats(path, s.get("reference", ""), s.get("row_from", ""), s.get("row_to", ""), s.get("dnc", ""),
+                        history_file=str(self.history_file), campaign=c.name, recent_days=recent,
+                        shared_file=shared, claim_expiry=self._shared_values()["claim_expiry"])
+        if not st.ok:
+            return [], 0, "", st.error or "The recipient list could not be read."
+        if st.range_error or st.dnc_error:
+            return [], 0, "", st.range_error or st.dnc_error
+        return [p["email"] for p in st.plan if p["send"]], st.duplicates, "", ""
+
+    def run_queue(self):
+        store = self.campaign_store
+        if self.queue_ctl.active:
+            W.inform(self, "The queue is already running", "Stop it first to change what runs.")
+            return
+        if self.runner.is_running() and self.prefs.parallel() == 1:
+            W.inform(self, "A run is in progress", "Wait until it ends, then run the queue.")
+            return
+        queued = [c for c in store.list() if c.status == cs.QUEUED]
+        if not queued:
+            W.inform(self, "Nothing queued", "Select campaigns and click Add to queue first.")
+            return
+        plans, problems = {}, []
+        for c in queued:
+            emails, dups, note, error = self._campaign_plan(c)
+            if error:
+                problems.append(f"{c.name}: {error}")
+            plans[c.id] = (emails, dups, note)
+        if problems:
+            W.inform(self, "Fix these campaigns first", "\n".join(problems))
+            return
+        v = self.campaign_values()
+        dry = self.dry_run()
+        try:
+            delay = 40.0 if v.get("random_delay") == "true" else float(v.get("delay") or 3)
+        except ValueError:
+            delay = 3.0
+        cap = sc.optional_int(v.get("daily_cap", ""), "Daily cap") if v.get("daily_cap") else None
+        summ = cs.queue_summary(queued, plans, delay, cap, sc.sent_today(self.history_file) if not dry else 0)
+        k = len(queued)
+        rows = [(str(i + 1), r["name"], r["subject"], r["shortcut"], str(r["listed"]), str(r["duplicates"]),
+                 str(r["overlap"]), str(r["to_send"]) if not r["note"] else r["note"])
+                for i, r in enumerate(summ["rows"])]
+        parallel = self.prefs.parallel()
+        lines = [("DRY RUN: nothing is sent." if dry else
+                  "REAL SENDING: emails go out through Crisp and each sent row is marked. This can't be undone."),
+                 f"{k} campaign(s), {summ['total']} email(s) in total, {cs.duration_text(summ['seconds'])} "
+                 f"(delay {delay:.0f} s between emails, shared by all campaigns)."]
+        if summ["overlaps"]:
+            lines.append(f"{len(summ['overlaps'])} person(s) are in more than one campaign: only the first "
+                         "campaign emails them.")
+        if cap is not None and summ["capped"] < summ["total"]:
+            lines.append(f"Daily cap {cap}: only {summ['capped']} can go out today; the queue stops there.")
+        if any(r["note"] for r in summ["rows"]):
+            lines.append("Google Sheet campaigns are counted when they start (click Test connection to count now).")
+        if parallel > 1:
+            lines.append(f"{parallel} campaigns run at the same time, each in its own browser window and Crisp "
+                         "login, all on your Crisp account and the same sending limits.")
+        columns = ("#", "Campaign", "Subject", "Shortcut(s)", "Listed", "Duplicates", "In an earlier campaign",
+                   "Will send")
+        n = summ["total"]
+        names = ", ".join(c.name for c in queued)
+        if dry:
+            title, confirm = f"Dry run {k} campaign(s)?", "Start dry run"
+        else:
+            title = f"Send {n} real email{'s' if n != 1 else ''} in {k} campaign{'s' if k != 1 else ''}?"
+            confirm = f"Send {n} emails: {names}" if len(names) < 60 else f"Send {n} emails in {k} campaigns"
+        if not show_preview(self, title, "\n".join(lines), rows, confirm=confirm, danger=not dry, columns=columns):
+            return
+        self.queue_ctl.start(dry)
+
+    def launch_campaign(self, c, runner, slot: int, dry: bool) -> str | None:
+        """Start one campaign (called by the queue). App-wide pace values come from the app."""
+        v = dict(c.settings)
+        current = self.campaign_values()
+        for key in cs.APP_WIDE:
+            v[key] = current.get(key, "")
+        v.update(self._shared_values())
+        v["data_dir"] = str(self.data_dir)
+        v["campaign"] = c.name
+        v["retry_only"] = "false"
+        v["workcopy_tag"] = c.id
+        try:
+            v["recent_days"] = str(max(1, int(v.get("recent_days") or 7)))   # never twice in a day across campaigns
+        except ValueError:
+            v["recent_days"] = "7"
+        if slot == 0:
+            return self._start_agent(v, dry, label=f"campaign '{c.name}'")
+        v["history_file"] = str(self.history_file)
+        v["pace_file"] = str(self.data_dir / "pace.json")
+        try:
+            run_dir = sc.new_run_dir(self.runs_root, dry)
+        except FileExistsError:
+            run_dir = sc.new_run_dir(self.runs_root / f"browser{slot + 1}", dry)
+        v["run_dir"] = str(run_dir)
+        settings = dict(v, dry_run=dry, app_version=APP_VERSION, started=sc.stamp())
+        (run_dir / "settings.json").write_text(json.dumps(settings, indent=2, ensure_ascii=False), encoding="utf-8")
+        runner.run_log = (run_dir / "run.log").open("a", encoding="utf-8")
+        runner.run_dir = str(run_dir)
+        profile = self.profile_dir.with_name(f"{self.profile_dir.name}_{slot + 1}")
+        err = runner.start(v, dry, profile)
+        if err:
+            runner.run_log.close()
+            runner.run_log = None
+        return err
+
+    def _queue_progress(self):
+        if self.queue_ctl.busy():
+            self.refresh_campaigns()
+
+    def refresh_campaigns(self, select: str = ""):
+        cp = self.campaigns_page
+        select = select or cp.selected_id()
+        store = self.campaign_store
+        items = store.list()
+        cp.table.setRowCount(len(items))
+        for r, c in enumerate(items):
+            s = c.settings
+            pos = str(store.queue.index(c.id) + 1) if c.id in store.queue else ""
+            status = c.label
+            runner = self.queue_ctl.runner_of(c.id)
+            st = runner.state if runner is not None else None
+            if st is not None and runner.is_running():
+                status += f" · {st.processed}/{st.eligible or '?'}"
+                if self.queue_ctl.slot_of(c.id):
+                    status += f" · browser {self.queue_ctl.slot_of(c.id) + 1}"
+            last = c.last
+            last_text = ""
+            if last:
+                last_text = (("dry run: " if last.get("dry_run") else "") + f"{last.get('completed', 0)} done, "
+                             f"{last.get('failed', 0)} failed"
+                             + (f", {last.get('elsewhere')} by others" if last.get("elsewhere") else ""))
+            source = (f"Sheet · {s.get('sheet_tab', '')}" if s.get("source") == "sheet"
+                      else Path(s.get("csv", "")).name)
+            values = (pos, c.name, status, source, s.get("subject", ""), s.get("shortcut", ""), last_text, c.note)
+            for col, text in enumerate(values):
+                item = QTableWidgetItem(text)
+                if col == 1:
+                    item.setData(Qt.UserRole, c.id)
+                if col == 2 and c.status in (cs.UNCONFIRMED, cs.FAILED):
+                    item.setText("⚠ " + text)
+                cp.table.setItem(r, col, item)
+            if c.id == select:
+                cp.table.selectRow(r)
+        cp.table.resizeColumnsToContents()
+        cp.empty.setVisible(not items)
+        notes = list(getattr(self, "_restore_notes", []))
+        unconfirmed = [c.name for c in items if c.status == cs.UNCONFIRMED]
+        if unconfirmed:
+            notes.append("Unconfirmed: " + ", ".join(unconfirmed) + ". Check the last conversation in Crisp, "
+                         "then click I checked Crisp.")
+        cp.banner.set_text(" ".join(dict.fromkeys(notes)))
+        cp.banner.setVisible(bool(notes))
+        live = not self.dry_run()
+        cp.mode_banner.set_text("REAL SENDING is on: the queue sends real emails."
+                               if live else "Dry Run is on: the queue checks everything but sends nothing.")
+        running = [c.name for c in store.running()]
+        queued = sum(1 for c in items if c.status == cs.QUEUED)
+        cp.queue_status.setText(
+            ("Queue running. " if self.queue_ctl.active else "Queue idle. ")
+            + (f"Running: {', '.join(running)}. " if running else "")
+            + f"{queued} queued. "
+            + ("One campaign at a time." if self.prefs.parallel() == 1
+               else f"Up to {self.prefs.parallel()} at the same time."))
+        self._update_campaign_buttons()
+
+    def _update_campaign_buttons(self):
+        cp = self.campaigns_page
+        c = self.campaign_store.get(cp.selected_id())
+        has = c is not None
+        running = has and self.queue_ctl.runner_of(c.id) is not None
+        for b in (cp.update_sel, cp.open_sel, cp.duplicate):
+            b.setEnabled(has)
+        cp.delete.setEnabled(has and not running)
+        cp.enqueue.setEnabled(has and c.status not in (cs.QUEUED, cs.RUNNING, cs.PAUSED, cs.UNCONFIRMED))
+        cp.dequeue.setEnabled(has and c.status in (cs.QUEUED, cs.PAUSED) and not running)
+        in_queue = has and c.id in self.campaign_store.queue
+        cp.up.setEnabled(in_queue)
+        cp.down.setEnabled(in_queue)
+        cp.run_next.setEnabled(has and not running and c.status != cs.UNCONFIRMED)
+        cp.pause.setEnabled(has and c.status in (cs.QUEUED, cs.PAUSED, cs.RUNNING))
+        cp.pause.setText("Resume" if has and c.status == cs.PAUSED else "Pause")
+        cp.stop.setEnabled(running)
+        cp.checked.setEnabled(has and c.status == cs.UNCONFIRMED)
+        cp.run_queue.setEnabled(not self.queue_ctl.active)
+        cp.stop_queue.setEnabled(self.queue_ctl.active)
+
     def campaign_name(self, v: dict | None = None) -> str:
         v = v or self.campaign_values()
         return (v.get("campaign") or "").strip() or (v.get("subject") or "").strip()
@@ -1610,7 +1954,24 @@ class MainWindow(QMainWindow):
 
     # ================================================================ close
     def closeEvent(self, event):
+        extra = [r for _cid, r in self.queue_ctl.slots.values() if r is not self.runner and r.is_running()]
+        if any(not (r.state and r.state.paused) for r in extra) and not (
+                self.runner.is_running() and not (self.runner.state and self.runner.state.paused)):
+            if not W.ask(self, "Quit while campaigns are running?",
+                         "Quitting stops them immediately. A campaign that was sending is marked "
+                         "\"Unconfirmed\": check its last conversation in Crisp before running it again.",
+                         confirm="Stop and quit", tone="danger"):
+                event.ignore()
+                return
         state = self.runner.state
+        if self.runner.is_running() and not (state is not None and state.paused):
+            if not W.ask(self, "Quit while the agent is running?",
+                         "Quitting stops the agent immediately. If an email is being sent right now, the CSV row "
+                         "might not get marked. Check the last conversation in Crisp before running again.",
+                         confirm="Stop and quit", tone="danger"):
+                event.ignore()
+                return
+        self.queue_ctl.close_all()
         if self.runner.is_running() and state is not None and state.paused:
             # Paused = between two recipients, nothing in flight: close like a stopped run.
             self.runner.request_stop()
@@ -1623,12 +1984,6 @@ class MainWindow(QMainWindow):
                                      "failed": state.failed, "eligible": state.eligible,
                                      "error": f"Closed while paused after {state.paused_after}"})
         elif self.runner.is_running():
-            if not W.ask(self, "Quit while the agent is running?",
-                         "Quitting stops the agent immediately. If an email is being sent right now, the CSV row "
-                         "might not get marked. Check the last conversation in Crisp before running again.",
-                         confirm="Stop and quit", tone="danger"):
-                event.ignore()
-                return
             self.runner.force_stop()
             self.runner.proc.waitForFinished(5000)
         self.prefs.set_geometry(self.saveGeometry())

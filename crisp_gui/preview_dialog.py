@@ -44,7 +44,7 @@ def preview_rows(plan, campaign: dict) -> list[tuple]:
 
 class PreviewDialog(QDialog):
     def __init__(self, parent, title: str, summary: str, rows: list[tuple], confirm: str | None = None,
-                 danger: bool = False):
+                 danger: bool = False, columns=COLUMNS):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setModal(True)
@@ -58,8 +58,9 @@ class PreviewDialog(QDialog):
         lay.addWidget(body)
         self.only_skipped = QCheckBox("Show only skipped rows (who and why)")
         lay.addWidget(self.only_skipped)
-        self.table = QTableWidget(len(rows), len(COLUMNS))
-        self.table.setHorizontalHeaderLabels(COLUMNS)
+        self.only_skipped.setVisible(columns is COLUMNS)
+        self.table = QTableWidget(len(rows), len(columns))
+        self.table.setHorizontalHeaderLabels(columns)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.verticalHeader().setVisible(False)
@@ -72,7 +73,7 @@ class PreviewDialog(QDialog):
             for c, value in enumerate(values):
                 self.table.setItem(r, c, QTableWidgetItem(value))
         self.table.resizeColumnsToContents()
-        for c in range(len(COLUMNS) - 1):
+        for c in range(len(columns) - 1):
             self.table.setColumnWidth(c, min(self.table.columnWidth(c), 260))
         lay.addWidget(self.table, 1)
         self.only_skipped.toggled.connect(self._filter)
@@ -93,9 +94,9 @@ class PreviewDialog(QDialog):
             self.table.setRowHidden(r, only_skipped and send)
 
 
-def show_preview(parent, title, summary, rows, confirm=None, danger=False) -> bool:
+def show_preview(parent, title, summary, rows, confirm=None, danger=False, columns=COLUMNS) -> bool:
     """True if confirmed (always True without a confirm button). Tests answer via DIALOG_HOOK."""
     if W.DIALOG_HOOK is not None:
         return bool(W.DIALOG_HOOK(title, summary, rows, confirm or "Close"))
-    dlg = PreviewDialog(parent, title, summary, rows, confirm, danger)
+    dlg = PreviewDialog(parent, title, summary, rows, confirm, danger, columns)
     return dlg.exec() == QDialog.Accepted or confirm is None

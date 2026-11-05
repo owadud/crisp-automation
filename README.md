@@ -254,6 +254,32 @@ is typed, sent, resolved or changed.
   conversation link of every real send) and `campaign_results.json`. No message text and no
   screenshots are stored. Sends from before 3.7 have no saved link, so they cannot be checked.
 
+## Campaigns and the queue (3.8)
+
+A **campaign** is a saved, named setup: its own list (CSV or Sheet tab), subject, shortcut(s),
+segment, reference, row range and safety settings, with its own status and results.
+- **Campaigns** page: fill in Campaign Setup, then **Save setup as campaign**. **Open in setup**
+  loads a campaign back for editing; **Update from setup** saves the changes. **Duplicate** copies one.
+- **Queue**: **Add to queue**, **Move up/down**, **Run next**, **Remove from queue**. **Run queue**
+  runs them one after another in your Crisp browser. One confirmation names the campaigns, the
+  exact number of emails, people who are in more than one campaign, and the expected time.
+- Statuses: Draft, Ready, Queued, Running, Paused, Finished, Stopped, Failed, Unconfirmed.
+- **Pause** / **Stop campaign** act on the selected campaign only, between two recipients. A
+  paused queued campaign is skipped until resumed. A failure or an unconfirmed send stops the
+  queue (stop on failure, as before).
+- A person in two campaigns is emailed once: the queue always skips anyone emailed in the last
+  day or more (the "emailed recently" rule never drops below 1 day in a queue).
+- **The delay between emails and the daily cap are app-wide**: every campaign (and a normal
+  run) shares one send turn, so several campaigns never send faster than one.
+- Closing the app keeps queued and paused campaigns. A campaign that was sending becomes
+  **Unconfirmed**: check its last conversation in Crisp, then click **I checked Crisp**. The queue
+  never starts by itself.
+- **Settings > Campaign queue > Campaigns at the same time** (default 1). With 2 or 3, each extra
+  campaign runs in its own browser window and profile (`browser_profile_2`, `_3`) and needs its
+  own Crisp sign-in the first time (each about 300-500 MB of memory). They share your Crisp
+  account and the same app-wide pace, so this is not faster; it only lets campaigns progress side
+  by side. Two campaigns never share one browser tab: the subject and composer would mix up.
+
 ## Ubuntu: open the app without a terminal
 
 Once, in the app folder: `bash install_launcher_ubuntu.sh`. Then open **Crisp Automation**

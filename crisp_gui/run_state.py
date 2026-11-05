@@ -387,7 +387,7 @@ class RunParser:
             s.step = "Stopped before the next recipient"
         elif kind == "window_ended":
             s.stop_requested = True
-            s.step = "Send window ended"
+            s.step = "Daily cap reached" if ev.get("window") == "daily cap" else "Send window ended"
         elif kind == "error":
             s.last_error = str(ev.get("message") or "Error")
             s.step = "Error"

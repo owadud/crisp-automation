@@ -110,6 +110,22 @@ class Preferences:
         if key in SHARED_DEFAULTS:
             self._s.setValue(f"shared/{key}", value)
 
+    # campaign queue ----------------------------------------------------------
+    def parallel(self) -> int:
+        try:
+            return max(1, min(3, int(self._s.value("queue/parallel", 1))))
+        except (TypeError, ValueError):
+            return 1
+
+    def set_parallel(self, value: int) -> None:
+        self._s.setValue("queue/parallel", max(1, min(3, int(value))))
+
+    def editing_campaign(self) -> str:
+        return str(self._s.value("queue/editing", "") or "")
+
+    def set_editing_campaign(self, cid: str) -> None:
+        self._s.setValue("queue/editing", cid or "")
+
     # sending control -------------------------------------------------------
     def random_delay(self) -> bool:
         return str(self._s.value("control/random_delay", "false")) == "true"

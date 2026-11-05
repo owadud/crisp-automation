@@ -45,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import recipient_rules as rules  # noqa: E402  (same rules as the GUI preview)
 import send_control as sc  # noqa: E402  (limits, Dhaka time, history, run folders)
 import claims  # noqa: E402  (per-recipient claims on a shared Google Sheet)
+import pacing  # noqa: E402  (app-wide send pace across campaigns)
 
 
 # ============================================================
@@ -133,6 +134,12 @@ try:
 except ValueError:
     CLAIM_EXPIRY = claims.DEFAULT_EXPIRY_MIN
 CLAIMS = None        # claims.Claims for a live Sheet run
+
+# App-wide pace (set by the GUI): the delay and daily cap cover ALL campaigns.
+PACE_FILE = os.environ.get("CRISP_PACE_FILE", "").strip()
+PACER = None
+# Working-copy name for a Sheet run, so two campaigns on one Sheet each get their own file.
+WORKCOPY_TAG = re.sub(r"[^A-Za-z0-9_-]+", "_", os.environ.get("CRISP_WORKCOPY_TAG", "").strip())[:20]
 SHARED = None        # claims.Snapshot read at the start (live and dry runs)
 CURRENT_EMAIL = ""   # recipient being processed (for the Sending mark)
 SEND_LIMIT = None    # shared Sheet: stop after this many sends (max per run / daily cap)
@@ -382,6 +389,41 @@ def before_send_click():
         raise claims.ClaimLost(f"could not record 'Sending' in the Sheet ({exc})") from exc
 
 
+def pace_turn():
+    """Live runs from the GUI: wait for the app-wide send turn, then check the
+    daily cap (exact: every earlier send is already in history). False = stop."""
+    global PACER
+    if not PACE_FILE or DRY_RUN:
+        return True
+    if PACER is None:
+        PACER = pacing.Pace(PACE_FILE)
+
+    def told(wait):
+        if wait >= 5:
+            print(f"  Waiting {wait:.0f} s (app-wide pace, shared by all campaigns)...")
+        emit("waiting", seconds=round(wait, 1))
+    if not PACER.acquire(stop_requested, told):
+        return False
+    cap = sc.optional_int(DAILY_CAP, "Daily cap")
+    if cap:
+        done = sc.sent_today(HISTORY_FILE)
+        if done >= cap:
+            PACER.release(0)
+            print(f"Daily cap reached: {done} of {cap} sent today by all campaigns (Dhaka time). Stopping.")
+            emit("window_ended", window="daily cap")
+            return False
+    return True
+
+
+def pace_done(delay=None):
+    """Hand the send turn back; the next email from ANY campaign waits `delay`."""
+    if PACER is not None and PACER.held:
+        wait = between_delay() if delay is None else delay
+        PACER.release(wait)
+        return wait
+    return None
+
+
 def claim_result(email, result, note=""):
     """Shared Sheet: record Sent / Failed / Unconfirmed in the claims log.
     If Google cannot be reached, it is queued on disk and written later."""
@@ -536,7 +578,8 @@ def open_sheet():
                     if canon in cmap:
                         row[cmap[canon]] = value
     safe_tab = re.sub(r"[^A-Za-z0-9_-]+", "_", SHEET_TAB)[:40]
-    local = ss.SheetSource.write_local(DATA_DIR / "sheet_cache" / f"{src.id[:12]}_{safe_tab}.csv", rows, header)
+    tag = f"_{WORKCOPY_TAG}" if WORKCOPY_TAG else ""
+    local = ss.SheetSource.write_local(DATA_DIR / "sheet_cache" / f"{src.id[:12]}_{safe_tab}{tag}.csv", rows, header)
     CSV_FILE = local.resolve()
     SHEET, SHEET_QUEUE = src, queue
     print(f"Google Sheet: tab '{SHEET_TAB}', {len(rows)} rows. Working copy: {local.name}")
@@ -2197,6 +2240,7 @@ def main():
     try:
         _main()
     finally:
+        pace_done(0)
         end_claims("run ended", "Finished")
         release_lock()
         if SHEET is not None:
@@ -2605,6 +2649,12 @@ def _main():
                     emit("claimed_elsewhere", email=email, reason=why, position=position, total=len(eligible))
                     continue
 
+            if not pace_turn():
+                if stop_requested():
+                    print("Stop requested. Stopping before the next recipient.")
+                    emit("stop_requested")
+                break
+
             print()
             print("=" * 60)
 
@@ -2759,6 +2809,7 @@ def _main():
                 emit("claimed_elsewhere", email=email, reason=str(exc), position=position, total=len(eligible))
                 if CLAIMS is not None and rules.normalize_email(email) in CLAIMS.mine:
                     CLAIMS.mine.remove(rules.normalize_email(email))
+                pace_done(0)
                 if not recover_page(page):
                     print("  Could not get Crisp back to the Inbox. Stopping.")
                     break
@@ -2784,6 +2835,7 @@ def _main():
                     log_result(row_index, row, sc.SKIPPED, reason)
                     claim_result(email, sc.SKIPPED, reason)
                     print("  Failed before Send, so nothing was sent. Continuing with the next recipient.")
+                    pace_done(0)
                     if not recover_page(page):
                         print("  Could not get Crisp back to the Inbox. Stopping.")
                         break
@@ -2817,7 +2869,13 @@ def _main():
 
                 break
 
-            if position < len(
+            handed = pace_done()
+            if handed is not None:
+                # The wait now happens when the next send turn is taken (any campaign).
+                emit("waiting", seconds=round(handed, 1))
+                if handed >= 10 and position < len(eligible):
+                    print(f"  Next email in {handed:.0f} s (app-wide pace).")
+            elif position < len(
                 eligible
             ):
 

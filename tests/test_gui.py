@@ -115,7 +115,7 @@ def run_to_end(w, timeout=20):
 
 # ================================================================ navigation
 def test_every_nav_item_works(win):
-    titles = ["Dashboard", "Campaign Setup", "Activity Logs", "Settings", "History", "Campaign Results"]
+    titles = ["Dashboard", "Campaign Setup", "Activity Logs", "Settings", "History", "Campaign Results", "Campaigns"]
     for i, b in enumerate(win.nav_buttons):
         QTest.mouseClick(b, Qt.LeftButton)
         assert win.stack.currentIndex() == i

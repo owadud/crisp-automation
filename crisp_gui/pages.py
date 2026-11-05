@@ -472,6 +472,15 @@ class SettingsPage(Page):
         card.body.addWidget(row)
         self.add(card)
 
+        card = Card("Campaign queue", "1 = campaigns run one after another in your Crisp browser (the safe "
+                    "default). 2 or 3 run at the same time, each in its own browser window with its own Crisp "
+                    "login (sign in once per window). They all use YOUR Crisp account: the delay between emails "
+                    "and the daily cap still count for all of them together, so it is not faster.")
+        self.parallel = Field("Campaigns at the same time", "1, 2 or 3.", placeholder="1")
+        self.parallel.setMaximumWidth(260)
+        card.body.addWidget(self.parallel)
+        self.add(card)
+
         card = Card("Campaign defaults", "Restore the subject, shortcut, segment, reference and CSV to the original values.")
         self.reset = button("Reset campaign fields", "dangerOutline")
         h = QHBoxLayout()
@@ -579,6 +588,72 @@ def _table(columns, min_height=260) -> QTableWidget:
     t.setSortingEnabled(True)
     t.setMinimumHeight(min_height)
     return t
+
+
+class CampaignsPage(Page):
+    """Saved campaigns and the run queue."""
+
+    COLUMNS = ("#", "Campaign", "Status", "Source", "Subject", "Shortcut(s)", "Last run", "Note")
+
+    def __init__(self, tm: ThemeManager):
+        super().__init__()
+        self.banner = self.add(Banner(tm, "warning", ""))
+        self.banner.hide()
+        self.mode_banner = self.add(Banner(tm, "info", ""))
+
+        card = Card("Campaigns")
+        self.table = _table(self.COLUMNS, min_height=300)
+        self.table.setSortingEnabled(False)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.setMinimumWidth(200)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        card.body.addWidget(self.table)
+        self.empty = label("No campaigns yet. Fill in Campaign Setup, then click Save setup as campaign.",
+                           "faint", wrap=True)
+        card.body.addWidget(self.empty)
+
+        edit = ResponsiveRow(min_item_width=170, spacing=8)
+        self.save_new = button("Save setup as campaign", "primary", "save", tm)
+        self.update_sel = button("Update from setup", None, "refresh", tm)
+        self.open_sel = button("Open in setup", None, "campaign", tm)
+        self.duplicate = button("Duplicate", None, "copy", tm)
+        self.delete = button("Delete", "dangerOutline", "trash", tm)
+        for b in (self.save_new, self.update_sel, self.open_sel, self.duplicate, self.delete):
+            edit.add(b)
+        card.body.addWidget(edit)
+        self.add(card)
+
+        card = Card("Queue", "Campaigns run in this order, one at a time per browser. Stop and Pause act on the "
+                    "selected campaign only, between two recipients.")
+        q = ResponsiveRow(min_item_width=150, spacing=8)
+        self.enqueue = button("Add to queue", None, "play", tm)
+        self.dequeue = button("Remove from queue", None, "stop", tm)
+        self.up = button("Move up", None)
+        self.down = button("Move down", None)
+        self.run_next = button("Run next", None)
+        for b in (self.enqueue, self.dequeue, self.up, self.down, self.run_next):
+            q.add(b)
+        card.body.addWidget(q)
+        q2 = ResponsiveRow(min_item_width=150, spacing=8)
+        self.pause = button("Pause", None)
+        self.stop = button("Stop campaign", "dangerOutline", "stop", tm)
+        self.checked = button("I checked Crisp", None, "check", tm)
+        self.stop_queue = button("Stop queue", None)
+        self.run_queue = button("Run queue", "primary", "play", tm)
+        for b in (self.pause, self.stop, self.checked, self.stop_queue, self.run_queue):
+            q2.add(b)
+        card.body.addWidget(q2)
+        self.queue_status = label("", "muted", wrap=True)
+        card.body.addWidget(self.queue_status)
+        self.add(card)
+        self.finish()
+
+    def selected_id(self) -> str:
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            return ""
+        item = self.table.item(rows[0].row(), 1)
+        return item.data(Qt.UserRole) if item else ""
 
 
 class ResultsPage(Page):

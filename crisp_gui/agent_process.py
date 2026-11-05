@@ -89,6 +89,8 @@ class AgentRunner(QObject):
             "CRISP_PAUSE_FILE": str(self.pause_file),
             "CRISP_SHORTCUT_VERSION": settings.get("shortcut_version", ""),
             "CRISP_RUNNER_NAME": settings.get("runner_name", ""),
+            "CRISP_PACE_FILE": settings.get("pace_file", ""),
+            "CRISP_WORKCOPY_TAG": settings.get("workcopy_tag", ""),
             "CRISP_CLAIM_BATCH": settings.get("claim_batch", "") or "10",
             "CRISP_CLAIM_EXPIRY": settings.get("claim_expiry", "") or "5",
             "CRISP_RESULTS_CHECK": settings.get("results_check", "false"),
