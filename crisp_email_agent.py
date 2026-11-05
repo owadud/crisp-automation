@@ -129,6 +129,18 @@ except ValueError:
     RECENT_DAYS = 7
 _HISTORY_INDEX = None
 
+# Label for the shortcut text in use (Crisp shortcuts have no versions), e.g. "v2".
+SHORTCUT_VERSION = os.environ.get("CRISP_SHORTCUT_VERSION", "").strip()
+
+# Campaign Results: read-only status check of saved conversation links.
+RESULTS_CHECK = os.environ.get("CRISP_RESULTS_CHECK", "false").lower() in {"1", "true", "yes", "on"}
+RESULTS_INPUT = os.environ.get("CRISP_RESULTS_INPUT", "").strip()     # JSON list of {key, email, link}
+RESULTS_OUTPUT = os.environ.get("CRISP_RESULTS_OUTPUT", "").strip()   # JSON lines written here
+try:
+    RESULTS_DELAY = max(1.0, float(os.environ.get("CRISP_RESULTS_DELAY", "4") or 4))
+except ValueError:
+    RESULTS_DELAY = 4.0
+
 # Pause: the GUI creates this file; checked only BETWEEN recipients.
 PAUSE_FILE = os.environ.get("CRISP_PAUSE_FILE", "").strip()
 
@@ -465,7 +477,8 @@ def log_result(row_index, row, result, error="", link=""):
     try:
         sc.append_history(HISTORY_FILE, Email=entry["Email"], Name=entry["Name"], Result=result,
                           Campaign=CAMPAIGN, Subject=SUBJECT, Mode="live", Error=entry["Error"],
-                          Row=entry["Row"], CSV=CSV_FILE.name)
+                          Row=entry["Row"], CSV=CSV_FILE.name, Shortcut=SHORTCUT,
+                          Version=SHORTCUT_VERSION, Link=link)
     except OSError as exc:
         print(f"  WARNING: could not write history: {exc}")
 
@@ -2038,6 +2051,95 @@ def main():
             SHEET.release_lock()
 
 
+def current_conversation_link(page):
+    """The open conversation's address, read live from the page ('' if none)."""
+    try:
+        url = str(page.evaluate("location.href") or "")
+    except Exception:
+        url = str(getattr(page, "url", "") or "")
+    return url if "session_" in url else ""
+
+
+def read_conversation(page, link, timeout_s=20):
+    """Open one saved conversation link and read it. READ-ONLY: only page.goto and reads."""
+    import campaign_results as cr
+    page.goto(link, wait_until="domcontentloaded", timeout=60000)
+    end = time.time() + timeout_s
+    raw = {}
+    while time.time() < end:
+        raw = page.evaluate(cr.READ_JS)
+        if raw.get("login_lost") or any(m.get("when") for m in raw.get("messages") or []):
+            break
+        page.wait_for_timeout(700)
+    return raw
+
+
+def check_links(page, items, out_path, delay=RESULTS_DELAY, stop=stop_requested):
+    """Visit each link slowly and append one JSON line per conversation.
+    Stops cleanly when the login is lost or the page layout is not recognised."""
+    import campaign_results as cr
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    total, checked = len(items), 0
+    for position, item in enumerate(items, start=1):
+        if stop():
+            print("Stop requested. Status check stopped.")
+            emit("stop_requested")
+            break
+        emit("check_progress", position=position, total=total, email=item.get("email", ""))
+        try:
+            raw = read_conversation(page, item["link"])
+        except Exception as exc:
+            print(f"CHECK [{position}/{total}] {item.get('email', '')}: could not open ({type(exc).__name__})")
+            raw = {"messages": [], "error": type(exc).__name__}
+        result = cr.analyze(raw, item.get("sent_at", ""))
+        if result.get("problem") == "login_lost":
+            print("CHECK STOPPED: the Crisp login was lost. Sign in again, then refresh.")
+            emit("check_stopped", reason="login_lost")
+            break
+        if result.get("problem") == "layout" and not raw.get("error"):
+            print("CHECK STOPPED: the Crisp page layout was not recognised (no message times found).")
+            emit("check_stopped", reason="layout")
+            break
+        with out.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"key": item["key"], "result": result,
+                                     "observed_at": cr.fmt(datetime.now())}) + "\n")
+        checked += 1
+        print(f"CHECK [{position}/{total}] {item.get('email', '')}: "
+              f"{result.get('status') or result.get('problem')}")
+        if position < total:
+            sc.sleep_seconds(delay, stop)
+    emit("check_done", checked=checked, total=total)
+    print(f"Status check: {checked} of {total} conversations read.")
+    return checked
+
+
+def results_check():
+    """'Refresh statuses' from the GUI: open each conversation link (read-only)."""
+    items = json.loads(Path(RESULTS_INPUT).read_text(encoding="utf-8")) if RESULTS_INPUT else []
+    print(f"Campaign Results: checking {len(items)} conversation(s), read-only, "
+          f"{RESULTS_DELAY:.0f} s between pages.")
+    emit("check_start", total=len(items))
+    if not items:
+        return
+    print("Launching Chromium. Complete your Crisp login when the browser opens.")
+    with sync_playwright() as p:
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=str(PROFILE_DIR), headless=False,
+            viewport={"width": 1600, "height": 900}, args=["--start-maximized"])
+        page = context.pages[0] if context.pages else context.new_page()
+        try:
+            page.goto(CRISP_URL, wait_until="domcontentloaded", timeout=60000)
+        except Exception:
+            pass
+        wait_for_crisp(page)
+        check_links(page, items, RESULTS_OUTPUT)
+        try:
+            context.close()
+        except Exception:
+            pass
+
+
 def health_check():
     """'Check Crisp': open Crisp and look for the subject dropdown, the
     Shortcuts tab and the segment field. Never types into a message, never
@@ -2110,6 +2212,9 @@ def health_check():
 def _main():
     if HEALTH_CHECK:
         health_check()
+        return
+    if RESULTS_CHECK:
+        results_check()
         return
 
     print("=" * 60)
@@ -2360,8 +2465,7 @@ def _main():
                 # MAIL SENT CSV UPDATE
                 # ------------------------------------------------
 
-                url = str(getattr(page, "url", "") or "")
-                link = url if "session_" in url else ""
+                link = current_conversation_link(page)
 
                 if not DRY_RUN:
 

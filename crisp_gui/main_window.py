@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import send_control as sc  # noqa: E402
 import sheet_source as ss  # noqa: E402  (gspread is imported only when used)
+import campaign_results as cr  # noqa: E402
 
 from PySide6.QtCore import QObject, QProcess, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QKeySequence, QShortcut
@@ -30,7 +31,7 @@ from .csv_stats import CsvStats, read_stats
 from .icons import icon, logo_pixmap
 from .diagnostics import build_zip
 from .preview_dialog import preview_rows, show_preview
-from .pages import ActivityPage, CampaignPage, DashboardPage, HistoryPage, SettingsPage
+from .pages import ActivityPage, CampaignPage, DashboardPage, HistoryPage, ResultsPage, SettingsPage
 from .theme import Palette, ThemeManager
 from .update_controller import UpdateController
 
@@ -45,6 +46,7 @@ PAGES = (
     ("activity", "Activity Logs", "logs", "Live progress and output from the automation."),
     ("settings", "Settings", "settings", "Appearance, browser session and defaults."),
     ("history", "History", "file", "Past runs, reports and diagnostics."),
+    ("results", "Campaign Results", "send", "Sent, delivered, read and replied, read from Crisp (read-only)."),
 )
 
 STATUS = {
@@ -69,6 +71,9 @@ class MainWindow(QMainWindow):
         self.data_dir = Path(data_dir or ROOT)
         self.runs_root = self.data_dir / "runs"
         self.history_file = self.data_dir / "history.csv"
+        self.results = cr.ResultsStore(self.data_dir / "campaign_results.json")
+        self._results_check = False
+        self._results_campaign = ""
         self.run_dir: Path | None = None
         self._sheet_busy = False
         self._sheet_signal = _SheetSignal(self)
@@ -183,7 +188,8 @@ class MainWindow(QMainWindow):
         self.activity = ActivityPage(self.tm)
         self.settings = SettingsPage(self.tm)
         self.history = HistoryPage(self.tm)
-        for page in (self.dashboard, self.campaign, self.activity, self.settings, self.history):
+        self.results_page = ResultsPage(self.tm)
+        for page in (self.dashboard, self.campaign, self.activity, self.settings, self.history, self.results_page):
             self.stack.addWidget(page)
         v.addWidget(self.stack, 1)
         h.addWidget(content, 1)
@@ -227,6 +233,17 @@ class MainWindow(QMainWindow):
         h.open_runs.clicked.connect(lambda: self._open_folder(self.runs_root))
         h.export_report.clicked.connect(self.export_report)
         h.copy_diag.clicked.connect(self.copy_diagnostics)
+
+        r = self.results_page
+        r.campaign.currentIndexChanged.connect(lambda _i: self.refresh_results())
+        for combo in (r.f_status, r.f_version, r.f_date):
+            combo.currentIndexChanged.connect(lambda _i: self._fill_results_table())
+        r.refresh.clicked.connect(self.refresh_statuses)
+        r.stop.clicked.connect(self._stop_status_check)
+        r.export.clicked.connect(self.export_results)
+        r.add_dnc.clicked.connect(self.add_failed_to_dnc)
+        for t in (r.table, r.followup, r.problems):
+            t.cellClicked.connect(lambda row, col, t=t: self._open_link_cell(t, row, col))
         c.skip_failed.toggled.connect(lambda _c: self._update_summary())
         c.reload.clicked.connect(self.refresh_csv)
         c.reset.clicked.connect(self.reset_campaign)
@@ -324,6 +341,8 @@ class MainWindow(QMainWindow):
             self.refresh_csv()
         if self.stack.widget(index) is self.history:
             self.refresh_history()
+        if self.stack.widget(index) is self.results_page:
+            self.refresh_results()
         self._refresh_nav_icons()
 
     # ================================================================ theme
@@ -1013,7 +1032,9 @@ class MainWindow(QMainWindow):
         if s.last_error and phase in (rs.FAILED, rs.RUNNING, rs.STOPPING):
             a.error_banner.set_text(s.last_error)
             a.error_banner.show()
-        if self.runner.is_running() and s.current_email and s.current_email != getattr(self, "_recovery_email", ""):
+        if self._results_check and s is not None:
+            self._render_check_progress(s)
+        elif self.runner.is_running() and s.current_email and s.current_email != getattr(self, "_recovery_email", ""):
             self._recovery_email = s.current_email
             self.prefs.set_recovery(email=s.current_email)
         if s.retry and not self.runner.is_running():
@@ -1049,6 +1070,9 @@ class MainWindow(QMainWindow):
         self._render_state(self.runner.state)
 
     def _run_finished(self, s: rs.RunState):
+        if self._results_check:
+            self._status_check_finished(s)
+            return
         if getattr(self, "_health", False):
             self._health = False
             self.last_state = s
@@ -1095,6 +1119,242 @@ class MainWindow(QMainWindow):
         self._render_state(s)
         self.refresh_history()
         QApplication.alert(self)
+
+    # ============================================================ campaign results
+    def _selected_campaign(self) -> str:
+        r = self.results_page
+        return "" if r.campaign.currentIndex() <= 0 else r.campaign.currentText()
+
+    def refresh_results(self):
+        """Load history.csv sends into the results store and redraw the page."""
+        r = self.results_page
+        if self.results.sync_history(sc.read_history(self.history_file)):
+            self.results.save()
+        current = self._selected_campaign()
+        names = self.results.campaigns()
+        r.campaign.blockSignals(True)
+        r.campaign.clear()
+        r.campaign.addItem("All campaigns")
+        r.campaign.addItems(names)
+        if current in names:
+            r.campaign.setCurrentText(current)
+        r.campaign.blockSignals(False)
+        campaign = self._selected_campaign()
+        rows = self.results.rows(campaign)
+        summ = cr.summary(rows)
+        r.m_sent.set(summ["sent"], f"{summ['unconfirmed']} unconfirmed" if summ["unconfirmed"] else "Real sends")
+        r.m_delivered.set(f"{summ['delivered_pct']}%", f"{summ['delivered']} delivered")
+        r.m_read.set(f"{summ['read_pct']}%", f"{summ['read']} read (approximate)")
+        r.m_replied.set(f"{summ['replied_pct']}%", f"{summ['replied']} replied (reliable)")
+        r.m_failed.set(summ["failed"], "Not delivered")
+        r.summary.setText(cr.summary_text(summ) if rows else
+                          "No real sends recorded yet. Results appear here after a live run.")
+        r.read_note.setText(cr.READ_NOTE)
+        last = self.results.last_checked(campaign)
+        missing = sum(1 for x in rows if not x.get("link"))
+        r.last_checked.setText((f"Last checked: {last}" if last else "Not checked yet")
+                               + (f" · {missing} without a conversation link (sent before links were recorded; "
+                                  "they cannot be checked)" if missing else ""))
+        due = cr.recheck_suggestions(rows, last) if rows else []
+        r.suggest.setVisible(bool(due))
+        if due:
+            r.suggest.set_text(f"Re-check suggested: it is now more than {due[0]} since this campaign was sent.")
+        self._fill_filter_combo(r.f_status, ["All statuses"] + cr.STATUSES)
+        self._fill_filter_combo(r.f_version, ["All versions"] + sorted({x.get("version") or "(none)" for x in rows}))
+        self._fill_results_table()
+        self._fill_side_tables(rows, campaign)
+
+    @staticmethod
+    def _fill_filter_combo(combo, items):
+        current = combo.currentText()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(items)
+        if current in items:
+            combo.setCurrentText(current)
+        combo.blockSignals(False)
+
+    def _filtered_results(self) -> list[dict]:
+        r = self.results_page
+        rows = self.results.rows(self._selected_campaign())
+        status, version, when = r.f_status.currentText(), r.f_version.currentText(), r.f_date.currentIndex()
+        if status and status != "All statuses":
+            rows = [x for x in rows if x["status"] == status]
+        if version and version != "All versions":
+            rows = [x for x in rows if (x.get("version") or "(none)") == version]
+        if when > 0:
+            days = {1: 1, 2: 7, 3: 30}[when]
+            cutoff = cr.fmt(datetime.now() - timedelta(days=days))
+            rows = [x for x in rows if x.get("sent_at", "") >= cutoff]
+        return rows
+
+    @staticmethod
+    def _set_rows(table, rows):
+        table.setSortingEnabled(False)
+        table.setRowCount(len(rows))
+        for i, values in enumerate(rows):
+            for j, value in enumerate(values):
+                table.setItem(i, j, QTableWidgetItem(str(value)))
+        table.setSortingEnabled(True)
+        table.resizeColumnsToContents()
+
+    def _fill_results_table(self):
+        self._set_rows(self.results_page.table, [cr.table_row(x) for x in self._filtered_results()])
+
+    def _fill_side_tables(self, rows, campaign):
+        r = self.results_page
+        follow = [x for x in rows if x["status"] == cr.REPLIED and x.get("open") is not False]
+        self._set_rows(r.followup, [[x["email"], x.get("name", ""), x.get("reply_at", ""), x["campaign"],
+                                     x.get("version", ""), x.get("link", "")] for x in follow])
+        r.tabs.setTabText(1, f"Needs follow-up ({len(follow)})")
+        failed = [x for x in rows if x["status"] == cr.FAILED]
+        self._set_rows(r.problems, [[x["email"], x.get("name", ""), x.get("reason", ""), x.get("sent_at", ""),
+                                     x["campaign"], x.get("link", "")] for x in failed])
+        r.tabs.setTabText(2, f"Delivery problems ({len(failed)})")
+        r.add_dnc.setEnabled(bool(failed))
+
+        def pct_row(name, s_):
+            return [name, s_["sent"], s_["delivered_pct"], s_["read_pct"], s_["replied_pct"], s_["failed"]]
+        self._set_rows(r.compare_campaigns, [pct_row(g["campaign"], g)
+                                             for g in cr.compare(self.results.rows(), "campaign")])
+        self._set_rows(r.compare_versions, [pct_row(g["version"], g) for g in cr.compare(rows, "version")])
+        self._set_rows(r.checks, [[h["at"], h["campaign"], h["sent"], h["delivered"], h["read"], h["replied"],
+                                   h["failed"]] for h in reversed(self.results.history(campaign))])
+
+    def _open_link_cell(self, table, row, col):
+        header = table.horizontalHeaderItem(col)
+        item = table.item(row, col)
+        if header and header.text() == "Conversation link" and item and item.text().startswith("http"):
+            QDesktopServices.openUrl(QUrl(item.text()))
+
+    def refresh_statuses(self):
+        """Open each recorded conversation link in Crisp (read-only) and save the statuses."""
+        if self.runner.is_running() or self.updater.busy:
+            W.inform(self, "Busy", "Wait until the current run or check has finished.")
+            return
+        self.refresh_results()
+        campaign = self._selected_campaign()
+        rows = [x for x in self.results.rows(campaign) if x.get("link")]
+        if not rows:
+            W.inform(self, "Nothing to check",
+                     "No conversation links are recorded for this campaign yet. Links are saved for real sends "
+                     "from version 3.7 on.")
+            return
+        minutes = max(1, round(len(rows) * 9 / 60))
+        if not W.ask(self, f"Check {len(rows)} conversation(s) in Crisp?",
+                     "Each conversation is opened and read in Chromium, one every few seconds. Nothing is typed, "
+                     "sent, resolved or changed. The check stops by itself if the Crisp login is lost.",
+                     details=[("Campaign", campaign or "All campaigns"), ("About", f"{minutes} min")],
+                     confirm="Start check"):
+            return
+        folder = self.data_dir / "results_check"
+        folder.mkdir(parents=True, exist_ok=True)
+        inp, out = folder / "input.json", folder / "observed.jsonl"
+        inp.write_text(json.dumps([{"key": cr.rkey(x["campaign"], x["email"]), "email": x["email"],
+                                    "link": x["link"], "sent_at": x.get("sent_at", "")} for x in rows]),
+                       encoding="utf-8")
+        out.unlink(missing_ok=True)
+        v = self.campaign_values()
+        v.update({"results_check": "true", "results_input": str(inp), "results_output": str(out),
+                  "run_dir": "", "history_file": ""})
+        err = self.runner.start(v, True, self.profile_dir)
+        if err:
+            W.inform(self, "Could not start the check", err)
+            return
+        self._results_check, self._results_campaign = True, campaign
+        r = self.results_page
+        r.refresh.setEnabled(False)
+        r.stop.show()
+        r.progress.setValue(0)
+        r.progress.show()
+        r.progress_text.setText("Opening Crisp… sign in in the Chromium window if asked.")
+        self._gui_line(f"Status check started for {len(rows)} conversation(s), read-only.")
+
+    def _stop_status_check(self):
+        if self.runner.is_running() and self._results_check:
+            self.runner.request_stop()
+            self.results_page.progress_text.setText("Stopping after the current page…")
+
+    def _render_check_progress(self, s):
+        r = self.results_page
+        if s.eligible:
+            r.progress.setValue(int(1000 * min(s.position, s.eligible) / s.eligible))
+        r.progress_text.setText(s.step or "Checking…")
+
+    def _status_check_finished(self, s):
+        self._results_check = False
+        out = self.data_dir / "results_check" / "observed.jsonl"
+        merged = 0
+        try:
+            lines = out.read_text(encoding="utf-8").splitlines() if out.exists() else []
+        except OSError:
+            lines = []
+        for line in lines:
+            try:
+                item = json.loads(line)
+                when = datetime.strptime(item.get("observed_at", ""), "%Y-%m-%d %H:%M")
+            except ValueError:
+                continue
+            if item.get("key") in self.results.recipients:
+                self.results.apply(item["key"], item.get("result") or {}, when)
+                merged += 1
+        if merged:
+            self.results.record_check(self._results_campaign or "(all)")
+        self.results.save()
+        r = self.results_page
+        r.refresh.setEnabled(True)
+        r.stop.hide()
+        r.progress.hide()
+        r.progress_text.setText(f"Checked {merged} conversation(s)."
+                                + (f" {s.last_error}" if s.last_error else ""))
+        self._gui_line(f"Status check finished: {merged} conversation(s) read.")
+        self.last_state = s
+        self._render_state(s)
+        self.refresh_results()
+        if s.last_error:
+            W.inform(self, "Status check stopped", s.last_error)
+
+    def export_results(self):
+        rows = self._filtered_results()
+        if not rows:
+            W.inform(self, "Nothing to export", "No rows match the current filters.")
+            return
+        target, _ = QFileDialog.getSaveFileName(self, "Export campaign results",
+                                                str(Path.home() / "campaign_results.csv"), "CSV files (*.csv)")
+        if target:
+            cr.export_csv(rows, Path(target))
+            self.flash(self.results_page.export, "Exported")
+
+    def add_failed_to_dnc(self):
+        """Never automatic: the user confirms, and chooses the list file if none is set."""
+        failed = sorted({x["email"] for x in self.results.rows(self._selected_campaign()) if x["status"] == cr.FAILED})
+        if not failed:
+            return
+        path = self.campaign.dnc.text()
+        if not path:
+            path, _ = QFileDialog.getSaveFileName(self, "Do-not-contact list",
+                                                  str(self.data_dir / "do_not_contact.csv"), "CSV files (*.csv)")
+            if not path:
+                return
+        if not W.ask(self, f"Add {len(failed)} email(s) to the do-not-contact list?",
+                     "They will be skipped in every future run.", details=[("List", path)], confirm="Add"):
+            return
+        target = Path(path)
+        existing = rules_dnc = set()
+        if target.exists():
+            try:
+                existing = {line.strip().lower() for line in target.read_text(encoding="utf-8-sig").splitlines()}
+            except OSError:
+                existing = set()
+        with target.open("a", encoding="utf-8", newline="") as handle:
+            if not target.exists() or target.stat().st_size == 0:
+                handle.write("Email\n")
+            for email in failed:
+                if email not in existing and email not in rules_dnc:
+                    handle.write(email + "\n")
+        self.campaign.dnc.edit.setText(str(target))
+        self.refresh_csv()
+        self.flash(self.results_page.add_dnc, "Added")
 
     # ============================================================ preview / pause / ETA
     def campaign_name(self, v: dict | None = None) -> str:

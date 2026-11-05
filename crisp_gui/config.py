@@ -47,6 +47,7 @@ CAMPAIGN_DEFAULTS = {
     "google_key": "",          # service-account key file, kept OUTSIDE the app folder
     "campaign": "",            # campaign name for history; blank = the subject
     "recent_days": "7",        # skip anyone emailed in the last N days (0 = off)
+    "shortcut_version": "",    # your label for the shortcut text, e.g. v2 (Campaign Results)
 }
 
 THEMES = ("light", "dark", "system")

@@ -15,7 +15,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DHAKA = timezone(timedelta(hours=6), "Dhaka")
-HISTORY_COLUMNS = ["Time", "Email", "Name", "Result", "Campaign", "Subject", "Mode", "Error", "Row", "CSV"]
+HISTORY_COLUMNS = ["Time", "Email", "Name", "Result", "Campaign", "Subject", "Mode", "Error", "Row", "CSV",
+                   "Shortcut", "Version", "Link"]
 # Results written to history.csv / report.csv / the CSV Status column.
 SENT, DRY_RUN, FAILED, SKIPPED, UNCONFIRMED, INVALID = (
     "Sent", "Dry run", "Failed", "Skipped", "Unconfirmed", "Invalid")

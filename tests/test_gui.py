@@ -115,7 +115,7 @@ def run_to_end(w, timeout=20):
 
 # ================================================================ navigation
 def test_every_nav_item_works(win):
-    titles = ["Dashboard", "Campaign Setup", "Activity Logs", "Settings", "History"]
+    titles = ["Dashboard", "Campaign Setup", "Activity Logs", "Settings", "History", "Campaign Results"]
     for i, b in enumerate(win.nav_buttons):
         QTest.mouseClick(b, Qt.LeftButton)
         assert win.stack.currentIndex() == i
@@ -629,3 +629,41 @@ def test_pause_button_writes_and_clears_pause_file(win, dialogs, env, monkeypatc
     assert not win.runner.pause_requested() and win.activity.pause.text() == "Pause"
     win.runner.force_stop()
     assert wait_until(lambda: not win.runner.is_running(), 15)
+
+
+def test_campaign_results_page(win, dialogs, tmp_path, monkeypatch):
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import campaign_results as cr
+    import send_control as sc
+    from datetime import datetime
+    hist = tmp_path / "data" / "history.csv"
+    for email, version, link in (("a@x.com", "v1", "https://app.crisp.chat/website/w/inbox/session_a/"),
+                                 ("b@x.com", "v2", "https://app.crisp.chat/website/w/inbox/session_b/"),
+                                 ("old@x.com", "", "")):
+        sc.append_history(hist, Email=email, Result="Sent", Mode="live", Campaign="VIP", Version=version, Link=link)
+    win.navigate(5)
+    r = win.results_page
+    assert [r.campaign.itemText(i) for i in range(r.campaign.count())] == ["All campaigns", "VIP"]
+    assert "3 sent" in r.summary.text() and "1 without a conversation link" in r.last_checked.text()
+    now = datetime.now()
+    win.results.apply(cr.rkey("VIP", "a@x.com"), {"status": "Replied", "reply_at": "", "open": True, "problem": ""}, now)
+    win.results.apply(cr.rkey("VIP", "b@x.com"), {"status": "Failed", "reason": "bounced", "problem": ""}, now)
+    win.refresh_results()
+    assert r.m_replied.value.text() == "33.3%" and r.m_failed.value.text() == "1"
+    assert r.followup.rowCount() == 1 and r.problems.rowCount() == 1
+    assert "Read is approximate" in r.read_note.text()
+    r.f_status.setCurrentText("Failed")
+    assert r.table.rowCount() == 1
+    r.f_status.setCurrentText("All statuses")
+    out = tmp_path / "export.csv"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), ""))
+    win.export_results()
+    assert out.exists() and "b@x.com" in out.read_text(encoding="utf-8-sig")
+    dnc = tmp_path / "dnc.csv"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(dnc), ""))
+    dialogs["answers"] = [False]
+    win.add_failed_to_dnc()                            # user says no -> nothing written
+    assert not dnc.exists()
+    win.add_failed_to_dnc()                            # user says yes
+    assert dnc.read_text(encoding="utf-8").splitlines() == ["Email", "b@x.com"]
+    assert win.campaign.dnc.text() == str(dnc)

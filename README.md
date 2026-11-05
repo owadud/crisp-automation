@@ -202,6 +202,39 @@ Closing the app while paused counts as a stopped run.
 **ETA**: "12 of 50 done · ETA 14:32 (about 18 min)", based on the real pace including the delay
 between emails (fixed or random) and ignoring paused time.
 
+## Campaign Results (3.7)
+
+**Campaign Results** page: what happened after sending, read from Crisp with your saved
+login. **Read-only**: it only opens each recorded conversation link and reads it; nothing
+is typed, sent, resolved or changed.
+
+- **Refresh statuses** for any campaign (or all). Pages open one every few seconds with a
+  progress bar; Stop works between pages. The check stops by itself if the Crisp login is
+  lost or the page layout is not recognised.
+- Statuses: **Sent, Delivered, Read, Replied, Failed / Not delivered, Unconfirmed**. The
+  highest status is kept and never downgraded by a later check.
+- **Read is approximate** (email open tracking: mail apps can auto-open or block images).
+  **Replied is reliable** (a customer message after ours).
+- Times: Crisp shows the exact **sent** and **reply** times. It shows no time for delivered
+  or read, so those are the time we first noticed them, labelled **"first seen"**.
+- Summary cards with delivered / read / reply %, a detail table (filter by status, shortcut
+  version and date; sortable; clickable conversation links; **Export CSV**), **Needs
+  follow-up** (replied and still open), **Delivery problems** (with the reason if Crisp shows
+  one, and an optional, confirmed "Add to do-not-contact"), **Compare** (campaigns side by
+  side, and shortcut versions within a campaign) and **Check history** (how numbers grow).
+  Re-checks are suggested about 1 hour, 1 day and 3 days after sending.
+- **Shortcut version** (Campaign Setup > Message): your label for the shortcut text, e.g. `v2`.
+- Data stays on this computer: `history.csv` (now also saves shortcut, version and the
+  conversation link of every real send) and `campaign_results.json`. No message text and no
+  screenshots are stored. Sends from before 3.7 have no saved link, so they cannot be checked.
+
+## Ubuntu: open the app without a terminal
+
+Once, in the app folder: `bash install_launcher_ubuntu.sh`. Then open **Crisp Automation**
+from the app grid (Super key, type "Crisp") and right-click its dock icon > **Pin to Dash**.
+Updates keep working. If it ever fails to start, a popup points to
+`~/.crisp_email_agent/launcher.log`.
+
 ## Shortcut behavior
 
 The automation clicks the visible **Shortcuts** tab in Crisp. It deliberately does not use Ctrl+K because that opens Crisp's global command palette in the current interface. If the Shortcuts tab cannot be found, the run stops with a clear error rather than opening the wrong panel.

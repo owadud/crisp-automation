@@ -48,7 +48,7 @@ EXTRACT_JS = r"""
   };
   const safeAttr = (name, v) => {
     if (v == null) return null;
-    if (name === 'href' || name === 'src') return v.replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, '<uuid>').replace(/session_[A-Za-z0-9-]+/g, 'session_<id>').slice(0, 120);
+    if (name === 'href' || name === 'src') return v.replace(EMAIL, '<email>').replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, '<uuid>').replace(/session_[A-Za-z0-9-]+/g, 'session_<id>').slice(0, 120);
     return safeText(v);
   };
   const cls = el => (typeof el.className === 'string' ? el.className : (el.getAttribute('class') || '')).trim();

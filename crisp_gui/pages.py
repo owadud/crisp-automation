@@ -8,7 +8,7 @@ from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
     QComboBox,
     QAbstractItemView, QFrame, QHBoxLayout, QHeaderView, QPlainTextEdit, QProgressBar, QScrollArea,
-    QSizePolicy, QTableWidget, QVBoxLayout, QWidget,
+    QSizePolicy, QTabWidget, QTableWidget, QVBoxLayout, QWidget,
 )
 
 from .config import APP_VERSION
@@ -227,8 +227,11 @@ class CampaignPage(Page):
         card.body.addWidget(self.campaign_name)
         self.subject = Field("Email subject", "Must exactly match a saved subject in Crisp's subject dropdown.")
         self.shortcut = Field("Crisp shortcut", "The saved Crisp shortcut inserted as the message body.")
+        self.shortcut_version = Field("Shortcut version", "Your label for this shortcut text (e.g. v2), "
+                                      "to compare versions in Campaign Results.", placeholder="Optional")
         card.body.addWidget(self.subject)
         card.body.addWidget(self.shortcut)
+        card.body.addWidget(self.shortcut_version)
         self.add(card)
 
         # targeting ----------------------------------------------------------
@@ -350,7 +353,8 @@ class CampaignPage(Page):
                 "delay": self.delay, "max_per_run": self.max_per_run, "daily_cap": self.daily_cap,
                 "send_window": self.send_window, "start_at": self.start_at,
                 "sheet_url": self.sheet_url, "google_key": self.google_key,
-                "campaign": self.campaign_name, "recent_days": self.recent_days}
+                "campaign": self.campaign_name, "recent_days": self.recent_days,
+                "shortcut_version": self.shortcut_version}
 
 
 # =====================================================================
@@ -547,4 +551,146 @@ class HistoryPage(Page):
         self.finish()
 
 
-__all__ = ["DashboardPage", "CampaignPage", "ActivityPage", "SettingsPage", "HistoryPage"]
+# =====================================================================
+def _table(columns, min_height=260) -> QTableWidget:
+    t = QTableWidget(0, len(columns))
+    t.setHorizontalHeaderLabels(columns)
+    t.setSelectionBehavior(QAbstractItemView.SelectRows)
+    t.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    t.verticalHeader().setVisible(False)
+    t.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+    t.horizontalHeader().setStretchLastSection(True)
+    t.setSortingEnabled(True)
+    t.setMinimumHeight(min_height)
+    return t
+
+
+class ResultsPage(Page):
+    """Campaign Results: read-only statuses from Crisp, per campaign."""
+
+    def __init__(self, tm: ThemeManager):
+        super().__init__()
+        card = Card("Campaign Results", "Statuses are read from Crisp with your saved login. Read-only: "
+                    "nothing is typed, sent, resolved or changed. Pages are opened slowly (one every few seconds).")
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(label("Campaign", "fieldLabel"))
+        self.campaign = QComboBox()
+        self.campaign.setMinimumWidth(160)
+        self.campaign.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        row.addWidget(self.campaign, 1)
+        self.refresh = button("Refresh statuses", "primary", "refresh", tm)
+        self.stop = button("Stop", "dangerOutline", "stop", tm)
+        self.stop.hide()
+        row.addWidget(self.refresh)
+        row.addWidget(self.stop)
+        card.body.addLayout(row)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 1000)
+        self.progress.setTextVisible(False)
+        self.progress.hide()
+        card.body.addWidget(self.progress)
+        self.progress_text = label("", "faint", wrap=True)
+        card.body.addWidget(self.progress_text)
+        self.last_checked = label("", "muted", wrap=True)
+        card.body.addWidget(self.last_checked)
+        self.suggest = Banner(tm, "info")
+        self.suggest.hide()
+        card.body.addWidget(self.suggest)
+        self.add(card)
+
+        self.metrics = ResponsiveRow(min_item_width=150)
+        self.m_sent = MetricCard("Sent")
+        self.m_delivered = MetricCard("Delivered")
+        self.m_read = MetricCard("Read (approx.)")
+        self.m_replied = MetricCard("Replied")
+        self.m_failed = MetricCard("Failed")
+        for m in (self.m_sent, self.m_delivered, self.m_read, self.m_replied, self.m_failed):
+            self.metrics.add(m)
+        self.add(self.metrics)
+        self.summary = label("", "muted", wrap=True)
+        self.summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.add(self.summary)
+        self.read_note = label("", "faint", wrap=True)
+        self.add(self.read_note)
+
+        card = Card("Details")
+        self.tabs = QTabWidget()
+
+        # recipients ------------------------------------------------------
+        tab = QWidget()
+        v = QVBoxLayout(tab)
+        v.setContentsMargins(0, 8, 0, 0)
+        filters = QHBoxLayout()
+        filters.setSpacing(8)
+        self.f_status = QComboBox()
+        self.f_version = QComboBox()
+        self.f_date = QComboBox()
+        self.f_date.addItems(["Any time", "Last 24 hours", "Last 7 days", "Last 30 days"])
+        for w in (self.f_status, self.f_version, self.f_date):
+            w.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            w.setMinimumWidth(110)
+            filters.addWidget(w, 1)
+        self.export = button("Export CSV…", None, "save", tm, "text_muted")
+        filters.addWidget(self.export)
+        v.addLayout(filters)
+        self.table = _table(["Email", "Name", "Status", "Sent", "Delivered", "Read", "Replied",
+                             "Shortcut version", "Campaign", "Conversation link", "Note"], 320)
+        v.addWidget(self.table)
+        v.addWidget(label("Click a conversation link to open it. \"first seen\" = Crisp shows no time for "
+                          "this step, so the time we first noticed it is shown.", "faint", wrap=True))
+        self.tabs.addTab(tab, "Recipients")
+
+        # needs follow-up ---------------------------------------------------
+        tab = QWidget()
+        v = QVBoxLayout(tab)
+        v.setContentsMargins(0, 8, 0, 0)
+        v.addWidget(label("Customers who replied and whose conversation is still open.", "faint", wrap=True))
+        self.followup = _table(["Email", "Name", "Replied", "Campaign", "Shortcut version", "Conversation link"])
+        v.addWidget(self.followup)
+        self.tabs.addTab(tab, "Needs follow-up")
+
+        # delivery problems ---------------------------------------------------
+        tab = QWidget()
+        v = QVBoxLayout(tab)
+        v.setContentsMargins(0, 8, 0, 0)
+        self.problems = _table(["Email", "Name", "Reason", "Sent", "Campaign", "Conversation link"])
+        v.addWidget(self.problems)
+        h = QHBoxLayout()
+        self.add_dnc = button("Add to do-not-contact…", None, "alert", tm, "text_muted")
+        self.add_dnc.setToolTip("Adds these emails to your do-not-contact list after you confirm (never automatic).")
+        h.addWidget(self.add_dnc)
+        h.addStretch()
+        v.addLayout(h)
+        self.tabs.addTab(tab, "Delivery problems")
+
+        # compare ---------------------------------------------------------------
+        tab = QWidget()
+        v = QVBoxLayout(tab)
+        v.setContentsMargins(0, 8, 0, 0)
+        v.addWidget(label("Campaigns side by side", "fieldLabel"))
+        self.compare_campaigns = _table(["Campaign", "Sent", "Delivered %", "Read % (approx.)", "Reply %",
+                                         "Failed"], 160)
+        v.addWidget(self.compare_campaigns)
+        v.addWidget(label("Shortcut versions in the selected campaign", "fieldLabel"))
+        self.compare_versions = _table(["Shortcut version", "Sent", "Delivered %", "Read % (approx.)",
+                                        "Reply %", "Failed"], 120)
+        v.addWidget(self.compare_versions)
+        self.tabs.addTab(tab, "Compare")
+
+        # check history --------------------------------------------------------
+        tab = QWidget()
+        v = QVBoxLayout(tab)
+        v.setContentsMargins(0, 8, 0, 0)
+        v.addWidget(label("Each refresh is saved, so you can see read and reply numbers grow.", "faint", wrap=True))
+        self.checks = _table(["Checked at", "Campaign", "Sent", "Delivered", "Read (approx.)", "Replied",
+                              "Failed"], 200)
+        v.addWidget(self.checks)
+        self.tabs.addTab(tab, "Check history")
+
+        card.body.addWidget(self.tabs)
+        self.add(card, 1)
+        self.finish()
+
+
+__all__ = ["DashboardPage", "CampaignPage", "ActivityPage", "SettingsPage", "HistoryPage", "ResultsPage"]

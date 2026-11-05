@@ -22,6 +22,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName("CrispAutomation")
+    app.setDesktopFileName("crisp-automation")  # matches the Ubuntu launcher (dock icon)
     app.setStyle("Fusion")  # consistent rendering on Windows and Ubuntu
 
     prefs = Preferences()

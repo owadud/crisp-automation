@@ -87,6 +87,11 @@ class AgentRunner(QObject):
             "CRISP_CAMPAIGN": settings.get("campaign", ""),
             "CRISP_RECENT_DAYS": settings.get("recent_days", "7"),
             "CRISP_PAUSE_FILE": str(self.pause_file),
+            "CRISP_SHORTCUT_VERSION": settings.get("shortcut_version", ""),
+            "CRISP_RESULTS_CHECK": settings.get("results_check", "false"),
+            "CRISP_RESULTS_INPUT": settings.get("results_input", ""),
+            "CRISP_RESULTS_OUTPUT": settings.get("results_output", ""),
+            "CRISP_RESULTS_DELAY": settings.get("results_delay", "4"),
             # The ONLY switch that controls real sending in the agent.
             "CRISP_DRY_RUN": "true" if dry_run else "false",
             "CRISP_PROFILE_DIR": str(profile_dir),

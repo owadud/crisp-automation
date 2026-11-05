@@ -400,6 +400,25 @@ class RunParser:
                 s.step = f"Next email in {float(ev.get('seconds') or 0):.0f} s"
             except (TypeError, ValueError):
                 pass
+        elif kind == "check_start":
+            s.eligible = int(ev.get("total") or 0)
+            s.step = "Checking statuses (read-only)"
+        elif kind == "check_progress":
+            s.position = int(ev.get("position") or 0)
+            s.eligible = int(ev.get("total") or s.eligible)
+            s.current_email = str(ev.get("email") or "")
+            s.step = f"Checking {s.position} of {s.eligible}"
+            if s.phase not in (STOPPING,):
+                s.phase = RUNNING
+        elif kind == "check_stopped":
+            reason = str(ev.get("reason") or "")
+            s.last_error = {"login_lost": "The Crisp login was lost. Sign in again, then refresh.",
+                            "layout": "The Crisp page layout was not recognised, so the check stopped."}.get(
+                reason, reason or "The check stopped.")
+        elif kind == "check_done":
+            s.completed = int(ev.get("checked") or 0)
+            s.summary_seen = True
+            s.step = f"Checked {s.completed} of {ev.get('total', s.eligible)}"
         elif kind == "health_wait":
             s.step = "Open any conversation in the Crisp window"
 
