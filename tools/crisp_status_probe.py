@@ -164,6 +164,45 @@ def wait_for_inbox(page, seconds=300) -> bool:
     return False
 
 
+def auto_capture(ctx, out, captures, minutes=15, wanted=8) -> None:
+    """No typing: every conversation left open ~5 s in Chromium is captured once."""
+    print("AUTOMATIC MODE - you only click in the Chromium window:")
+    print("  1. Click an example conversation in the Inbox (same tab) and wait ~5 seconds.")
+    print("  2. This window prints 'Captured conversation N'. Then click the next one.")
+    print("  3. Good examples: one only sent, one delivered/read, one replied, one failed (if any).")
+    print(f"  4. When finished, just CLOSE the Chromium window (or it stops after {minutes} min / {wanted} captures).")
+    seen, last_key, since = set(), None, time.time()
+    end = time.time() + minutes * 60
+    while time.time() < end and len(captures) < wanted:
+        try:
+            pages = [pg for pg in ctx.pages if not pg.is_closed()]
+            if not pages:
+                break
+            page = pick_page(ctx)
+            m = re.search(r"session_[A-Za-z0-9-]+", page.url or "")
+            key = m.group(0) if m else None
+        except Exception:
+            break
+        if key != last_key:
+            last_key, since = key, time.time()
+        elif key and key not in seen and time.time() - since >= 4:
+            try:
+                data = page.evaluate(EXTRACT_JS)
+            except Exception as exc:
+                if "closed" in str(exc).lower():
+                    break
+                time.sleep(1)
+                continue
+            if data.get("messages"):
+                seen.add(key)
+                data["label"] = f"conversation {len(captures) + 1}"
+                captures.append(data)
+                save(captures, out)
+                print(f"Captured conversation {len(captures)} ({len(data['messages'])} messages). "
+                      "Click the next one, or close Chromium to finish.")
+        time.sleep(1)
+
+
 def main() -> int:
     if "--selftest" in sys.argv:
         return selftest()
@@ -182,6 +221,18 @@ def main() -> int:
             pass
         print("Sign in to Crisp in the Chromium window if it asks (only you type there).")
         print()
+        if "--manual" not in sys.argv:
+            auto_capture(ctx, out, captures)
+            try:
+                ctx.close()
+            except Exception:
+                pass
+            if captures:
+                print(f"Done. {len(captures)} capture(s) saved to: {out}")
+                print("Tell Claude it is done; it can read that file on this computer.")
+            else:
+                print("Nothing captured.")
+            return 0
         print("In the Chromium window, open an example conversation, e.g.:")
         print("  1) sent only   2) delivered or read   3) the customer replied   4) bounced/failed (if any)")
         print("Then come back here, type a short label (sent / read / replied / failed / ...) and press Enter.")
