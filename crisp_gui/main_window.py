@@ -6,7 +6,8 @@ import json
 import shutil
 import sys
 import threading
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -28,6 +29,7 @@ from .config import AGENT_SCRIPT, APP_NAME, APP_VERSION, GITHUB_REPO, PROFILE_DI
 from .csv_stats import CsvStats, read_stats
 from .icons import icon, logo_pixmap
 from .diagnostics import build_zip
+from .preview_dialog import preview_rows, show_preview
 from .pages import ActivityPage, CampaignPage, DashboardPage, HistoryPage, SettingsPage
 from .theme import Palette, ThemeManager
 from .update_controller import UpdateController
@@ -190,6 +192,9 @@ class MainWindow(QMainWindow):
         self.csv_timer = QTimer(self)
         self.csv_timer.setSingleShot(True)
         self.csv_timer.setInterval(250)
+        self.eta_timer = QTimer(self)          # keeps the ETA ticking during a run
+        self.eta_timer.setInterval(2000)
+        self.eta_timer.timeout.connect(lambda: self._render_eta(self.runner.state))
 
     # ================================================================ wiring
     def _wire(self):
@@ -213,6 +218,7 @@ class MainWindow(QMainWindow):
         self._sheet_signal.done.connect(self._sheet_job_done)
         c.sheet_tab.currentTextChanged.connect(self._sheet_tab_changed)
         c.retry_failed.clicked.connect(lambda: self.start_run(retry_only=True))
+        c.preview.clicked.connect(self.show_row_preview)
         c.random_delay.toggled.connect(lambda on: None if self._loading else self.prefs.set_random_delay(on))
 
         h = self.history
@@ -232,6 +238,7 @@ class MainWindow(QMainWindow):
 
         a = self.activity
         a.stop.clicked.connect(self.stop_run)
+        a.pause.clicked.connect(self.toggle_pause)
         a.clear.clicked.connect(self.clear_log)
         a.copy.clicked.connect(self.copy_log)
         a.save.clicked.connect(self.save_log)
@@ -536,7 +543,9 @@ class MainWindow(QMainWindow):
         if self.source() == "sheet":
             fresh = getattr(self, "_sheet_preview_key", None) == (v["sheet_url"], v["sheet_tab"])
             path = str(self._sheet_preview_path()) if fresh and self._sheet_preview_path().exists() else ""
-        self.stats = read_stats(path, v["reference"], v["row_from"], v["row_to"], v["dnc"])
+        self.stats = read_stats(path, v["reference"], v["row_from"], v["row_to"], v["dnc"],
+                                history_file=str(self.history_file), campaign=self.campaign_name(v),
+                                recent_days=v.get("recent_days") or 0)
         if self.source() == "sheet" and not path:
             self.stats.error = "Click Test connection to read the Sheet."
         self._validate_fields()
@@ -563,7 +572,9 @@ class MainWindow(QMainWindow):
             field.set_state("error", st.range_error)
             ok = False
         elif st.ok:
-            text = st.preview().replace(", ", " · ")
+            text = st.preview()
+            if st.recent or st.campaign_sent:
+                text += "\nSee who and when: Preview rows…"
             if st.invalid_rows:
                 shown = "; ".join(f"row {n}: {e or '(blank)'} ({why})" for n, e, why in st.invalid_rows[:3])
                 more = f" and {len(st.invalid_rows) - 3} more" if len(st.invalid_rows) > 3 else ""
@@ -777,18 +788,17 @@ class MainWindow(QMainWindow):
         dry = self.dry_run()
         n = self.stats.retry_candidates if retry_only else self.stats.eligible
         if not dry:
-            ok = W.ask(
-                self, f"Send {n} real email{'s' if n != 1 else ''}?",
-                "Dry Run is off. The agent will send real emails through Crisp and mark each sent row in the CSV. "
-                "This can't be undone.",
-                details=[("Recipients", str(n) + (" (retry failed only)" if retry_only else "")),
-                         ("Limits", self._limits_text(v)),
-                         ("Rows", f"{self.stats.range_from}–{self.stats.range_to} of {self.stats.total}"),
-                         ("Subject", v["subject"]), ("Shortcut", v["shortcut"]),
-                         ("Segment", v["segment"]),
-                         ("Source", f"Google Sheet, tab {v['sheet_tab']}" if v.get("source") == "sheet"
-                          else f"CSV {Path(v['csv']).name}")],
-                confirm=f"Send {n} email{'s' if n != 1 else ''}", tone="danger")
+            # Before going live: the per-row table of exactly what will happen.
+            source = (f"Google Sheet, tab {v['sheet_tab']}" if v.get("source") == "sheet"
+                      else f"CSV {Path(v['csv']).name}")
+            summary = (f"Dry Run is off: real emails go out through Crisp and each sent row is marked. "
+                       f"This can't be undone.\n{self.stats.preview()}\n"
+                       f"Campaign: {self.campaign_name(v)} · Rows {self.stats.range_from}–{self.stats.range_to} "
+                       f"of {self.stats.total} · {source} · {self._limits_text(v)}"
+                       + (" · retry failed only" if retry_only else ""))
+            ok = show_preview(self, f"Send {n} real email{'s' if n != 1 else ''}?", summary,
+                              preview_rows(self.stats.plan, v),
+                              confirm=f"Send {n} email{'s' if n != 1 else ''}", danger=True)
             if not ok:
                 return
         v["retry_only"] = "true" if retry_only else "false"
@@ -925,10 +935,21 @@ class MainWindow(QMainWindow):
         text, tone = STATUS[phase]
         if phase == rs.RUNNING and s and s.dry_run:
             text = "Dry run"
+        if s and s.paused and self.runner.is_running():
+            text, tone = "Paused", "warning"
         self.status.set(text, tone)
         self._style_run_button()
         a.stop.setEnabled(self.runner.is_running())
         a.stop.setText("Force stop" if phase == rs.STOPPING else "Stop")
+        paused = bool(s and s.paused)
+        a.pause.setEnabled(self.runner.is_running() and phase in (rs.RUNNING, rs.WAITING_LOGIN))
+        a.pause.setText("Resume" if paused or self.runner.pause_requested() else "Pause")
+        if self.runner.is_running():
+            if not self.eta_timer.isActive():
+                self.eta_timer.start()
+        else:
+            self.eta_timer.stop()
+        self._render_eta(s)
 
         if s is None:
             a.step.setText("Not running")
@@ -1074,6 +1095,48 @@ class MainWindow(QMainWindow):
         self._render_state(s)
         self.refresh_history()
         QApplication.alert(self)
+
+    # ============================================================ preview / pause / ETA
+    def campaign_name(self, v: dict | None = None) -> str:
+        v = v or self.campaign_values()
+        return (v.get("campaign") or "").strip() or (v.get("subject") or "").strip()
+
+    def show_row_preview(self):
+        """Per-row table of what a run would do. Sends nothing, writes nothing."""
+        self.refresh_csv()
+        st = self.stats
+        if not st.ok or st.range_error:
+            W.inform(self, "Nothing to preview", st.error or st.range_error or "Check the campaign settings.")
+            return
+        v = self.campaign_values()
+        show_preview(self, "Preview: what a run would do", st.preview(), preview_rows(st.plan, v))
+
+    def toggle_pause(self):
+        if not self.runner.is_running():
+            return
+        if self.runner.pause_requested():
+            self.runner.resume()
+            self._gui_line("Resume requested.")
+        elif self.runner.pause():
+            self._gui_line("Pause requested: the run pauses after the current recipient (never mid-send).")
+            self.activity.step.setText("Pausing after the current recipient…")
+        self._render_state(self.runner.state)
+
+    def _render_eta(self, s):
+        a, d = self.activity, self.dashboard
+        if s is None or not self.runner.is_running() or not s.eligible:
+            a.eta.setText("")
+            return
+        if s.paused:
+            a.eta.setText(f"Paused after {s.paused_after}. Press Resume to continue with the next recipient.")
+            return
+        seconds = rs.eta_seconds(s, time.monotonic())
+        finish = datetime.now() + timedelta(seconds=seconds)
+        mins = max(1, round(seconds / 60))
+        text = (f"{s.processed} of {s.eligible} done · ETA {finish:%H:%M} (about {mins} min)"
+                if seconds > 0 else f"{s.processed} of {s.eligible} done")
+        a.eta.setText(text)
+        d.run_progress_text.setText(text)
 
     def _close_run_log(self):
         if self._run_log:
@@ -1234,7 +1297,19 @@ class MainWindow(QMainWindow):
 
     # ================================================================ close
     def closeEvent(self, event):
-        if self.runner.is_running():
+        state = self.runner.state
+        if self.runner.is_running() and state is not None and state.paused:
+            # Paused = between two recipients, nothing in flight: close like a stopped run.
+            self.runner.request_stop()
+            self.runner.force_stop()
+            self.runner.proc.waitForFinished(5000)
+            self.prefs.clear_recovery()
+            self.prefs.set_last_run({"finished_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                     "mode": "dry" if state.dry_run else "real", "outcome": "stopped",
+                                     "sent": state.sent_confirmed, "completed": state.completed,
+                                     "failed": state.failed, "eligible": state.eligible,
+                                     "error": f"Closed while paused after {state.paused_after}"})
+        elif self.runner.is_running():
             if not W.ask(self, "Quit while the agent is running?",
                          "Quitting stops the agent immediately. If an email is being sent right now, the CSV row "
                          "might not get marked. Check the last conversation in Crisp before running again.",

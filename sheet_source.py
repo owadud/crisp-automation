@@ -23,9 +23,13 @@ import socket
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+import sys
 from pathlib import Path
 
-REQUIRED_COLUMNS = ("Full Name", "Contact Email", "Reference", "Mail Sent")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import recipient_rules as rules  # noqa: E402  (same column rules as CSV files)
+
+REQUIRED_COLUMNS = ("Contact Email",)   # only the email column is required
 CONTROL_TAB = "_crisp_control"
 STALE_MINUTES = 5
 HEARTBEAT_SECONDS = 30
@@ -201,6 +205,8 @@ class SheetSource:
         self.sh = None
         self.ws = None
         self.header: list[str] = []
+        self.colmap: dict = {}   # canonical column -> the Sheet's own header
+        self.data_rows = 0
         self.owner = f"{socket.gethostname()}"
         self._beat_stop = threading.Event()
 
@@ -239,9 +245,10 @@ class SheetSource:
         if not values or not any(values[0]):
             raise SheetError("The Sheet tab is empty (no header row).")
         self.header = [h.strip() for h in values[0]]
-        missing = [c for c in REQUIRED_COLUMNS if c not in self.header]
-        if missing:
-            raise SheetError("Missing columns in the Sheet: " + ", ".join(missing))
+        self.colmap = rules.map_columns(self.header)
+        if "Contact Email" not in self.colmap:
+            raise SheetError(rules.NO_EMAIL_COLUMN + " (in the Sheet tab)")
+        self.data_rows = len(values) - 1
         rows = []
         for raw in values[1:]:
             raw = list(raw) + [""] * (len(self.header) - len(raw))
@@ -258,19 +265,30 @@ class SheetSource:
             writer.writerows(rows)
         return path
 
-    def ensure_columns(self, columns) -> None:
-        """Add missing header cells (e.g. Sent At, Status) at the end of row 1."""
-        missing = [c for c in columns if c not in self.header]
+    def ensure_columns(self, columns) -> list[str]:
+        """Add missing columns (canonical names) at the end of row 1.
+        A new Mail Sent column is filled with FALSE (unticked) on every row."""
+        missing = [c for c in columns if c not in self.colmap and c not in self.header]
         if not missing:
-            return
+            return []
         start = len(self.header) + 1
         self.pacer.call(self.worksheet().update, values=[missing], range_name=_a1(1, start),
                         value_input_option="RAW")
         self.header.extend(missing)
+        for c in missing:
+            self.colmap[c] = c
+        if "Mail Sent" in missing and self.data_rows:
+            col = self.header.index("Mail Sent") + 1
+            self.pacer.call(self.worksheet().update, values=[["FALSE"]] * self.data_rows,
+                            range_name=_a1(2, col), value_input_option="USER_ENTERED")
+        return missing
+
+    def _col(self, canon: str) -> str:
+        return self.colmap.get(canon, canon)
 
     def find_row(self, email: str, prefer_row: int | None = None) -> int | None:
         """Sheet row number (1 = header) holding this email, re-read fresh."""
-        col = self.header.index("Contact Email") + 1
+        col = self.header.index(self._col("Contact Email")) + 1
         cells = self.pacer.call(self.worksheet().col_values, col)
         target = str(email or "").strip().lower()
         matches = [i + 1 for i, v in enumerate(cells) if i > 0 and str(v).strip().lower() == target]
@@ -285,8 +303,8 @@ class SheetSource:
         row = self.find_row(email, prefer_row)
         if row is None:
             raise SheetError(f"{email} is no longer in the Sheet; nothing was written there.")
-        data = [{"range": _a1(row, self.header.index(col) + 1), "values": [[str(val)]]}
-                for col, val in values.items() if col in self.header]
+        data = [{"range": _a1(row, self.header.index(self._col(col)) + 1), "values": [[str(val)]]}
+                for col, val in values.items() if self._col(col) in self.header]
         if data:
             self.pacer.call(self.worksheet().batch_update, data, value_input_option="USER_ENTERED")
         return row

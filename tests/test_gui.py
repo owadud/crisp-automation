@@ -597,3 +597,35 @@ def test_sheet_calls_never_freeze_the_window(win, tmp_path):
     QApplication.processEvents()
     assert "API is turned off" in c.sheet_info.text() and c.load_tabs.isEnabled()
     win._source_changed("csv")
+
+
+def test_preview_rows_and_live_confirmation_table(win, dialogs, monkeypatch):
+    seen = {}
+
+    def hook(title, body, details, confirm):
+        seen[title] = (body, details)
+        dialogs["seen"].append(title)
+        return False                                   # cancel the live run
+    monkeypatch.setattr(W, "DIALOG_HOOK", hook)
+    win.show_row_preview()
+    body, rows = seen["Preview: what a run would do"]
+    assert body.startswith("Found ") and rows and rows[0][-1] == "Send"
+    assert rows[0][3] == win.campaign.subject.text()   # subject column filled
+    win.campaign.dry.setChecked(False)
+    win.start_run()
+    title = [t for t in seen if t.startswith("Send ")][0]
+    assert "This can't be undone" in seen[title][0] and len(seen[title][1]) == len(rows)
+    assert not win.runner.is_running()                 # cancelled in the table
+
+
+def test_pause_button_writes_and_clears_pause_file(win, dialogs, env, monkeypatch):
+    monkeypatch.setenv("FAKE_STEP_DELAY", "0.3")
+    win.start_run()
+    assert wait_until(lambda: win.runner.is_running(), 10)
+    assert wait_until(lambda: win.activity.pause.isEnabled(), 15)
+    QTest.mouseClick(win.activity.pause, Qt.LeftButton)
+    assert win.runner.pause_requested() and win.activity.pause.text() == "Resume"
+    QTest.mouseClick(win.activity.pause, Qt.LeftButton)
+    assert not win.runner.pause_requested() and win.activity.pause.text() == "Pause"
+    win.runner.force_stop()
+    assert wait_until(lambda: not win.runner.is_running(), 15)

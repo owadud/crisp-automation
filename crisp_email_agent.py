@@ -120,6 +120,20 @@ SHEET_TAB = os.environ.get("CRISP_SHEET_TAB", "").strip()
 GOOGLE_KEY = os.environ.get("CRISP_GOOGLE_KEY", "").strip()
 DATA_DIR = Path(os.environ.get("CRISP_DATA_DIR", "").strip() or str(BASE_DIR))
 SHEET = None         # SheetSource while a Sheet run is active
+
+# History rules (history.csv, all campaigns, all files; only real sends count).
+CAMPAIGN = os.environ.get("CRISP_CAMPAIGN", "").strip() or SUBJECT
+try:
+    RECENT_DAYS = max(0, int(os.environ.get("CRISP_RECENT_DAYS", "7").strip() or 0))
+except ValueError:
+    RECENT_DAYS = 7
+_HISTORY_INDEX = None
+
+# Pause: the GUI creates this file; checked only BETWEEN recipients.
+PAUSE_FILE = os.environ.get("CRISP_PAUSE_FILE", "").strip()
+
+# Columns the user's file really has: {canonical name: their header}.
+COLMAP = {}
 SHEET_QUEUE = None   # PendingQueue of Sheet writes that failed
 
 # The desktop GUI creates this file to ask for a graceful stop. The agent
@@ -186,20 +200,15 @@ def load_csv():
 
         rows = list(reader)
 
-    required = {
-        "Full Name",
-        "Contact Email",
-        "Reference",
-        "Mail Sent",
-    }
-
-    missing = required - set(fieldnames)
-
+    # Only an email column is required (Contact Email / Email / E-mail, any case).
+    global COLMAP
+    COLMAP = rules.map_columns(fieldnames)
+    if "Contact Email" not in COLMAP:
+        raise RuntimeError(rules.NO_EMAIL_COLUMN)
+    rules.apply_aliases(rows, COLMAP)
+    missing = rules.missing_optional(COLMAP)
     if missing:
-        raise RuntimeError(
-            "Missing CSV columns: "
-            + ", ".join(sorted(missing))
-        )
+        print("Optional columns missing (handled automatically): " + ", ".join(missing))
 
     return rows, fieldnames
 
@@ -251,9 +260,17 @@ def load_dnc():
         raise RuntimeError(f"Do-not-contact list could not be read: {DNC_FILE} ({exc})")
 
 
+def history_index():
+    global _HISTORY_INDEX
+    if _HISTORY_INDEX is None:
+        _HISTORY_INDEX = sc.HistoryIndex(HISTORY_FILE, CAMPAIGN, RECENT_DAYS)
+    return _HISTORY_INDEX
+
+
 def classify_rows(rows):
     start, end = row_range(len(rows))
-    return rules.classify(rows, REFERENCE_FILTER, start, end, load_dnc(), retry_only=RETRY_ONLY)
+    return rules.classify(rows, REFERENCE_FILTER, start, end, load_dnc(), retry_only=RETRY_ONLY,
+                          history=history_index())
 
 
 def get_eligible(rows):
@@ -267,9 +284,18 @@ def print_precheck(rows):
         counts[outcome] = counts.get(outcome, 0) + 1
         if outcome == rules.INVALID:
             print(f"INVALID EMAIL row {index + 1}: {clean(row.get('Contact Email'))} ({detail}). Skipped.")
+        if outcome == rules.RECENT:
+            print(f"EMAILED RECENTLY row {index + 1}: {clean(row.get('Contact Email'))} ({detail}). Skipped.")
+            if "unconfirmed" in detail:
+                print(f"WARNING: {clean(row.get('Contact Email'))} was possibly sent before (unconfirmed); "
+                      "check Crisp before contacting them again.")
+        if outcome == rules.CAMPAIGN_SENT:
+            print(f"ALREADY IN CAMPAIGN row {index + 1}: {clean(row.get('Contact Email'))} ({detail}). Skipped.")
     parts = []
     for key, label in ((rules.DUPLICATE, "duplicates"), (rules.INVALID, "invalid emails"),
-                       (rules.DO_NOT_CONTACT, "do-not-contact")):
+                       (rules.DO_NOT_CONTACT, "do-not-contact"),
+                       (rules.CAMPAIGN_SENT, "already sent in this campaign"),
+                       (rules.RECENT, f"emailed in the last {RECENT_DAYS} days")):
         if counts.get(key):
             parts.append(f"{counts[key]} {label}")
     if parts:
@@ -349,10 +375,14 @@ def open_sheet():
     if had_pending:
         rows, header = src.download()
     # Results still not in the Sheet count as done locally: never re-send them.
+    cmap = rules.map_columns(header)
     for item in remaining:
         for row in rows:
-            if rules.normalize_email(row.get("Contact Email")) == rules.normalize_email(item["email"]):
-                row.update(item["values"])
+            if rules.normalize_email(row.get(cmap.get("Contact Email", "Contact Email"))) == \
+                    rules.normalize_email(item["email"]):
+                for canon, value in item["values"].items():
+                    if canon in cmap:
+                        row[cmap[canon]] = value
     safe_tab = re.sub(r"[^A-Za-z0-9_-]+", "_", SHEET_TAB)[:40]
     local = ss.SheetSource.write_local(DATA_DIR / "sheet_cache" / f"{src.id[:12]}_{safe_tab}.csv", rows, header)
     CSV_FILE = local.resolve()
@@ -369,7 +399,7 @@ def sync_row(rows, row_index):
     if SHEET is None or DRY_RUN:
         return
     row = rows[row_index]
-    values = {c: row.get(c, "") for c in ("Mail Sent", *EXTRA_COLUMNS)}
+    values = {c: row.get(c, "") for c in ("Mail Sent", "Reference", *EXTRA_COLUMNS) if c in COLMAP}
     email = clean(row.get("Contact Email"))
     try:
         SHEET.push(email, values, prefer_row=row_index + 2)
@@ -379,23 +409,34 @@ def sync_row(rows, row_index):
               "It will not be sent again.")
 
 
-def ensure_columns(fieldnames):
-    for column in EXTRA_COLUMNS:
-        if column not in fieldnames:
-            fieldnames.append(column)
+def ensure_columns(fieldnames, rows=None):
+    """Live runs: add missing columns. A new Mail Sent column starts FALSE on every row."""
+    added = []
+    wanted = ["Mail Sent"] + (["Reference"] if REFERENCE_FILTER else []) + EXTRA_COLUMNS
+    for column in wanted:
+        if rules.add_column(fieldnames, COLMAP, column):
+            added.append(column)
+            if column == "Mail Sent":
+                for row in rows or []:
+                    row["Mail Sent"] = "FALSE"
+    if added:
+        print("Added columns: " + ", ".join(added))
+    return added
 
 
 def mark_precheck(rows, fieldnames):
     """Live runs: write Status/Error for rows skipped before the run."""
     changed = False
     changed_rows = []
-    labels = {rules.INVALID: sc.INVALID, rules.DUPLICATE: sc.SKIPPED, rules.DO_NOT_CONTACT: sc.SKIPPED}
+    labels = {rules.INVALID: sc.INVALID, rules.DUPLICATE: sc.SKIPPED, rules.DO_NOT_CONTACT: sc.SKIPPED,
+              rules.RECENT: sc.SKIPPED, rules.CAMPAIGN_SENT: sc.SKIPPED}
     reasons = {rules.DUPLICATE: "duplicate email", rules.DO_NOT_CONTACT: "do-not-contact list"}
     for index, row, outcome, detail in classify_rows(rows):
         if outcome in labels:
             status, error = labels[outcome], detail or reasons.get(outcome, "")
             if row.get("Status") != status or row.get("Error") != error:
-                row["Status"], row["Error"] = status, error
+                rules.set_cell(row, COLMAP, "Status", status)
+                rules.set_cell(row, COLMAP, "Error", error)
                 changed = True
                 changed_rows.append(index)
     if changed:
@@ -408,19 +449,22 @@ def record(rows, fieldnames, row_index, status, error=""):
     """Live runs only: Status/Error columns for a recipient that was not sent."""
     if DRY_RUN:
         return
-    rows[row_index]["Status"] = status
-    rows[row_index]["Error"] = str(error)[:300]
+    rules.set_cell(rows[row_index], COLMAP, "Status", status)
+    rules.set_cell(rows[row_index], COLMAP, "Error", str(error)[:300])
     save_csv(rows, fieldnames)
     sync_row(rows, row_index)
 
 
 def log_result(row_index, row, result, error="", link=""):
-    entry = {"Row": row_index + 1, "Email": clean(row.get("Contact Email")), "Name": clean(row.get("Full Name")),
+    entry = {"Row": row_index + 1, "Email": clean(row.get("Contact Email")),
+             "Name": rules.display_name(row)[0],
              "Result": result, "Error": str(error)[:300], "Time": sc.stamp(), "Conversation link": link}
     REPORT.append(entry)
+    if DRY_RUN:
+        return   # a dry run never writes history
     try:
         sc.append_history(HISTORY_FILE, Email=entry["Email"], Name=entry["Name"], Result=result,
-                          Subject=SUBJECT, Mode="dry" if DRY_RUN else "live", Error=entry["Error"],
+                          Campaign=CAMPAIGN, Subject=SUBJECT, Mode="live", Error=entry["Error"],
                           Row=entry["Row"], CSV=CSV_FILE.name)
     except OSError as exc:
         print(f"  WARNING: could not write history: {exc}")
@@ -1907,16 +1951,15 @@ def process_recipient(
     row
 ):
 
-    name = clean(
-        row.get("Full Name")
-    )
-
     email = clean(
         row.get("Contact Email")
     )
 
+    # Never a blank or broken name: fall back to the part before the @.
+    name, from_email = rules.display_name(row)
+
     print(
-        f"  Recipient: {email} | {name}"
+        f"  Recipient: {email} | {name}" + (" (name from email)" if from_email else "")
     )
 
     # --------------------------------------------------------
@@ -2096,7 +2139,8 @@ def _main():
     print(
         f"Dry run: {DRY_RUN}"
     )
-    emit("run_start", dry_run=DRY_RUN, csv=CSV_FILE.name, subject=SUBJECT)
+    emit("run_start", dry_run=DRY_RUN, csv=CSV_FILE.name, subject=SUBJECT, campaign=CAMPAIGN,
+         delay=40.0 if RANDOM_DELAY else (float(DELAY_ENV) if DELAY_ENV else BETWEEN_EMAILS))
 
     if SOURCE == "sheet":
         open_sheet()
@@ -2121,15 +2165,16 @@ def _main():
         (RUN_DIR / "recipients_before.csv").write_bytes(CSV_FILE.read_bytes())
 
     if not DRY_RUN and SHEET is not None:
-        SHEET.ensure_columns(EXTRA_COLUMNS)
+        SHEET.ensure_columns(["Mail Sent"] + (["Reference"] if REFERENCE_FILTER else []) + EXTRA_COLUMNS)
         SHEET.acquire_lock()
         SHEET.start_heartbeat()
         print(f"Sheet lock set on tab {SHEET_TAB!r} (refreshed every 30 s).")
 
     if not DRY_RUN:
-        ensure_columns(fieldnames)
         if get_eligible(rows):
             backup_csv()
+        if ensure_columns(fieldnames, rows):
+            save_csv(rows, fieldnames)
         mark_precheck(rows, fieldnames)
 
     print()
@@ -2219,6 +2264,7 @@ def _main():
         skipped = 0
         fails_in_row = 0
         retry = []   # (email, name, reason) not sent this run
+        last_email = ""
 
         for position, (
             row_index,
@@ -2232,9 +2278,17 @@ def _main():
                 row.get("Contact Email")
             )
 
-            name = clean(
-                row.get("Full Name")
-            )
+            name = rules.display_name(row)[0]
+
+            if PAUSE_FILE and Path(PAUSE_FILE).exists() and not stop_requested():
+                after = last_email or "the start"
+                print(f"Paused after {after}. Waiting for Resume...")
+                emit("paused", after=last_email)
+                while Path(PAUSE_FILE).exists() and not stop_requested():
+                    time.sleep(0.5)
+                if not stop_requested():
+                    print("Resumed.")
+                    emit("resumed")
 
             if stop_requested():
                 print()
@@ -2270,6 +2324,7 @@ def _main():
 
             global SEND_CLICKED
             SEND_CLICKED = False
+            last_email = email
 
             try:
 
@@ -2310,13 +2365,15 @@ def _main():
 
                 if not DRY_RUN:
 
-                    rows[row_index][
-                        "Mail Sent"
-                    ] = "TRUE"
-                    rows[row_index]["Sent At"] = sc.stamp()
-                    rows[row_index]["Status"] = sc.SENT
-                    rows[row_index]["Error"] = ""
-                    rows[row_index]["Conversation link"] = link
+                    sent_row = rows[row_index]
+                    rules.set_cell(sent_row, COLMAP, "Mail Sent", "TRUE")
+                    rules.set_cell(sent_row, COLMAP, "Sent At", sc.stamp())
+                    rules.set_cell(sent_row, COLMAP, "Status", sc.SENT)
+                    rules.set_cell(sent_row, COLMAP, "Error", "")
+                    rules.set_cell(sent_row, COLMAP, "Conversation link", link)
+                    if REFERENCE_FILTER and not clean(sent_row.get("Reference")):
+                        # Empty Reference: the row now belongs to whoever sent it.
+                        rules.set_cell(sent_row, COLMAP, "Reference", REFERENCE_FILTER)
 
                     save_csv(
                         rows,
@@ -2447,6 +2504,7 @@ def _main():
             ):
 
                 wait = between_delay()
+                emit("waiting", seconds=round(wait, 1))
                 if wait >= 10:
                     print(f"  Waiting {wait:.0f} s before the next email...")
                 sc.sleep_seconds(wait, stop_requested)

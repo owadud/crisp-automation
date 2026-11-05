@@ -222,9 +222,9 @@ def test_csv_errors(tmp_path):
     assert not read_stats("", "x").ok
     assert read_stats(str(tmp_path / "nope.csv"), "x").error == "File not found."
     p = tmp_path / "bad.csv"
-    write_csv(p, [("a", "b")], header=("Full Name", "Email"))
+    write_csv(p, [("a", "b")], header=("Full Name", "Phone"))      # no email column at all
     s = read_stats(str(p), "x")
-    assert not s.ok and "Contact Email" in s.error
+    assert not s.ok and "No email column" in s.error
 
 
 @pytest.fixture

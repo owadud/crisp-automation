@@ -171,6 +171,37 @@ While a real run is active, a hidden `_crisp_control` tab shows "Running: <PC> s
 refreshed every 30 s; another PC can start only when it is older than 5 minutes.
 Dry runs never write to the Sheet.
 
+## Email-only files, history rules, pause and ETA (3.6)
+
+**Only an email column is required** (CSV or Google Sheet). The header can be `Contact Email`,
+`Email`, `email` or `E-mail` (any case, extra spaces ignored). All your other columns are kept
+unchanged.
+- No **Mail Sent** column: it is added on the first real run, FALSE on every row.
+- No/empty **Full Name**: Crisp gets a name made from the email (`john.doe@x.com` -> `John Doe`),
+  never a blank one. The preview marks these "(from email)".
+- No/empty **Reference**: the row is sent, and afterwards your Reference (e.g. Shahriar) is
+  written into it. Rows with someone else's Reference are still skipped.
+- The summary says what it found, e.g. `Found 120 rows · 118 valid emails · 2 invalid ·
+  3 duplicates skipped · 5 skipped: emailed in the last 7 days · 110 to send ·
+  optional columns missing: Full Name, Reference`.
+
+**History rules** (`history.csv`, all campaigns and all files, real sends only):
+- **Campaign name** (blank = the subject): one person is never emailed twice in the same campaign.
+- **Skip anyone emailed in the last N days** (default 7, 0 = off), across all campaigns.
+  "Unconfirmed" sends count as possibly sent and are skipped with a warning.
+- **Preview rows…** shows every row: email, the name that will be used, subject, shortcut,
+  segment, reference and the action (Send / Skip: duplicate / invalid / emailed recently /
+  already sent ...), with who and when for recent contacts. The same table is shown before every
+  real run as the confirmation.
+- A **dry run never writes** history, the CSV/Sheet or Mail Sent.
+
+**Pause / Resume** (Activity Logs): takes effect between two recipients, never during a send.
+Shows "Paused after a@x.com"; Resume continues with the next recipient (nobody is resent).
+Closing the app while paused counts as a stopped run.
+
+**ETA**: "12 of 50 done · ETA 14:32 (about 18 min)", based on the real pace including the delay
+between emails (fixed or random) and ignoring paused time.
+
 ## Shortcut behavior
 
 The automation clicks the visible **Shortcuts** tab in Crisp. It deliberately does not use Ctrl+K because that opens Crisp's global command palette in the current interface. If the Shortcuts tab cannot be found, the run stops with a clear error rather than opening the wrong panel.

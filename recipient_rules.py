@@ -85,13 +85,122 @@ def load_do_not_contact(path_text: str) -> set[str]:
     return found
 
 
+# ------------------------------------------------------------------ columns
+# Only the email column is required. Headers match ignoring case, spaces,
+# "-" and "_": "Contact Email", "Email", "email", "E-mail" all work.
+CANONICAL = {
+    "Contact Email": ("contactemail", "email", "emailaddress"),
+    "Full Name": ("fullname", "name"),
+    "Reference": ("reference", "ref"),
+    "Mail Sent": ("mailsent",),
+    "Sent At": ("sentat",),
+    "Status": ("status",),
+    "Error": ("error",),
+    "Conversation link": ("conversationlink",),
+}
+OPTIONAL_COLUMNS = ("Full Name", "Reference", "Mail Sent")
+NO_EMAIL_COLUMN = "No email column found. Name a column Email or Contact Email."
+
+
+def header_key(header) -> str:
+    return re.sub(r"[\s_\-]+", "", str(header or "").strip().lower())
+
+
+def map_columns(headers) -> dict:
+    """{canonical name: the user's own header} for the columns that exist."""
+    keyed = [(header_key(h), h) for h in headers if str(h or "").strip()]
+    colmap = {}
+    for canon, keys in CANONICAL.items():
+        for key in keys:                      # priority order: "contactemail" before "email"
+            hit = next((h for k, h in keyed if k == key), None)
+            if hit is not None:
+                colmap[canon] = hit
+                break
+    return colmap
+
+
+def missing_optional(colmap) -> list[str]:
+    return [c for c in OPTIONAL_COLUMNS if c not in colmap]
+
+
+def apply_aliases(rows, colmap) -> None:
+    """Give every row the canonical keys (values from the user's own columns).
+
+    Writers only write the user's headers, so the file keeps its own names."""
+    for row in rows:
+        for canon in CANONICAL:
+            actual = colmap.get(canon)
+            if actual and actual != canon:
+                row[canon] = row.get(actual, "")
+            elif not actual:
+                row.setdefault(canon, "")
+
+
+def set_cell(row, colmap, canon, value) -> None:
+    row[canon] = value
+    actual = colmap.get(canon)
+    if actual:
+        row[actual] = value
+
+
+def add_column(fieldnames, colmap, canon) -> bool:
+    """Append a missing column (named canonically). True if it was added."""
+    if canon in colmap:
+        return False
+    fieldnames.append(canon)
+    colmap[canon] = canon
+    return True
+
+
+# ------------------------------------------------------------------ names
+_BAD_NAMES = {"", "nan", "none", "null", "n/a", "na", "-", "--", "?", "unknown"}
+
+
+def fallback_name(email: str) -> str:
+    """'john.doe+vip@x.com' -> 'John Doe'. Never blank."""
+    local = clean(email).split("@")[0]
+    local = re.sub(r"\+.*$", "", local)
+    words = [re.sub(r"\d+", "", w) for w in re.split(r"[._\-]+", local)]
+    name = " ".join(w.capitalize() for w in words if w)
+    return name or "Customer"
+
+
+def display_name(row) -> tuple[str, bool]:
+    """(name to type into Crisp, True if it is a fallback from the email)."""
+    name = re.sub(r"\s+", " ", clean(row.get("Full Name")))
+    if name.lower() in _BAD_NAMES or not re.search(r"[^\W\d_]", name):
+        return fallback_name(row.get("Contact Email")), True
+    return name, False
+
+
+# ------------------------------------------------------------------ who gets an email
+CAMPAIGN_SENT = "campaign_sent"   # already sent in this campaign (history)
+RECENT = "recent"                 # emailed in the last N days (any campaign)
+
+ACTIONS = {
+    ELIGIBLE: "Send",
+    ALREADY_SENT: "Skip: already sent",
+    OTHER_REFERENCE: "Skip: other reference",
+    NO_EMAIL: "Skip: no email",
+    DUPLICATE: "Skip: duplicate",
+    INVALID: "Skip: invalid",
+    DO_NOT_CONTACT: "Skip: do-not-contact",
+    CAMPAIGN_SENT: "Skip: already sent in this campaign",
+    RECENT: "Skip: emailed recently",
+    NOT_RETRY: "Skip: not failed last time",
+}
+
+
 def classify(rows, reference_filter: str, start: int, end: int, do_not_contact=frozenset(),
-             retry_only: bool = False):
+             retry_only: bool = False, history=None):
     """[(index, row, outcome, detail)] for every row, in file order.
 
     start/end are 1-based serials (inclusive). A duplicate is an email that
     already appears on a row marked sent anywhere in the file, or on an
-    earlier eligible row of this run. Only ELIGIBLE rows are sent.
+    earlier eligible row of this run. A row with an EMPTY Reference belongs
+    to whoever sends it. `history` (send_control.HistoryIndex) adds "already
+    sent in this campaign" and "emailed in the last N days". Only ELIGIBLE
+    rows are sent.
     """
     ref = clean(reference_filter).lower()
     already = {normalize_email(r.get("Contact Email")) for r in rows if is_checked(r.get("Mail Sent"))}
@@ -101,9 +210,10 @@ def classify(rows, reference_filter: str, start: int, end: int, do_not_contact=f
     for index, row in enumerate(rows):
         serial = index + 1
         email = normalize_email(row.get("Contact Email"))
+        row_ref = clean(row.get("Reference")).lower()
         if not start <= serial <= end:
             out.append((index, row, OUT_OF_RANGE, ""))
-        elif clean(row.get("Reference")).lower() != ref:
+        elif row_ref and row_ref != ref:
             out.append((index, row, OTHER_REFERENCE, ""))
         elif not email:
             out.append((index, row, NO_EMAIL, ""))
@@ -115,6 +225,13 @@ def classify(rows, reference_filter: str, start: int, end: int, do_not_contact=f
             out.append((index, row, INVALID, email_problem(email)))
         elif email in already or email in seen:
             out.append((index, row, DUPLICATE, ""))
+        elif history is not None and history.campaign_sent(email):
+            t, campaign, result = history.campaign_sent(email)
+            out.append((index, row, CAMPAIGN_SENT, f"{result} {t} in '{campaign}'"))
+        elif history is not None and history.recent(email):
+            t, campaign, result = history.recent(email)
+            note = "possibly sent (unconfirmed)" if result.lower() == "unconfirmed" else "sent"
+            out.append((index, row, RECENT, f"{note} {t} in '{campaign or '?'}'"))
         elif retry_only and clean(row.get("Status")).lower() not in RETRY_STATUSES:
             out.append((index, row, NOT_RETRY, ""))
         else:

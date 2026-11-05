@@ -45,6 +45,8 @@ CAMPAIGN_DEFAULTS = {
     "start_at": "",            # "10:00" Dhaka time, blank = start now
     "sheet_url": "",           # Google Sheet link (source = Google Sheet)
     "google_key": "",          # service-account key file, kept OUTSIDE the app folder
+    "campaign": "",            # campaign name for history; blank = the subject
+    "recent_days": "7",        # skip anyone emailed in the last N days (0 = off)
 }
 
 THEMES = ("light", "dark", "system")

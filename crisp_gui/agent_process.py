@@ -47,6 +47,7 @@ class AgentRunner(QObject):
             return f"Agent script not found: {self.script}"
 
         self.stop_file = Path(tempfile.gettempdir()) / f"crisp_agent_stop_{uuid.uuid4().hex}"
+        self.pause_file = Path(tempfile.gettempdir()) / f"crisp_agent_pause_{uuid.uuid4().hex}"
         self._remove_stop_file()
         self._killed = False
         self.parser = rs.RunParser(dry_run=dry_run)
@@ -83,6 +84,9 @@ class AgentRunner(QObject):
             "CRISP_SHEET_TAB": settings.get("sheet_tab", ""),
             "CRISP_GOOGLE_KEY": settings.get("google_key", ""),
             "CRISP_DATA_DIR": settings.get("data_dir", ""),
+            "CRISP_CAMPAIGN": settings.get("campaign", ""),
+            "CRISP_RECENT_DAYS": settings.get("recent_days", "7"),
+            "CRISP_PAUSE_FILE": str(self.pause_file),
             # The ONLY switch that controls real sending in the agent.
             "CRISP_DRY_RUN": "true" if dry_run else "false",
             "CRISP_PROFILE_DIR": str(profile_dir),
@@ -167,7 +171,29 @@ class AgentRunner(QObject):
         self.state_changed.emit(state)
         self.finished.emit(state)
 
+    # ---------------------------------------------------------------- pause
+    def pause(self) -> bool:
+        """Takes effect between two recipients (never during a send)."""
+        if not self.is_running() or not getattr(self, "pause_file", None):
+            return False
+        try:
+            self.pause_file.write_text("pause", encoding="utf-8")
+        except OSError:
+            return False
+        return True
+
+    def resume(self) -> None:
+        try:
+            os.remove(self.pause_file)
+        except (OSError, TypeError):
+            pass
+
+    def pause_requested(self) -> bool:
+        pf = getattr(self, "pause_file", None)
+        return bool(pf) and Path(pf).exists()
+
     def _remove_stop_file(self):
+        self.resume()
         if self.stop_file:
             try:
                 os.remove(self.stop_file)

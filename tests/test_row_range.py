@@ -53,7 +53,8 @@ def test_preview_counts_only_rows_in_range(tmp_path):
     assert s.ok and not s.range_error
     # rows 2-6: B sent, C eligible, D other ref, E no email, F eligible
     assert (s.in_range, s.eligible, s.marked_sent, s.duplicates) == (5, 2, 1, 0)
-    assert s.preview().startswith("Rows 2–6 of 7: 5 rows, 2 eligible, 1 already sent")
+    assert s.preview().startswith("Rows 2–6 of 7: Found 5 rows · 4 valid emails")
+    assert s.preview().endswith("1 already sent · 1 other reference · 1 without email · 2 to send")
 
     whole = read_stats(str(p), "R")
     # a@x.com (row 1) and "A@X.com " (row 3) are the same email

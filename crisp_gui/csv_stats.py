@@ -9,13 +9,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import recipient_rules as rules  # noqa: E402  (shared with the agent)
+import send_control as sc  # noqa: E402
 from recipient_rules import SENT_VALUES, is_checked  # noqa: E402,F401
 
-REQUIRED_COLUMNS = ("Full Name", "Contact Email", "Reference", "Mail Sent")
+# Only the email column is required now (any of: Contact Email, Email, E-mail).
+REQUIRED_COLUMNS = ("Contact Email",)
 
 
 def _clean(value) -> str:
     return str(value or "").strip()
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
 
 
 @dataclass
@@ -29,36 +35,53 @@ class CsvStats:
     other_reference: int = 0
     missing_email: int = 0
     missing_columns: list = field(default_factory=list)
+    missing_optional: list = field(default_factory=list)   # Full Name / Reference / Mail Sent
+    email_column: str = ""
     # row range (serial = position among data rows, header excluded, from 1)
     range_set: bool = False
     range_from: int = 0
     range_to: int = 0
     in_range: int = 0        # rows inside the range
+    valid_emails: int = 0    # rows in range with a well-formed email
     duplicates: int = 0      # skipped: email already sent or earlier in this run
     invalid: int = 0         # skipped: bad email format
     do_not_contact: int = 0  # skipped: on the do-not-contact list
+    campaign_sent: int = 0   # skipped: already sent in this campaign (history)
+    recent: int = 0          # skipped: emailed in the last N days (history)
+    recent_days: int = 0
     invalid_rows: list = field(default_factory=list)   # (serial, email, reason)
+    recent_rows: list = field(default_factory=list)    # (serial, email, detail)
+    plan: list = field(default_factory=list)           # per-row preview (dicts)
     range_error: str = ""
     range_error_field: str = ""   # "from" or "to"
     dnc_error: str = ""
     retry_candidates: int = 0   # rows "Retry failed only" would send
 
     def preview(self) -> str:
-        """One line for the UI, e.g. 'Rows 200-300: 101 rows, 85 eligible, 3 duplicates, 4 already sent'."""
-        parts = [f"{self.in_range} rows", f"{self.eligible} eligible"]
-        if self.duplicates:
-            parts.append(f"{self.duplicates} duplicate{'s' if self.duplicates != 1 else ''} skipped")
+        """'Found 120 rows · 118 valid emails · 2 invalid · 3 duplicates skipped · ...'."""
+        parts = [f"Found {_plural(self.in_range, 'row')}", f"{self.valid_emails} valid email"
+                 f"{'' if self.valid_emails == 1 else 's'}"]
         if self.invalid:
-            parts.append(f"{self.invalid} invalid email{'s' if self.invalid != 1 else ''}")
+            parts.append(f"{self.invalid} invalid")
+        if self.duplicates:
+            parts.append(f"{_plural(self.duplicates, 'duplicate')} skipped")
+        if self.recent:
+            parts.append(f"{self.recent} skipped: emailed in the last {self.recent_days} days")
+        if self.campaign_sent:
+            parts.append(f"{self.campaign_sent} already sent in this campaign")
         if self.do_not_contact:
             parts.append(f"{self.do_not_contact} do-not-contact")
-        parts.append(f"{self.marked_sent} already sent")
+        if self.marked_sent:
+            parts.append(f"{self.marked_sent} already sent")
         if self.other_reference:
             parts.append(f"{self.other_reference} other reference")
         if self.missing_email:
             parts.append(f"{self.missing_email} without email")
+        parts.append(f"{self.eligible} to send")
+        if self.missing_optional:
+            parts.append("optional columns missing: " + ", ".join(self.missing_optional))
         head = f"Rows {self.range_from}–{self.range_to} of {self.total}: " if self.range_set else ""
-        return head + ", ".join(parts)
+        return head + " · ".join(parts)
 
 
 def parse_range(from_text, to_text, total: int):
@@ -88,7 +111,7 @@ def parse_range(from_text, to_text, total: int):
 
 
 def read_stats(path_text: str, reference_filter: str, row_from: str = "", row_to: str = "",
-               dnc_path: str = "") -> CsvStats:
+               dnc_path: str = "", history_file: str = "", campaign: str = "", recent_days=0) -> CsvStats:
     stats = CsvStats()
     if not path_text or not path_text.strip():
         stats.error = "Choose a recipient CSV file."
@@ -116,11 +139,14 @@ def read_stats(path_text: str, reference_filter: str, row_from: str = "", row_to
     if not headers:
         stats.error = "The CSV has no header row."
         return stats
-    missing = [c for c in REQUIRED_COLUMNS if c not in headers]
-    if missing:
-        stats.missing_columns = missing
-        stats.error = "Missing columns: " + ", ".join(missing)
+    colmap = rules.map_columns(headers)
+    if "Contact Email" not in colmap:
+        stats.missing_columns = ["Contact Email"]
+        stats.error = rules.NO_EMAIL_COLUMN
         return stats
+    stats.email_column = colmap["Contact Email"]
+    stats.missing_optional = rules.missing_optional(colmap)
+    rules.apply_aliases(rows, colmap)
 
     stats.total = len(rows)
     start, end, err, which = parse_range(row_from, row_to, stats.total)
@@ -139,20 +165,39 @@ def read_stats(path_text: str, reference_filter: str, row_from: str = "", row_to
         except (OSError, UnicodeDecodeError, csv.Error) as exc:
             stats.dnc_error = f"Do-not-contact list could not be read: {getattr(exc, 'strerror', None) or exc}"
 
+    try:
+        stats.recent_days = max(0, int(_clean(recent_days) or 0))
+    except ValueError:
+        stats.recent_days = 0
+    history = (sc.HistoryIndex(Path(history_file), campaign, stats.recent_days)
+               if _clean(history_file) else None)
+
     counters = {rules.ELIGIBLE: "eligible", rules.OTHER_REFERENCE: "other_reference",
                 rules.NO_EMAIL: "missing_email", rules.DUPLICATE: "duplicates",
-                rules.INVALID: "invalid", rules.DO_NOT_CONTACT: "do_not_contact"}
-    for index, row, outcome, detail in rules.classify(rows, reference_filter, start, end, dnc):
+                rules.INVALID: "invalid", rules.DO_NOT_CONTACT: "do_not_contact",
+                rules.CAMPAIGN_SENT: "campaign_sent", rules.RECENT: "recent"}
+    for index, row, outcome, detail in rules.classify(rows, reference_filter, start, end, dnc, history=history):
         if outcome == rules.OUT_OF_RANGE:
             continue
+        email = _clean(row.get("Contact Email"))
         if is_checked(row.get("Mail Sent")):
             stats.marked_sent += 1
+        if email and not rules.email_problem(email):
+            stats.valid_emails += 1
         if outcome in counters:
             setattr(stats, counters[outcome], getattr(stats, counters[outcome]) + 1)
         if outcome == rules.INVALID:
-            stats.invalid_rows.append((index + 1, _clean(row.get("Contact Email")), detail))
+            stats.invalid_rows.append((index + 1, email, detail))
+        if outcome == rules.RECENT:
+            stats.recent_rows.append((index + 1, email, detail))
+        name, fallback = rules.display_name(row) if email else ("", False)
+        stats.plan.append({"row": index + 1, "email": email, "name": name, "fallback": fallback,
+                           "reference": _clean(row.get("Reference")) or _clean(reference_filter),
+                           "action": rules.ACTIONS.get(outcome, outcome), "detail": detail,
+                           "send": outcome == rules.ELIGIBLE})
     stats.retry_candidates = sum(1 for _i, _r, outcome, _d in
-                                 rules.classify(rows, reference_filter, start, end, dnc, retry_only=True)
+                                 rules.classify(rows, reference_filter, start, end, dnc, retry_only=True,
+                                                history=history)
                                  if outcome == rules.ELIGIBLE)
     stats.ok = True
     return stats

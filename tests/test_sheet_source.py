@@ -77,8 +77,8 @@ def test_download_tabs_and_push_by_email(tmp_path):
 
 
 def test_missing_columns_and_bad_tab():
-    book = FakeSpreadsheet({"T": [["Name", "Email"], ["a", "a@x.com"]]})
-    with pytest.raises(ss.SheetError, match="Missing columns"):
+    book = FakeSpreadsheet({"T": [["Name", "Phone"], ["a", "123"]]})
+    with pytest.raises(ss.SheetError, match="No email column"):
         source(book, "T").download()
     with pytest.raises(ss.SheetError, match="not found"):
         source(book, "Nope").download()

@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DHAKA = timezone(timedelta(hours=6), "Dhaka")
-HISTORY_COLUMNS = ["Time", "Email", "Name", "Result", "Subject", "Mode", "Error", "Row", "CSV"]
+HISTORY_COLUMNS = ["Time", "Email", "Name", "Result", "Campaign", "Subject", "Mode", "Error", "Row", "CSV"]
 # Results written to history.csv / report.csv / the CSV Status column.
 SENT, DRY_RUN, FAILED, SKIPPED, UNCONFIRMED, INVALID = (
     "Sent", "Dry run", "Failed", "Skipped", "Unconfirmed", "Invalid")
@@ -115,10 +115,32 @@ def optional_int(text, name: str) -> int | None:
 
 
 # ------------------------------------------------------------------ history
+def _upgrade_history(path: Path) -> None:
+    """Rewrite an older history.csv (fewer columns) with the current header."""
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if list(reader.fieldnames or []) == HISTORY_COLUMNS:
+                return
+            rows = list(reader)
+    except (OSError, csv.Error, UnicodeDecodeError):
+        return
+    tmp = path.with_suffix(".tmp")
+    with tmp.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=HISTORY_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    tmp.replace(path)
+
+
 def append_history(path: Path, **row) -> None:
     path = Path(path)
     new = not path.exists()
     path.parent.mkdir(parents=True, exist_ok=True)
+    if not new:
+        _upgrade_history(path)
+    if row.get("Email"):
+        row["Email"] = str(row["Email"]).strip().lower()
     with path.open("a", encoding="utf-8-sig" if new else "utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=HISTORY_COLUMNS, extrasaction="ignore")
         if new:
@@ -142,6 +164,37 @@ def count_sent(path: Path, since: datetime) -> int:
     cutoff = stamp(since)
     return sum(1 for r in read_history(path)
                if r.get("Result") == SENT and r.get("Mode") == "live" and r.get("Time", "") >= cutoff)
+
+
+class HistoryIndex:
+    """Who was emailed before, from history.csv (all campaigns, all files).
+
+    Only real (live) sends count: Sent, and Unconfirmed as "possibly sent".
+    Dry runs never count.
+    """
+
+    def __init__(self, path: Path, campaign: str = "", days: int = 0, now: datetime | None = None):
+        self.campaign = str(campaign or "").strip().lower()
+        self.days = max(0, int(days or 0))
+        cutoff = stamp((now or now_dhaka()) - timedelta(days=self.days)) if self.days else None
+        self._campaign: dict = {}
+        self._recent: dict = {}
+        for r in read_history(path):
+            result = r.get("Result", "")
+            if r.get("Mode") != "live" or result not in (SENT, UNCONFIRMED):
+                continue
+            email = str(r.get("Email", "")).strip().lower()
+            entry = (r.get("Time", ""), r.get("Campaign", ""), result)
+            if self.campaign and str(r.get("Campaign", "")).strip().lower() == self.campaign:
+                self._campaign[email] = entry
+            if cutoff and entry[0] >= cutoff and entry[0] >= self._recent.get(email, ("",))[0]:
+                self._recent[email] = entry
+
+    def campaign_sent(self, email: str):
+        return self._campaign.get(str(email or "").strip().lower())
+
+    def recent(self, email: str):
+        return self._recent.get(str(email or "").strip().lower())
 
 
 def sent_today(path: Path, now: datetime | None = None) -> int:

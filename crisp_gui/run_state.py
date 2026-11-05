@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 
 EVENT_PREFIX = "@@EVENT"
@@ -21,7 +22,7 @@ EVENT_PREFIX = "@@EVENT"
 _COVERED = re.compile(
     r"^(Eligible recipients:|\[\d+/\d+\]|SUCCESS\.$|Email sent successfully\.$|FAILED:|"
     r"Email was not sent\.$|SKIPPED:|RETRY:|Completed:|Failed:|Skipped:|No eligible recipients\.$|"
-    r"Send window .* has ended|HEALTH (OK|FAIL):)")
+    r"Send window .* has ended|HEALTH (OK|FAIL):|Paused after|Resumed\.$)")
 
 
 # Phases of a run, in the order they normally occur.
@@ -84,6 +85,14 @@ class RunState:
     no_eligible: bool = False
     history: list = field(default_factory=list)  # (email, outcome)
     health: list = field(default_factory=list)   # (check, ok, detail) from "Check Crisp"
+    # pause / ETA
+    paused: bool = False
+    paused_after: str = ""
+    pause_started: float = 0.0
+    paused_seconds: float = 0.0
+    first_started: float = 0.0        # monotonic time the first recipient started
+    delay_mean: float = 3.0           # seconds between emails (random 20-60 s -> 40)
+    campaign: str = ""
     events_seen: bool = False
 
     # -------------------------------------------------------------- derived
@@ -115,9 +124,10 @@ class RunParser:
     "Email sent successfully." split over two reads would be missed.
     """
 
-    def __init__(self, dry_run: bool = True):
+    def __init__(self, dry_run: bool = True, clock=None):
         import codecs
 
+        self.clock = clock or time.monotonic
         self.state = RunState(dry_run=dry_run, phase=STARTING)
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._buffer = ""
@@ -162,6 +172,14 @@ class RunParser:
             self._advance(line)
             return
 
+        m = re.match(r"^Paused after (.*?)\. Waiting for Resume", line)
+        if m:
+            self._pause(m.group(1))
+            return
+        if line == "Resumed.":
+            self._resume()
+            return
+
         m = re.match(r"^HEALTH (OK|FAIL):\s*(.*?):\s*(.*)$", line)
         if m:
             s.health.append((m.group(2), m.group(1) == "OK", m.group(3)))
@@ -199,6 +217,8 @@ class RunParser:
 
         m = re.match(r"^\[(\d+)/(\d+)\]\s+(.*?)\s*\|\s*(.*)$", line)
         if m:
+            if not s.first_started:
+                s.first_started = self.clock()
             s.position = int(m.group(1))
             s.eligible = int(m.group(2))
             s.current_email = m.group(3).strip()
@@ -305,6 +325,11 @@ class RunParser:
         kind = ev.get("event")
         if kind == "run_start":
             s.dry_run = bool(ev.get("dry_run", s.dry_run))
+            s.campaign = str(ev.get("campaign") or "")
+            try:
+                s.delay_mean = float(ev.get("delay", s.delay_mean))
+            except (TypeError, ValueError):
+                pass
         elif kind == "eligible":
             s.eligible = int(ev.get("count") or 0)
         elif kind == "no_eligible":
@@ -319,6 +344,8 @@ class RunParser:
                 s.phase = RUNNING
             s.step = "Signed in to Crisp"
         elif kind == "recipient":
+            if not s.first_started:
+                s.first_started = self.clock()
             s.position = int(ev.get("position") or 0)
             s.eligible = int(ev.get("total") or s.eligible)
             s.current_email = str(ev.get("email") or "")
@@ -364,8 +391,32 @@ class RunParser:
             s.step = "Error"
         elif kind == "health":
             s.health.append((str(ev.get("check")), bool(ev.get("ok")), str(ev.get("detail") or "")))
+        elif kind == "paused":
+            self._pause(str(ev.get("after") or "the start"))
+        elif kind == "resumed":
+            self._resume()
+        elif kind == "waiting":
+            try:
+                s.step = f"Next email in {float(ev.get('seconds') or 0):.0f} s"
+            except (TypeError, ValueError):
+                pass
         elif kind == "health_wait":
             s.step = "Open any conversation in the Crisp window"
+
+    def _pause(self, after: str) -> None:
+        s = self.state
+        if not s.paused:
+            s.paused = True
+            s.pause_started = self.clock()
+        s.paused_after = after or "the start"
+        s.step = f"Paused after {s.paused_after}"
+
+    def _resume(self) -> None:
+        s = self.state
+        if s.paused:
+            s.paused_seconds += max(0.0, self.clock() - s.pause_started)
+        s.paused = False
+        s.step = "Resumed"
 
     def _advance(self, line: str) -> None:
         s = self.state
@@ -398,3 +449,23 @@ class RunParser:
         else:
             s.phase = FINISHED
         return s
+
+
+def eta_seconds(s: RunState, now: float, per_recipient_default: float = 25.0) -> float:
+    """Seconds until the run should finish. Uses the real pace so far (which
+    already includes the delays, random or fixed); before the first recipient
+    finishes it assumes ~25 s of work plus the delay. Paused time is ignored."""
+    if s.eligible <= 0:
+        return 0.0
+    in_flight = s.step_fraction if s.position > s.processed else 0.0
+    done = s.processed + in_flight
+    remaining = max(0.0, s.eligible - done)
+    if remaining <= 0:
+        return 0.0
+    if s.first_started and s.processed > 0:
+        paused = s.paused_seconds + ((now - s.pause_started) if s.paused else 0.0)
+        elapsed = max(0.0, now - s.first_started - paused)
+        per = elapsed / max(done, 0.01)
+    else:
+        per = per_recipient_default + s.delay_mean
+    return remaining * per

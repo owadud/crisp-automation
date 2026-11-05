@@ -212,6 +212,9 @@ class CampaignPage(Page):
         retry_row = QHBoxLayout()
         self.retry_failed = button("Retry failed only", None, "refresh", tm, "text_muted")
         self.retry_failed.setToolTip("Only rows whose Status is Failed or Skipped. Unconfirmed rows are never retried.")
+        self.preview = button("Preview rows…", None, "file", tm, "text_muted")
+        self.preview.setToolTip("Per-row table of exactly what a run would do. Nothing is sent or written.")
+        retry_row.addWidget(self.preview)
         retry_row.addWidget(self.retry_failed)
         retry_row.addStretch()
         card.body.addLayout(retry_row)
@@ -219,6 +222,9 @@ class CampaignPage(Page):
 
         # message ------------------------------------------------------------
         card = Card("Message")
+        self.campaign_name = Field("Campaign name", "Saved in history: one person is never emailed twice in "
+                                   "the same campaign. Blank = the subject.", placeholder="Same as the subject")
+        card.body.addWidget(self.campaign_name)
         self.subject = Field("Email subject", "Must exactly match a saved subject in Crisp's subject dropdown.")
         self.shortcut = Field("Crisp shortcut", "The saved Crisp shortcut inserted as the message body.")
         card.body.addWidget(self.subject)
@@ -267,6 +273,10 @@ class CampaignPage(Page):
         limits = ResponsiveRow(min_item_width=200, spacing=16)
         self.max_skips = Field("Max skipped per run", "Stop after this many skips.")
         self.max_fails_in_row = Field("Stop after failures in a row", "Auto-stop when this many fail back to back.")
+        self.recent_days = Field("Skip anyone emailed in the last N days",
+                                 "All campaigns and files. 0 = off. Only real sends count.")
+        self.recent_days.edit.setValidator(QIntValidator(0, 3650, self.recent_days.edit))
+        limits.add(self.recent_days)
         for f in (self.max_skips, self.max_fails_in_row):
             f.edit.setValidator(QIntValidator(1, 1000, f.edit))
             limits.add(f)
@@ -339,7 +349,8 @@ class CampaignPage(Page):
                 "max_skips": self.max_skips, "max_fails_in_row": self.max_fails_in_row,
                 "delay": self.delay, "max_per_run": self.max_per_run, "daily_cap": self.daily_cap,
                 "send_window": self.send_window, "start_at": self.start_at,
-                "sheet_url": self.sheet_url, "google_key": self.google_key}
+                "sheet_url": self.sheet_url, "google_key": self.google_key,
+                "campaign": self.campaign_name, "recent_days": self.recent_days}
 
 
 # =====================================================================
@@ -354,6 +365,10 @@ class ActivityPage(Page):
         self.retry_banner.hide()
 
         card = Card("Progress")
+        self.pause = button("Pause", None, "stop", tm, "text_muted")
+        self.pause.setToolTip("Pauses after the current recipient (never during a send).")
+        self.pause.setEnabled(False)
+        card.head_actions.addWidget(self.pause)
         self.stop = button("Stop", "dangerOutline", "stop", tm)
         self.stop.setEnabled(False)
         card.head_actions.addWidget(self.stop)
@@ -373,6 +388,8 @@ class ActivityPage(Page):
         prow.addWidget(self.progress, 1)
         prow.addWidget(self.percent)
         card.body.addLayout(prow)
+        self.eta = label("", "faint", wrap=True)
+        card.body.addWidget(self.eta)
         stats = QHBoxLayout()
         stats.setSpacing(36)
         self.s_done = MiniStat("Sent")

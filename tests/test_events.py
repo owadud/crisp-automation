@@ -68,7 +68,7 @@ def test_main_emits_the_expected_events(load_agent, monkeypatch, capsys):
     mod = load_agent(ROWS)
     stub_browser(mod, monkeypatch, fail={"b@x.com"})
     mod.main()
-    ev = events_of(capsys.readouterr().out)
+    ev = [e for e in events_of(capsys.readouterr().out) if e["event"] != "waiting"]
     assert [e["event"] for e in ev] == [
         "run_start", "eligible", "logged_in",
         "recipient", "success",
