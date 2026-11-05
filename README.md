@@ -244,6 +244,12 @@ is typed, sent, resolved or changed.
   side, and shortcut versions within a campaign) and **Check history** (how numbers grow).
   Re-checks are suggested about 1 hour, 1 day and 3 days after sending.
 - **Shortcut version** (Campaign Setup > Message): your label for the shortcut text, e.g. `v2`.
+- **A/B test (3.8)**: enter several shortcuts separated by commas, e.g. `!subs-small, !subs-big`,
+  and labels in the same order, e.g. `v1, v2` (blank = the shortcut names). Each recipient gets
+  the shortcut with the fewest real sends so far in this campaign (this computer's history), so
+  the split stays even, also across runs. The preview table and the live confirmation show which
+  shortcut each row is expected to get. Compare the versions in Campaign Results > Compare.
+  All shortcuts must use the same Email subject.
 - Data stays on this computer: `history.csv` (now also saves shortcut, version and the
   conversation link of every real send) and `campaign_results.json`. No message text and no
   screenshots are stored. Sends from before 3.7 have no saved link, so they cannot be checked.

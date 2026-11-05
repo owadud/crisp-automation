@@ -408,6 +408,16 @@ class MainWindow(QMainWindow):
         values.update(self._shared_values())
         return values
 
+    @staticmethod
+    def _shortcut_text(v: dict) -> str:
+        try:
+            variants = sc.parse_variants(v.get("shortcut", ""), v.get("shortcut_version", ""))
+        except ValueError:
+            return f"Shortcut: {v.get('shortcut', '')}"
+        if len(variants) == 1:
+            return f"Shortcut: {variants[0][0]}"
+        return "A/B test, split evenly: " + " / ".join(f"{n} ({lab})" for n, lab in variants)
+
     def _shared_values(self) -> dict:
         s = self.settings
         out = {"runner_name": s.runner_name.text()}
@@ -665,6 +675,17 @@ class MainWindow(QMainWindow):
                 ok = False
             else:
                 f.set_state("help")
+        if c.shortcut.text():
+            try:
+                variants = sc.parse_variants(c.shortcut.text(), c.shortcut_version.text())
+                c.shortcut_version.set_state("help")
+                if len(variants) > 1:
+                    c.shortcut.set_state("ok", f"A/B test: {len(variants)} shortcuts, split evenly: "
+                                         + " · ".join(f"{n} ({lab})" for n, lab in variants))
+            except ValueError as exc:
+                target = c.shortcut_version if "label" in str(exc) else c.shortcut
+                target.set_state("error", str(exc))
+                ok = False
         if not c.reference.text():
             c.reference.set_state("help", "Empty: only rows with an empty Reference column are sent.")
         else:
@@ -789,7 +810,7 @@ class MainWindow(QMainWindow):
         else:
             kv.set("csv", csv_name, v["csv"])
         kv.set("subject", v["subject"])
-        kv.set("shortcut", v["shortcut"])
+        kv.set("shortcut", v["shortcut"] + (f"  ·  {v['shortcut_version']}" if v.get("shortcut_version") else ""))
         kv.set("segment", v["segment"])
         kv.set("reference", v["reference"] or "(empty)")
         kv.set("mode", "Dry Run, no emails sent" if self.dry_run() else "Real sending")
@@ -842,7 +863,9 @@ class MainWindow(QMainWindow):
                       else f"CSV {Path(v['csv']).name}")
             summary = (f"Dry Run is off: real emails go out through Crisp and each sent row is marked. "
                        f"This can't be undone.\n{self.stats.preview()}\n"
-                       f"Campaign: {self.campaign_name(v)} · Rows {self.stats.range_from}–{self.stats.range_to} "
+                       f"Campaign: {self.campaign_name(v)} · Subject: {v['subject']} · "
+                       f"{self._shortcut_text(v)}\n"
+                       f"Rows {self.stats.range_from}–{self.stats.range_to} "
                        f"of {self.stats.total} · {source} · {self._limits_text(v)}"
                        + (" · retry failed only" if retry_only else ""))
             ok = show_preview(self, f"Send {n} real email{'s' if n != 1 else ''}?", summary,

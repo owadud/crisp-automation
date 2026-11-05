@@ -237,3 +237,47 @@ def delete_old_runs(runs_root: Path, days: int = 30, now: float | None = None) -
             shutil.rmtree(child, ignore_errors=True)
             removed.append(child)
     return removed
+
+
+# ------------------------------------------------------------------ A/B shortcut variants
+def parse_variants(shortcuts: str, versions: str = "") -> list[tuple[str, str]]:
+    """'!a, !b' + 'v1, v2' -> [('!a', 'v1'), ('!b', 'v2')]. Commas or new lines separate.
+
+    One shortcut keeps the old behaviour (its version label may be blank).
+    Several shortcuts = an A/B test: a blank label becomes the shortcut name.
+    Raises ValueError with a message the user can act on."""
+    names = [s.strip() for s in re.split(r"[,\n]", str(shortcuts or "")) if s.strip()]
+    labels = [s.strip() for s in re.split(r"[,\n]", str(versions or "")) if s.strip()]
+    if not names:
+        raise ValueError("Enter a Crisp shortcut.")
+    if len({n.lower() for n in names}) != len(names):
+        raise ValueError("The same shortcut is listed twice.")
+    if len(labels) > len(names):
+        raise ValueError(f"{len(labels)} version labels for {len(names)} shortcut(s). "
+                         "Give one label per shortcut, in the same order.")
+    if len(names) == 1:
+        return [(names[0], labels[0] if labels else "")]
+    labels += names[len(labels):]
+    if len({lab.lower() for lab in labels}) != len(labels):
+        raise ValueError("Each shortcut needs a different version label.")
+    return list(zip(names, labels))
+
+
+def variant_counts(path: Path, campaign: str, variants) -> list[int]:
+    """Live sends so far in this campaign per variant (history.csv), to keep the split even."""
+    counts = [0] * len(variants)
+    campaign = str(campaign or "").strip().lower()
+    for r in read_history(path):
+        if r.get("Mode") != "live" or r.get("Result") not in (SENT, UNCONFIRMED):
+            continue
+        if str(r.get("Campaign", "")).strip().lower() != campaign:
+            continue
+        for i, (name, _label) in enumerate(variants):
+            if str(r.get("Shortcut", "")).strip() == name:
+                counts[i] += 1
+    return counts
+
+
+def pick_variant(counts: list[int]) -> int:
+    """Index of the variant with the fewest sends (first one on a tie)."""
+    return min(range(len(counts)), key=lambda i: (counts[i], i))

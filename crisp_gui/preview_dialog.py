@@ -18,12 +18,26 @@ COLUMNS = ("Row", "Email", "Name used", "Subject", "Shortcut", "Segment", "Refer
 
 
 def preview_rows(plan, campaign: dict) -> list[tuple]:
-    """Table rows (strings) from CsvStats.plan + the campaign fields."""
+    """Table rows (strings) from CsvStats.plan + the campaign fields.
+    A/B test: the expected shortcut per row (the real run balances by actual sends)."""
+    import send_control as sc
+    try:
+        variants = sc.parse_variants(campaign.get("shortcut", ""), campaign.get("shortcut_version", ""))
+    except ValueError:
+        variants = [(campaign.get("shortcut", ""), "")]
+    counts = [0] * len(variants)
     out = []
     for p in plan:
+        shortcut = variants[0][0]
+        if len(variants) > 1 and p["send"]:
+            i = sc.pick_variant(counts)
+            counts[i] += 1
+            shortcut = f"{variants[i][0]} ({variants[i][1]})"
+        elif len(variants) > 1:
+            shortcut = ""
         name = p["name"] + (" (from email)" if p.get("fallback") else "") if p["email"] else ""
         action = p["action"] + (f" ({p['detail']})" if p.get("detail") and not p["send"] else "")
-        out.append((str(p["row"]), p["email"], name, campaign.get("subject", ""), campaign.get("shortcut", ""),
+        out.append((str(p["row"]), p["email"], name, campaign.get("subject", ""), shortcut,
                     campaign.get("segment", ""), p.get("reference", ""), action))
     return out
 

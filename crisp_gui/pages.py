@@ -226,9 +226,12 @@ class CampaignPage(Page):
                                    "the same campaign. Blank = the subject.", placeholder="Same as the subject")
         card.body.addWidget(self.campaign_name)
         self.subject = Field("Email subject", "Must exactly match a saved subject in Crisp's subject dropdown.")
-        self.shortcut = Field("Crisp shortcut", "The saved Crisp shortcut inserted as the message body.")
-        self.shortcut_version = Field("Shortcut version", "Your label for this shortcut text (e.g. v2), "
-                                      "to compare versions in Campaign Results.", placeholder="Optional")
+        self.shortcut = Field("Crisp shortcut(s)", "The saved Crisp shortcut inserted as the message body. "
+                              "For an A/B test, enter several separated by commas: recipients are split "
+                              "evenly between them.", placeholder="e.g. !subs-small, !subs-big")
+        self.shortcut_version = Field("Version label(s)", "One label per shortcut, same order (e.g. v1, v2). "
+                                      "Compare them in Campaign Results. Blank = the shortcut names.",
+                                      placeholder="Optional, e.g. v1, v2")
         card.body.addWidget(self.subject)
         card.body.addWidget(self.shortcut)
         card.body.addWidget(self.shortcut_version)

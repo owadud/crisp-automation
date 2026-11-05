@@ -148,6 +148,25 @@ _HISTORY_INDEX = None
 # Label for the shortcut text in use (Crisp shortcuts have no versions), e.g. "v2".
 SHORTCUT_VERSION = os.environ.get("CRISP_SHORTCUT_VERSION", "").strip()
 
+# A/B test: several shortcuts ("!a, !b") with labels ("v1, v2"). Each recipient gets
+# the variant with the fewest sends so far in this campaign, so the split stays even.
+try:
+    VARIANTS = sc.parse_variants(SHORTCUT, SHORTCUT_VERSION)
+except ValueError:
+    VARIANTS = [(SHORTCUT, SHORTCUT_VERSION)]
+VARIANT_COUNTS = None
+
+
+def choose_variant():
+    """Set SHORTCUT / SHORTCUT_VERSION for the next recipient. Returns its index."""
+    global SHORTCUT, SHORTCUT_VERSION, VARIANT_COUNTS
+    if VARIANT_COUNTS is None:
+        VARIANT_COUNTS = ([0] * len(VARIANTS) if DRY_RUN
+                          else sc.variant_counts(HISTORY_FILE, CAMPAIGN, VARIANTS))
+    index = sc.pick_variant(VARIANT_COUNTS)
+    SHORTCUT, SHORTCUT_VERSION = VARIANTS[index]
+    return index
+
 # Campaign Results: read-only status check of saved conversation links.
 RESULTS_CHECK = os.environ.get("CRISP_RESULTS_CHECK", "false").lower() in {"1", "true", "yes", "on"}
 RESULTS_INPUT = os.environ.get("CRISP_RESULTS_INPUT", "").strip()     # JSON list of {key, email, link}
@@ -2358,9 +2377,16 @@ def _main():
         f"CSV: {CSV_FILE}"
     )
 
-    print(
-        f"Shortcut: {SHORTCUT}"
-    )
+    if len(VARIANTS) > 1:
+        print("A/B test, split evenly: " + " · ".join(f"{n} ({lab})" for n, lab in VARIANTS))
+    else:
+        print(
+            f"Shortcut: {SHORTCUT}"
+        )
+    try:
+        sc.parse_variants(os.environ.get("CRISP_SHORTCUT", SHORTCUT), os.environ.get("CRISP_SHORTCUT_VERSION", ""))
+    except ValueError as exc:
+        raise RuntimeError(f"Shortcut settings: {exc}")
 
     print(
         f"Subject: {SUBJECT}"
@@ -2595,6 +2621,10 @@ def _main():
             SEND_CLICKED = False
             CURRENT_EMAIL = email
             last_email = email
+            variant = choose_variant()
+            if len(VARIANTS) > 1:
+                print(f"  Shortcut: {SHORTCUT} ({SHORTCUT_VERSION})")
+                emit("variant", email=email, shortcut=SHORTCUT, version=SHORTCUT_VERSION)
 
             try:
 
@@ -2611,6 +2641,8 @@ def _main():
 
                     failed += 1
                     result = sc.UNCONFIRMED if SEND_CLICKED else sc.FAILED
+                    if SEND_CLICKED:
+                        VARIANT_COUNTS[variant] += 1
                     record(rows, fieldnames, row_index, result, "Email was not sent.")
                     log_result(row_index, row, result, "Email was not sent.")
                     claim_result(email, result, "Email was not sent.")
@@ -2701,6 +2733,7 @@ def _main():
                         )
 
                 completed += 1
+                VARIANT_COUNTS[variant] += 1
                 fails_in_row = 0
                 log_result(row_index, row, sc.DRY_RUN if DRY_RUN else sc.SENT, link=link)
                 claim_result(email, sc.SENT, link)
