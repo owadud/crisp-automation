@@ -350,10 +350,16 @@ class ResponsiveRow(QWidget):
         self.items.append(widget)
         self._relayout(force=True)
 
+    def shown(self) -> list:
+        """Children not hidden on purpose (a hidden one leaves no gap)."""
+        return [w for w in self.items
+                if not (w.testAttribute(Qt.WA_WState_ExplicitShowHide) and w.testAttribute(Qt.WA_WState_Hidden))]
+
     def columns_for(self, width: int) -> int:
-        n = len(self.items) or 1
+        items = self.shown()
+        n = len(items) or 1
         # Never fit more columns than the widest child allows (long labels).
-        item_w = max([self.min_item_width] + [w.minimumSizeHint().width() for w in self.items])
+        item_w = max([self.min_item_width] + [w.minimumSizeHint().width() for w in items])
         cols = max(1, min(n, (width + self.grid.spacing()) // (item_w + self.grid.spacing())))
         if n == 4 and cols == 3:
             cols = 2  # 2x2 looks better than 3+1
@@ -368,7 +374,7 @@ class ResponsiveRow(QWidget):
             self.grid.removeWidget(w)
         for c in range(len(self.items)):
             self.grid.setColumnStretch(c, 0)
-        for i, w in enumerate(self.items):
+        for i, w in enumerate(self.shown()):
             self.grid.addWidget(w, i // cols, i % cols)
         for c in range(cols):
             self.grid.setColumnStretch(c, 1)
@@ -484,3 +490,43 @@ def inform(parent, title, body, details=None):
         DIALOG_HOOK(title, body, details, "OK")
         return
     Dialog(parent, title, body, details, "OK", None).exec()
+
+
+class Collapsible(QWidget):
+    """'Advanced' section: a header button that shows or hides its body (keyboard: Space/Enter)."""
+
+    def __init__(self, title: str, open_: bool = False):
+        super().__init__()
+        self._title = title
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(16)
+        self.head = button("", "ghost")
+        self.head.setCheckable(True)
+        self.head.setAccessibleName(title)
+        self.head.toggled.connect(self.set_open)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(self.head)
+        row.addStretch()
+        lay.addLayout(row)
+        self.body = QWidget()
+        self.body_layout = QVBoxLayout(self.body)
+        self.body_layout.setContentsMargins(0, 0, 0, 0)
+        self.body_layout.setSpacing(16)
+        lay.addWidget(self.body)
+        self.set_open(open_)
+
+    def add(self, widget):
+        self.body_layout.addWidget(widget)
+        return widget
+
+    def is_open(self) -> bool:
+        return self.body.isVisibleTo(self)
+
+    def set_open(self, on: bool):
+        self.head.blockSignals(True)
+        self.head.setChecked(on)
+        self.head.blockSignals(False)
+        self.head.setText(("▾ " if on else "▸ ") + self._title)
+        self.body.setVisible(on)

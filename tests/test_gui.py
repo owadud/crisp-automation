@@ -87,6 +87,7 @@ def win(app, tmp_path, dialogs, env):
     w.resize(1240, 820)
     w.show()
     QTest.qWaitForWindowExposed(w)
+    w.navigate(1)                         # the campaign editor (its Start button is in the top bar)
     w._csv = csv_path
     w._tmp = tmp_path
     yield w
@@ -115,24 +116,24 @@ def run_to_end(w, timeout=20):
 
 # ================================================================ navigation
 def test_every_nav_item_works(win):
-    titles = ["Dashboard", "Campaign Setup", "Activity Logs", "Settings", "History", "Campaign Results", "Campaigns"]
-    for i, b in enumerate(win.nav_buttons):
+    nav = [("Campaigns", 0), ("Run", 2), ("Results", 3), ("Lists", 4), ("Team", 5), ("Settings", 6)]
+    assert [b.text() for b in win.nav_buttons] == [t for t, _ in nav]
+    for b, (title, page) in zip(win.nav_buttons, nav):
         QTest.mouseClick(b, Qt.LeftButton)
-        assert win.stack.currentIndex() == i
-        assert win.page_title.text() == titles[i]
-        assert b.isChecked()
-    for i in range(4):
+        assert win.stack.currentIndex() == page and win.page_title.text() == title and b.isChecked()
+    for i, (_t, page) in enumerate(nav):
         QTest.keyClick(win, Qt.Key_1 + i, Qt.ControlModifier)
-        assert win.stack.currentIndex() == i
+        assert win.stack.currentIndex() == page
 
 
-def test_dashboard_links(win):
+def test_editor_and_run_history_belong_to_their_sections(win):
     win.navigate(0)
-    QTest.mouseClick(win.dashboard.open_logs, Qt.LeftButton)
-    assert win.stack.currentIndex() == 2
-    win.navigate(0)
-    QTest.mouseClick(win.dashboard.edit_campaign, Qt.LeftButton)
-    assert win.stack.currentIndex() == 1
+    QTest.mouseClick(win.campaigns_page.new, Qt.LeftButton)
+    assert win.stack.currentIndex() == 1 and win.nav_buttons[0].isChecked()
+    assert win.page_title.text() == "New campaign"
+    win.navigate(3)
+    QTest.mouseClick(win.results_page.runs, Qt.LeftButton)
+    assert win.stack.currentIndex() == 7 and win.nav_buttons[2].isChecked()
 
 
 # ================================================================ campaign
@@ -142,7 +143,6 @@ def test_campaign_inputs_persist_and_validate(win, app, tmp_path):
     c.shortcut.edit.setText("my-shortcut")
     c.segment.edit.setText("my-seg")
     c.reference.edit.setText("Shahriar")
-    assert win.dashboard.kv.values["subject"].text() == "Hello subject"
     # persisted: a fresh window loads the same values
     prefs2 = Preferences(QSettings(str(tmp_path / "prefs.ini"), QSettings.IniFormat))
     assert prefs2.campaign()["shortcut"] == "my-shortcut"
@@ -156,15 +156,15 @@ def test_campaign_inputs_persist_and_validate(win, app, tmp_path):
 
 def test_csv_stats_and_reference_filter(win):
     win.refresh_csv()
-    assert win.dashboard.m_total.value.text() == "4"
-    assert win.dashboard.m_eligible.value.text() == "3"
+    assert win.campaign.m_total.value.text() == "4"
+    assert win.campaign.m_eligible.value.text() == "3"
     win.campaign.reference.edit.setText("Someone")
     win.refresh_csv()
-    assert win.dashboard.m_eligible.value.text() == "1"
+    assert win.campaign.m_eligible.value.text() == "1"
     win.campaign.csv.edit.setText(str(win._tmp / "missing.csv"))
     win.refresh_csv()
-    assert win.dashboard.m_total.value.text() == "—"
-    assert win.dashboard.csv_banner.isVisibleTo(win.dashboard)
+    assert win.campaign.m_total.value.text() == "—"
+    assert win.campaign.csv_banner.isVisibleTo(win.campaign)
     assert "File not found" in win.campaign.csv.message.text()
 
 
@@ -173,7 +173,7 @@ def test_browse_csv(win, monkeypatch):
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (str(other), ""))
     QTest.mouseClick(win.campaign.browse, Qt.LeftButton)
     assert win.campaign.csv.text() == str(other)
-    assert win.dashboard.m_eligible.value.text() == "5"
+    assert win.campaign.m_eligible.value.text() == "5"
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: ("", ""))
     QTest.mouseClick(win.campaign.browse, Qt.LeftButton)       # cancel keeps value
     assert win.campaign.csv.text() == str(other)
@@ -182,7 +182,7 @@ def test_browse_csv(win, monkeypatch):
 def test_reload_button_rereads_csv(win):
     make_csv(win._csv, n=6)
     QTest.mouseClick(win.campaign.reload, Qt.LeftButton)
-    assert win.dashboard.m_eligible.value.text() == "6"
+    assert win.campaign.m_eligible.value.text() == "6"
 
 
 def test_reset_to_defaults(win, dialogs):
@@ -230,8 +230,8 @@ def test_dry_run_on_sends_nothing(win, dialogs, env):
     assert s.phase == rs.FINISHED and s.dry_run
     assert s.completed == 3 and s.sent_confirmed == 0
     assert read_sent(win._csv) == before                          # CSV untouched
-    assert win.dashboard.m_sent.value.text() == "0"
-    assert "Dry run" in win.dashboard.m_sent.caption.text()
+    assert win.campaign.m_sent.value.text() == "0"
+    assert "Dry run" in win.campaign.m_sent.caption.text()
     assert win.status.text == "Finished"
     assert win.activity.s_done.title.text() == "Passed (dry run)"
     assert win.activity.progress.value() == 1000
@@ -257,8 +257,8 @@ def test_dry_run_off_sends_and_reports_confirmed(win, dialogs, env):
     assert s.phase == rs.FINISHED and not s.dry_run
     assert s.sent_confirmed == 3
     assert read_sent(win._csv) == ["TRUE", "TRUE", "TRUE", ""]
-    assert win.dashboard.m_sent.value.text() == "3"
-    assert win.dashboard.m_eligible.value.text() == "0"           # refreshed from CSV
+    assert win.campaign.m_sent.value.text() == "3"
+    assert win.campaign.m_eligible.value.text() == "0"           # refreshed from CSV
     last = win.prefs.last_run()
     assert last["mode"] == "real" and int(last["sent"]) == 3
 
@@ -273,8 +273,8 @@ def test_failure_is_reported_not_success(win, dialogs, env, monkeypatch):
     assert s.phase == rs.FAILED                     # …but the GUI reports the failure
     assert s.sent_confirmed == 1 and s.failed == 1
     assert win.status.text == "Failed"
-    assert win.dashboard.m_failed.value.text() == "1"
-    assert win.dashboard.m_sent.value.text() == "1"
+    assert win.campaign.m_failed.value.text() == "1"
+    assert win.campaign.m_sent.value.text() == "1"
     assert win.activity.unconfirmed_banner.isVisibleTo(win.activity)
     assert "u1@example.com" in win.activity.unconfirmed_banner.text.text()
     assert win.activity.error_banner.isVisibleTo(win.activity)
@@ -415,7 +415,7 @@ def test_resizing_no_horizontal_overflow(win, size):
         page = win.stack.currentWidget()
         assert page.horizontalScrollBar().maximum() == 0
         assert page.widget().width() <= page.viewport().width()
-    cols = win.dashboard.metrics._cols
+    cols = win.campaign.metrics._cols
     assert cols in (2, 4)
     if size[0] <= 900:
         assert cols == 2
@@ -474,8 +474,8 @@ def test_crash_recovery_warning_and_clear(win, dialogs):
     win.prefs.set_recovery(email="", csv="x.csv", started="2026-11-04 10:00", mode="real sending")
     win.prefs.set_recovery(email="stuck@example.com")
     win._show_crash_recovery()
-    banner = win.dashboard.unconfirmed_banner
-    assert banner.isVisibleTo(win.dashboard) and "stuck@example.com" in banner.text.text()
+    banner = win.activity.unconfirmed_banner
+    assert banner.isVisibleTo(win.activity) and "stuck@example.com" in banner.text.text()
 
     win.start_run()                                   # dry run with the fake agent
     assert win.prefs.recovery() is not None           # marked while running
@@ -506,7 +506,7 @@ def test_sending_control_validation_and_run_folder(win, dialogs, tmp_path):
     assert run and (run / "settings.json").exists() and (run / "run.log").exists()
     assert (run / "summary.json").exists()
     assert "Eligible recipients" in (run / "run.log").read_text(encoding="utf-8")
-    win.navigate(4)
+    win.navigate(7)
     assert win.history.table.rowCount() == 1
     assert win.history.table.item(0, 1).text() == "Dry run"
 
@@ -524,7 +524,7 @@ def test_retry_button_and_diagnostics(win, dialogs, tmp_path):
     assert win.campaign.retry_failed.isEnabled()
     assert win.campaign.retry_failed.text() == "Retry failed only (1)"
 
-    win.navigate(4)
+    win.navigate(7)
     QTest.mouseClick(win.history.copy_diag, Qt.LeftButton)
     zips = list((tmp_path / "data" / "diagnostics").glob("diagnostics-*.zip"))
     assert len(zips) == 1 and str(zips[0]) == QGuiApplication.clipboard().text()
@@ -641,7 +641,7 @@ def test_campaign_results_page(win, dialogs, tmp_path, monkeypatch):
                                  ("b@x.com", "v2", "https://app.crisp.chat/website/w/inbox/session_b/"),
                                  ("old@x.com", "", "")):
         sc.append_history(hist, Email=email, Result="Sent", Mode="live", Campaign="VIP", Version=version, Link=link)
-    win.navigate(5)
+    win.navigate(3)
     r = win.results_page
     assert [r.campaign.itemText(i) for i in range(r.campaign.count())] == ["All campaigns", "VIP"]
     assert "3 sent" in r.summary.text() and "1 without a conversation link" in r.last_checked.text()

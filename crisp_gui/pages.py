@@ -1,4 +1,4 @@
-"""The four pages. They only build widgets and expose them;
+"""The pages. They only build widgets and expose them;
 MainWindow wires behaviour so all logic lives in one place."""
 
 from __future__ import annotations
@@ -8,14 +8,14 @@ from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
     QComboBox,
     QAbstractItemView, QFrame, QHBoxLayout, QHeaderView, QPlainTextEdit, QProgressBar, QScrollArea,
-    QSizePolicy, QTabWidget, QTableWidget, QVBoxLayout, QWidget,
+    QSizePolicy, QTabWidget, QTableView, QTableWidget, QVBoxLayout, QWidget,
 )
 
 from .config import APP_VERSION
 from .theme import ThemeManager
 from .widgets import (
-    Banner, Card, Field, KeyValueList, MetricCard, ResponsiveRow,
-    SegmentedControl, ToggleSwitch, button, divider, label,
+    Banner, Card, Collapsible, Field, KeyValueList, MetricCard, ResponsiveRow,
+    SegmentedControl, ToggleSwitch, button, label,
 )
 
 
@@ -64,70 +64,28 @@ class MiniStat(QWidget):
 
 
 # =====================================================================
-class DashboardPage(Page):
+class CampaignPage(Page):
     def __init__(self, tm: ThemeManager):
         super().__init__()
+        self.locked_banner = self.add(Banner(tm, "info", "Settings are locked while a run is in progress."))
+        self.locked_banner.hide()
         self.csv_banner = self.add(Banner(tm, "danger"))
         self.csv_banner.hide()
-        self.unconfirmed_banner = self.add(Banner(tm, "warning"))
-        self.unconfirmed_banner.hide()
+        self.mode_banner = self.add(Banner(tm, "danger"))
+        self.mode_banner.hide()
 
+        # the check: what this campaign would do right now ------------------------
         self.metrics = ResponsiveRow(min_item_width=180)
-        self.m_total = MetricCard("Recipients in CSV")
-        self.m_eligible = MetricCard("Eligible to send")
+        self.m_total = MetricCard("Recipients in list")
+        self.m_eligible = MetricCard("Will be sent")
         self.m_sent = MetricCard("Sent")
         self.m_failed = MetricCard("Failed")
         for m in (self.m_total, self.m_eligible, self.m_sent, self.m_failed):
             self.metrics.add(m)
         self.add(self.metrics)
 
-        row = ResponsiveRow(min_item_width=340, spacing=16)
-
-        # current run --------------------------------------------------
-        self.run_card = Card("Current run")
-        self.open_logs = button("View activity", "ghost", "logs", tm, "text_muted")
-        self.run_card.head_actions.addWidget(self.open_logs)
-        self.run_step = label("No run yet", "bigStep", wrap=True)
-        self.run_detail = label("Start a dry run to check the campaign end to end.", "muted", wrap=True)
-        self.run_progress = QProgressBar()
-        self.run_progress.setRange(0, 1000)
-        self.run_progress.setTextVisible(False)
-        self.run_progress_text = label("", "faint")
-        self.run_card.body.addWidget(self.run_step)
-        self.run_card.body.addWidget(self.run_detail)
-        self.run_card.body.addWidget(self.run_progress)
-        self.run_card.body.addWidget(self.run_progress_text)
-        self.run_card.body.addStretch()
-        self.last_run = label("", "faint", wrap=True)
-        self.run_card.body.addWidget(divider())
-        self.run_card.body.addWidget(self.last_run)
-
-        # campaign summary ------------------------------------------------
-        self.campaign_card = Card("Campaign")
-        self.edit_campaign = button("Edit", "ghost", "campaign", tm, "text_muted")
-        self.campaign_card.head_actions.addWidget(self.edit_campaign)
-        self.kv = KeyValueList()
-        for key, title in (("csv", "CSV file"), ("subject", "Subject"), ("shortcut", "Shortcut"),
-                           ("segment", "Segment"), ("reference", "Reference"), ("mode", "Mode")):
-            self.kv.add(key, title)
-        self.campaign_card.body.addWidget(self.kv)
-        self.campaign_card.body.addStretch()
-
-        row.add(self.run_card)
-        row.add(self.campaign_card)
-        self.add(row)
-        self.finish()
-
-
-# =====================================================================
-class CampaignPage(Page):
-    def __init__(self, tm: ThemeManager):
-        super().__init__()
-        self.locked_banner = self.add(Banner(tm, "info", "Settings are locked while a run is in progress."))
-        self.locked_banner.hide()
-
         # recipients ---------------------------------------------------------
-        card = Card("Recipients", "Columns: Full Name, Contact Email, Reference and Mail Sent.")
+        card = Card("Recipients")
         src_row = QHBoxLayout()
         src_row.addWidget(label("Source", "fieldLabel"))
         src_row.addSpacing(8)
@@ -200,20 +158,20 @@ class CampaignPage(Page):
         sv.addWidget(self.sheet_info)
         self.sheet_box.hide()
         card.body.addWidget(self.sheet_box)
+        rows_card = Card("Row range", "Row 1 is the first row under the header, counted before any filtering, "
+                         "so the numbers match the file.")
         rng = ResponsiveRow(min_item_width=200, spacing=16)
         self.row_from = Field("From row", "Blank = first row.", placeholder="First")
         self.row_to = Field("To row", "Blank = last row.", placeholder="Last")
         for f in (self.row_from, self.row_to):
             f.edit.setValidator(QIntValidator(1, 10_000_000, f.edit))
             rng.add(f)
-        card.body.addWidget(rng)
-        card.body.addWidget(label("Row 1 is the first row under the header, counted before any filtering, "
-                                  "so the numbers match the CSV file.", "fieldHelp", wrap=True))
+        rows_card.body.addWidget(rng)
         retry_row = QHBoxLayout()
         self.retry_failed = button("Retry failed only", None, "refresh", tm, "text_muted")
         self.retry_failed.setToolTip("Only rows whose Status is Failed or Skipped. Unconfirmed rows are never retried.")
-        self.preview = button("Preview rows…", None, "file", tm, "text_muted")
-        self.preview.setToolTip("Per-row table of exactly what a run would do. Nothing is sent or written.")
+        self.preview = button("See the list…", None, "file", tm, "text_muted")
+        self.preview.setToolTip("Per-row table of exactly what a run would do (Lists). Nothing is sent or written.")
         retry_row.addWidget(self.preview)
         retry_row.addWidget(self.retry_failed)
         retry_row.addStretch()
@@ -246,6 +204,10 @@ class CampaignPage(Page):
         grid.add(self.segment)
         card.body.addWidget(grid)
         self.add(card)
+
+        # advanced (collapsed) ------------------------------------------------------
+        self.advanced = self.add(Collapsible("Advanced options"))
+        self.advanced.add(rows_card)
 
         # safety ---------------------------------------------------------------
         card = Card("Safety", "Duplicate emails, invalid addresses and do-not-contact emails are always skipped "
@@ -287,11 +249,12 @@ class CampaignPage(Page):
             f.edit.setValidator(QIntValidator(1, 1000, f.edit))
             limits.add(f)
         card.body.addWidget(limits)
-        self.add(card)
+        self.advanced.add(card)
 
         # sending control ------------------------------------------------------
-        card = Card("Sending control", "Times are Dhaka time. Scheduled start and the send window only work while "
-                    "this computer is on and the Crisp login is still valid.")
+        card = Card("Pace and timing", "The delay and the daily cap apply to all campaigns together. Times are "
+                    "Dhaka time; a scheduled start and a send window need this computer on and the Crisp login "
+                    "still valid.")
         grid = ResponsiveRow(min_item_width=200, spacing=16)
         self.delay = Field("Delay between emails (s)", "Default 3.")
         self.max_per_run = Field("Max emails per run", "Blank = no limit.", placeholder="No limit")
@@ -313,39 +276,28 @@ class CampaignPage(Page):
                               "fieldHelp", wrap=True))
         line.addLayout(texts, 1)
         self.random_delay = ToggleSwitch(tm)
+        self.random_delay.setAccessibleName("Random delay 20 to 60 seconds")
         line.addWidget(self.random_delay, 0, Qt.AlignVCenter)
         card.body.addLayout(line)
-        self.add(card)
+        self.advanced.add(card)
 
-        # mode -----------------------------------------------------------------
-        card = Card("Sending mode")
-        line = QHBoxLayout()
-        line.setSpacing(16)
-        texts = QVBoxLayout()
-        texts.setSpacing(3)
-        texts.addWidget(label("Dry Run", "fieldLabel"))
-        texts.addWidget(label(
-            "Creates each conversation and inserts the shortcut, but skips Send, the segment, "
-            "resolving and the CSV update.", "fieldHelp", wrap=True))
-        line.addLayout(texts, 1)
+        # Dry Run switch: shown in the top bar of the window (always visible).
         self.dry = ToggleSwitch(tm)
-        line.addWidget(self.dry, 0, Qt.AlignVCenter)
-        card.body.addLayout(line)
-        self.mode_banner = Banner(tm, "danger")
-        card.body.addWidget(self.mode_banner)
-        self.add(card)
+        self.dry.setAccessibleName("Dry Run")
+        self.dry.setToolTip("Dry Run: creates each conversation and inserts the shortcut, but skips Send, the "
+                            "segment, resolving and marking the list.")
 
         # footer -----------------------------------------------------------------
-        footer = QHBoxLayout()
-        footer.setContentsMargins(0, 0, 0, 0)
+        footer = ResponsiveRow(min_item_width=150, spacing=8)
         self.reset = button("Reset to defaults", "ghost")
-        footer.addWidget(self.reset)
-        footer.addStretch()
-        self.start = button("Start dry run", "primary", "play", tm)
-        footer.addWidget(self.start)
-        holder = QWidget()
-        holder.setLayout(footer)
-        self.add(holder)
+        self.save_as_new = button("Save as new", None, "copy", tm, "text_muted")
+        self.save = button("Save campaign", None, "save", tm, "text_muted")
+        self.add_queue = button("Save and add to queue", None, "play", tm, "text_muted")
+        for b in (self.reset, self.save_as_new, self.save, self.add_queue):
+            footer.add(b)
+        self.add(footer)
+        self.start = button("Start dry run", "primary", "play", tm)   # the top-bar button is the visible one
+        self.start.hide()
         self.finish()
 
     def fields(self):
@@ -406,7 +358,22 @@ class ActivityPage(Page):
             stats.addWidget(s)
         stats.addStretch()
         card.body.addLayout(stats)
+        self.last_run = label("", "faint", wrap=True)
+        card.body.addWidget(self.last_run)
         self.add(card)
+
+        rows_card = Card("Recipients in this run")
+        self.rows = QTableView()
+        self.rows.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.rows.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.rows.verticalHeader().setVisible(False)
+        self.rows.horizontalHeader().setStretchLastSection(True)
+        self.rows.setMinimumHeight(180)
+        self.rows.setWordWrap(False)
+        rows_card.body.addWidget(self.rows)
+        self.rows_empty = label("Each recipient appears here with its result as the run goes.", "faint", wrap=True)
+        rows_card.body.addWidget(self.rows_empty)
+        self.add(rows_card)
 
         log_card = Card("Log")
         self.copy = button("Copy", "ghost", "copy", tm, "text_muted")
@@ -420,7 +387,7 @@ class ActivityPage(Page):
         self.log.setLineWrapMode(QPlainTextEdit.WidgetWidth)
         self.log.setMaximumBlockCount(20000)
         self.log.setPlaceholderText("Live output from the automation appears here.")
-        self.log.setMinimumHeight(300)
+        self.log.setMinimumHeight(220)
         self.log.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         log_card.body.addWidget(self.log, 1)
         self.add(log_card, 1)
@@ -443,9 +410,22 @@ class SettingsPage(Page):
         card.body.addLayout(row)
         self.add(card)
 
+        card = Card("Your name", "Shown to teammates who send from the same Google Sheet.")
+        self.runner_name = Field("Name", "Blank = this computer's name.", placeholder="e.g. Owadud")
+        self.runner_name.setMaximumWidth(360)
+        card.body.addWidget(self.runner_name)
+        self.add(card)
+
+        self.updates_slot = QVBoxLayout()            # Updates card goes here (filled below)
+        self.layout_.addLayout(self.updates_slot)
+
+        self.advanced = self.add(Collapsible("Advanced"))
+
         card = Card("Browser session", "Your Crisp login is saved in this Chromium profile, so you only sign in once. "
                     "It stays on this computer and is never part of the project files.")
         self.profile_path = label("", "kvValue", wrap=True)
+        self.profile_path.setMinimumWidth(1)
+        self.profile_path.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.profile_path.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.profile_state = label("", "faint")
         card.body.addWidget(self.profile_path)
@@ -457,20 +437,18 @@ class SettingsPage(Page):
         btns.addWidget(self.copy_profile)
         btns.addStretch()
         card.body.addLayout(btns)
-        self.add(card)
+        self.advanced.add(card)
 
         card = Card("Shared Google Sheet", "Teammates can send from the same Sheet at the same time. "
                     "Each recipient is claimed before sending, so nobody is emailed twice.")
         row = ResponsiveRow(min_item_width=180)
-        self.runner_name = Field("Your name", "Shown to teammates. Blank = this computer's name.",
-                                 placeholder="e.g. Owadud")
         self.claim_batch = Field("Batch size", "Recipients claimed at a time.", placeholder="10")
         self.claim_expiry = Field("Claim expiry (minutes)", "Unsent claims of a runner that stopped "
                                   "responding are freed after this.", placeholder="5")
-        for f in (self.runner_name, self.claim_batch, self.claim_expiry):
+        for f in (self.claim_batch, self.claim_expiry):
             row.add(f)
         card.body.addWidget(row)
-        self.add(card)
+        self.advanced.add(card)
 
         card = Card("Campaign queue", "1 = campaigns run one after another in your Crisp browser (the safe "
                     "default). 2 or 3 run at the same time, each in its own browser window with its own Crisp "
@@ -479,7 +457,7 @@ class SettingsPage(Page):
         self.parallel = Field("Campaigns at the same time", "1, 2 or 3.", placeholder="1")
         self.parallel.setMaximumWidth(260)
         card.body.addWidget(self.parallel)
-        self.add(card)
+        self.advanced.add(card)
 
         card = Card("Campaign defaults", "Restore the subject, shortcut, segment, reference and CSV to the original values.")
         self.reset = button("Reset campaign fields", "dangerOutline")
@@ -487,7 +465,7 @@ class SettingsPage(Page):
         h.addWidget(self.reset)
         h.addStretch()
         card.body.addLayout(h)
-        self.add(card)
+        self.advanced.add(card)
 
         card = Card("Updates", "New versions download from GitHub. Your settings, CSV files, history, "
                     "Crisp login and logs are never changed. The old code is kept in backups/.")
@@ -501,7 +479,7 @@ class SettingsPage(Page):
         h.addWidget(self.install_update)
         h.addStretch()
         card.body.addLayout(h)
-        self.add(card)
+        self.updates_slot.addWidget(card)
 
         card = Card("Check Crisp", "Opens Crisp and looks for the subject dropdown, the Shortcuts tab and the "
                     "segment field. Nothing is created or sent. When asked, open any existing conversation.")
@@ -513,7 +491,7 @@ class SettingsPage(Page):
         self.health_result = label("", "faint", wrap=True)
         self.health_result.setTextInteractionFlags(Qt.TextSelectableByMouse)
         card.body.addWidget(self.health_result)
-        self.add(card)
+        self.advanced.add(card)
 
         card = Card("About")
         self.about = KeyValueList()
@@ -522,7 +500,7 @@ class SettingsPage(Page):
             self.about.add(key, title)
         self.about.set("version", f"Crisp Automation Desktop {APP_VERSION}")
         card.body.addWidget(self.about)
-        self.add(card)
+        self.advanced.add(card)
         self.finish()
 
 
@@ -591,60 +569,56 @@ def _table(columns, min_height=260) -> QTableWidget:
 
 
 class CampaignsPage(Page):
-    """Saved campaigns and the run queue."""
+    """Saved campaigns and the run queue. Actions shown depend on the selected campaign."""
 
-    COLUMNS = ("#", "Campaign", "Status", "Source", "Subject", "Shortcut(s)", "Last run", "Note")
+    COLUMNS = ("#", "Campaign", "Status", "List", "Subject", "Shortcut(s)", "Last run", "Note")
 
     def __init__(self, tm: ThemeManager):
         super().__init__()
         self.banner = self.add(Banner(tm, "warning", ""))
         self.banner.hide()
-        self.mode_banner = self.add(Banner(tm, "info", ""))
+
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        self.new = button("New campaign", None, "campaign", tm, "text_muted")
+        self.stop_queue = button("Stop queue", None, "stop", tm, "text_muted")
+        self.run_queue = button("Run queue", "primary", "play", tm)
+        head.addWidget(self.new)
+        head.addStretch()
+        head.addWidget(self.stop_queue)
+        head.addWidget(self.run_queue)
+        holder = QWidget()
+        holder.setLayout(head)
+        self.add(holder)
+        self.queue_status = self.add(label("", "muted", wrap=True))
 
         card = Card("Campaigns")
-        self.table = _table(self.COLUMNS, min_height=300)
+        self.table = _table(self.COLUMNS, min_height=280)
         self.table.setSortingEnabled(False)
-        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.table.setMinimumWidth(200)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setMinimumWidth(200)
         card.body.addWidget(self.table)
-        self.empty = label("No campaigns yet. Fill in Campaign Setup, then click Save setup as campaign.",
-                           "faint", wrap=True)
+        self.empty = label("No campaigns yet. Click New campaign, fill it in, then Save campaign.", "faint", wrap=True)
         card.body.addWidget(self.empty)
 
-        edit = ResponsiveRow(min_item_width=170, spacing=8)
-        self.save_new = button("Save setup as campaign", "primary", "save", tm)
-        self.update_sel = button("Update from setup", None, "refresh", tm)
-        self.open_sel = button("Open in setup", None, "campaign", tm)
-        self.duplicate = button("Duplicate", None, "copy", tm)
-        self.delete = button("Delete", "dangerOutline", "trash", tm)
-        for b in (self.save_new, self.update_sel, self.open_sel, self.duplicate, self.delete):
-            edit.add(b)
-        card.body.addWidget(edit)
-        self.add(card)
-
-        card = Card("Queue", "Campaigns run in this order, one at a time per browser. Stop and Pause act on the "
-                    "selected campaign only, between two recipients.")
-        q = ResponsiveRow(min_item_width=150, spacing=8)
-        self.enqueue = button("Add to queue", None, "play", tm)
-        self.dequeue = button("Remove from queue", None, "stop", tm)
+        # actions for the selected campaign (only the ones that apply are shown)
+        self.actions = ResponsiveRow(min_item_width=140, spacing=8)
+        self.open_sel = button("Open", None, "campaign", tm, "text_muted")
+        self.enqueue = button("Add to queue", None, "play", tm, "text_muted")
+        self.dequeue = button("Remove from queue", None, "stop", tm, "text_muted")
         self.up = button("Move up", None)
         self.down = button("Move down", None)
         self.run_next = button("Run next", None)
-        for b in (self.enqueue, self.dequeue, self.up, self.down, self.run_next):
-            q.add(b)
-        card.body.addWidget(q)
-        q2 = ResponsiveRow(min_item_width=150, spacing=8)
         self.pause = button("Pause", None)
         self.stop = button("Stop campaign", "dangerOutline", "stop", tm)
-        self.checked = button("I checked Crisp", None, "check", tm)
-        self.stop_queue = button("Stop queue", None)
-        self.run_queue = button("Run queue", "primary", "play", tm)
-        for b in (self.pause, self.stop, self.checked, self.stop_queue, self.run_queue):
-            q2.add(b)
-        card.body.addWidget(q2)
-        self.queue_status = label("", "muted", wrap=True)
-        card.body.addWidget(self.queue_status)
+        self.checked = button("I checked Crisp", None, "check", tm, "text_muted")
+        self.duplicate = button("Duplicate", None, "copy", tm, "text_muted")
+        self.delete = button("Delete", "dangerOutline", "trash", tm)
+        self.action_buttons = (self.open_sel, self.enqueue, self.dequeue, self.up, self.down, self.run_next,
+                               self.pause, self.stop, self.checked, self.duplicate, self.delete)
+        for b in self.action_buttons:
+            self.actions.add(b)
+        card.body.addWidget(self.actions)
         self.add(card)
         self.finish()
 
@@ -671,11 +645,13 @@ class ResultsPage(Page):
         self.campaign.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         row.addWidget(self.campaign, 1)
         self.refresh = button("Refresh statuses", "primary", "refresh", tm)
+        self.runs = button("Runs and diagnostics", "ghost", "folder", tm, "text_muted")
         self.stop = button("Stop", "dangerOutline", "stop", tm)
         self.stop.hide()
         row.addWidget(self.refresh)
         row.addWidget(self.stop)
         card.body.addLayout(row)
+        card.head_actions.addWidget(self.runs)
         self.progress = QProgressBar()
         self.progress.setRange(0, 1000)
         self.progress.setTextVisible(False)
@@ -785,3 +761,75 @@ class ResultsPage(Page):
 
 
 __all__ = ["DashboardPage", "CampaignPage", "ActivityPage", "SettingsPage", "HistoryPage", "ResultsPage"]
+
+
+# =====================================================================
+def _view(min_height=300) -> QTableView:
+    v = QTableView()
+    v.setSelectionBehavior(QAbstractItemView.SelectRows)
+    v.setSelectionMode(QAbstractItemView.SingleSelection)
+    v.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    v.verticalHeader().setVisible(False)
+    v.horizontalHeader().setStretchLastSection(True)
+    v.setWordWrap(False)
+    v.setMinimumHeight(min_height)
+    return v
+
+
+class ListsPage(Page):
+    """The recipients of the campaign open in the editor: what a run would do, row by row."""
+
+    def __init__(self, tm: ThemeManager):
+        super().__init__()
+        self.error = self.add(Banner(tm, "danger"))
+        self.error.hide()
+        card = Card("Recipients")
+        self.source = label("", "muted", wrap=True)
+        self.summary = label("", "kvValue", wrap=True)
+        card.body.addWidget(self.source)
+        card.body.addWidget(self.summary)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(label("Show", "fieldLabel"))
+        self.filter = SegmentedControl([("all", "All", None), ("send", "Will send", None),
+                                        ("skip", "Skipped", None)], tm)
+        self.filter.set_value("all")
+        row.addWidget(self.filter)
+        row.addStretch()
+        self.refresh = button("Re-read", None, "refresh", tm, "text_muted")
+        row.addWidget(self.refresh)
+        card.body.addLayout(row)
+        self.table = _view()
+        card.body.addWidget(self.table)
+        self.empty = label("Choose a recipient list in the campaign (Campaigns > Open).", "faint", wrap=True)
+        card.body.addWidget(self.empty)
+        self.add(card, 1)
+
+
+class TeamPage(Page):
+    """Who else is sending from the same Google Sheet (from the claims log)."""
+
+    def __init__(self, tm: ThemeManager):
+        super().__init__()
+        self.info = self.add(Banner(tm, "info", ""))
+        card = Card("Team activity")
+        self.refresh = button("Refresh", None, "refresh", tm, "text_muted")
+        card.head_actions.addWidget(self.refresh)
+        self.status = label("", "muted", wrap=True)
+        card.body.addWidget(self.status)
+        self.table = _view(180)
+        card.body.addWidget(self.table)
+        self.add(card)
+        card = Card("Needs a check in Crisp", "A computer stopped during or after a Send click. These are never "
+                    "retried automatically. Open Crisp, look for the conversation, then record what you found.")
+        self.checks = _view(140)
+        card.body.addWidget(self.checks)
+        row = QHBoxLayout()
+        self.mark_sent = button("It was sent", None, "check", tm, "text_muted")
+        self.mark_not_sent = button("It was not sent", "dangerOutline")
+        row.addWidget(self.mark_sent)
+        row.addWidget(self.mark_not_sent)
+        row.addStretch()
+        card.body.addLayout(row)
+        self.add(card)
+        self.finish()

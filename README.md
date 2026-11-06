@@ -254,6 +254,25 @@ is typed, sent, resolved or changed.
   conversation link of every real send) and `campaign_results.json`. No message text and no
   screenshots are stored. Sends from before 3.7 have no saved link, so they cannot be checked.
 
+## The app at a glance (3.8)
+
+The left side has six places. The main flow is: **Campaigns > open or create one > check the numbers > Dry Run > Send**.
+- **Campaigns**: your saved campaigns and the queue. **New campaign** (Ctrl+N), double-click to open,
+  **Run queue**. Only the actions that fit the selected campaign are shown.
+- **Campaign** (opened from Campaigns): the list, message and targeting, with the numbers on top
+  (in list, will be sent, sent, failed). Rarely used settings (row range, safety, pace and timing)
+  are under **Advanced options**. **Save campaign**, **Save as new**, **Save and add to queue**.
+- **Dry Run / LIVE** is always in the top bar, with an icon and words, on every page. The
+  Start button turns red ("Start sending") when Dry Run is off, and the confirmation names the
+  exact number of emails, the campaign, the subject and the shortcut(s).
+- **Run**: progress, ETA (counting the delay between emails), Pause / Stop, a per-recipient result
+  table that stays fast with thousands of rows, and the log.
+- **Results**: Campaign Results from Crisp; **Runs and diagnostics** opens the run history.
+- **Lists**: every row of the open campaign's list and what a run would do with it.
+- **Team**: who is sending from the same Google Sheet, refreshed every 30 s, and recipients that
+  need a check in Crisp (record "It was sent" / "It was not sent" after checking).
+- **Settings**: theme, your name, updates; everything else under **Advanced**.
+
 ## Campaigns and the queue (3.8)
 
 A **campaign** is a saved, named setup: its own list (CSV or Sheet tab), subject, shortcut(s),

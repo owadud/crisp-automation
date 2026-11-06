@@ -20,19 +20,22 @@ from PySide6.QtGui import QDesktopServices, QGuiApplication, QKeySequence, QShor
 from PySide6.QtWidgets import (
     QTableWidgetItem,
     QApplication, QButtonGroup, QFileDialog, QFrame, QHBoxLayout, QLabel,
-    QMainWindow, QStackedWidget, QVBoxLayout, QWidget,
+    QMainWindow, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from . import run_state as rs
 from . import widgets as W
 from .agent_process import AgentRunner
-from .config import AGENT_SCRIPT, APP_NAME, APP_VERSION, GITHUB_REPO, PROFILE_DIR, ROOT, Preferences
+from .config import (AGENT_SCRIPT, APP_NAME, APP_VERSION, CAMPAIGN_DEFAULTS, GITHUB_REPO, PROFILE_DIR, ROOT,
+                     Preferences)
 from .csv_stats import CsvStats, read_stats
 from .icons import icon, logo_pixmap
 from .diagnostics import build_zip
 from .preview_dialog import preview_rows, show_preview
 from . import campaign_store as cs
-from .pages import ActivityPage, CampaignPage, CampaignsPage, DashboardPage, HistoryPage, ResultsPage, SettingsPage
+from .models import RowsModel
+from .pages import (ActivityPage, CampaignPage, CampaignsPage, HistoryPage, ListsPage, ResultsPage, SettingsPage,
+                    TeamPage)
 from .queue_controller import QueueController
 from .theme import Palette, ThemeManager
 from .update_controller import UpdateController
@@ -42,15 +45,21 @@ class _SheetSignal(QObject):
     done = Signal(str, object, object)   # kind, result, error message
 
 
+# Stack order (navigate() takes these numbers).
+CAMPAIGNS, EDITOR, RUN, RESULTS, LISTS, TEAM, SETTINGS, RUNS = range(8)
+TITLES = ("Campaigns", "Campaign", "Run", "Results", "Lists", "Team", "Settings", "Runs and diagnostics")
+# Sidebar: (key, title, icon, stack page). The editor belongs to Campaigns, run history to Results.
 PAGES = (
-    ("dashboard", "Dashboard", "dashboard", "Overview of your campaign and the latest run."),
-    ("campaign", "Campaign Setup", "campaign", "Recipients, message and sending mode."),
-    ("activity", "Activity Logs", "logs", "Live progress and output from the automation."),
-    ("settings", "Settings", "settings", "Appearance, browser session and defaults."),
-    ("history", "History", "file", "Past runs, reports and diagnostics."),
-    ("results", "Campaign Results", "send", "Sent, delivered, read and replied, read from Crisp (read-only)."),
-    ("campaigns", "Campaigns", "play", "Saved campaigns and the run queue."),
+    ("campaigns", "Campaigns", "campaign", CAMPAIGNS),
+    ("run", "Run", "play", RUN),
+    ("results", "Results", "send", RESULTS),
+    ("lists", "Lists", "file", LISTS),
+    ("team", "Team", "dashboard", TEAM),
+    ("settings", "Settings", "settings", SETTINGS),
 )
+NAV_FOR = {CAMPAIGNS: 0, EDITOR: 0, RUN: 1, RESULTS: 2, LISTS: 3, TEAM: 4, SETTINGS: 5, RUNS: 2}
+# The top-bar Start/Stop button belongs to these pages (and shows everywhere while running).
+RUN_BUTTON_PAGES = (EDITOR, RUN, LISTS)
 
 STATUS = {
     rs.IDLE: ("Ready", "neutral"),
@@ -102,7 +111,7 @@ class MainWindow(QMainWindow):
         self._load_preferences()
         self.tm.changed.connect(self._theme_changed)
         self._theme_changed(self.tm.palette)
-        self.navigate(0)
+        self.navigate(CAMPAIGNS)
 
     # ================================================================ build
     def _build(self):
@@ -171,15 +180,23 @@ class MainWindow(QMainWindow):
         t = QHBoxLayout(self.top)
         t.setContentsMargins(28, 0, 20, 0)
         t.setSpacing(12)
-        titles = QVBoxLayout()
-        titles.setSpacing(1)
-        titles.addStretch()
         self.page_title = W.label("", "pageTitle")
-        self.page_subtitle = W.label("", "pageSubtitle")
-        titles.addWidget(self.page_title)
-        titles.addWidget(self.page_subtitle)
-        titles.addStretch()
-        t.addLayout(titles, 1)
+        self.page_title.setMinimumWidth(80)
+        self.page_title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        t.addWidget(self.page_title, 1)
+        # Live vs Dry Run: always visible, never colour alone (icon + words).
+        self.mode_box = QFrame()
+        self.mode_box.setObjectName("modeBox")
+        mb = QHBoxLayout(self.mode_box)
+        mb.setContentsMargins(10, 4, 10, 4)
+        mb.setSpacing(8)
+        self.mode_icon = QLabel()
+        self.mode_icon.setFixedSize(16, 16)
+        self.mode_label = W.label("", "modeLabel")
+        mb.addWidget(self.mode_icon)
+        mb.addWidget(self.mode_label)
+        t.addWidget(self.mode_box)
+        self._mode_layout = mb
         self.status = W.StatusPill(self.tm)
         t.addWidget(self.status)
         self.run_button = W.button("Start dry run", "primary")
@@ -189,16 +206,33 @@ class MainWindow(QMainWindow):
         v.addWidget(self.top)
 
         self.stack = QStackedWidget()
-        self.dashboard = DashboardPage(self.tm)
         self.campaign = CampaignPage(self.tm)
+        self.mode_label.setBuddy(self.campaign.dry)
+        self._mode_layout.addWidget(self.campaign.dry)
         self.activity = ActivityPage(self.tm)
         self.settings = SettingsPage(self.tm)
         self.history = HistoryPage(self.tm)
         self.results_page = ResultsPage(self.tm)
         self.campaigns_page = CampaignsPage(self.tm)
-        for page in (self.dashboard, self.campaign, self.activity, self.settings, self.history, self.results_page,
-                     self.campaigns_page):
+        self.lists_page = ListsPage(self.tm)
+        self.team_page = TeamPage(self.tm)
+        for page in (self.campaigns_page, self.campaign, self.activity, self.results_page, self.lists_page,
+                     self.team_page, self.settings, self.history):
             self.stack.addWidget(page)
+        self.run_rows = RowsModel(("#", "Email", "Result"), self)
+        self.activity.rows.setModel(self.run_rows)
+        self.list_rows = RowsModel(("Row", "Email", "Name used", "Subject", "Shortcut", "Segment", "Reference",
+                                    "Action"), self)
+        self.lists_page.table.setModel(self.list_rows)
+        self.team_rows = RowsModel(("Who", "Campaign", "State", "Sent", "Holding", "Needs a check", "Last seen"),
+                                   self)
+        self.team_page.table.setModel(self.team_rows)
+        self.check_rows = RowsModel(("Email", "State", "Who", "Campaign", "Since"), self)
+        self.team_page.checks.setModel(self.check_rows)
+        self._team_claims = []
+        self.team_timer = QTimer(self)
+        self.team_timer.setInterval(30_000)
+        self.team_timer.timeout.connect(lambda: self.refresh_team(auto=True))
         v.addWidget(self.stack, 1)
         h.addWidget(content, 1)
 
@@ -212,17 +246,27 @@ class MainWindow(QMainWindow):
 
     # ================================================================ wiring
     def _wire(self):
-        self.nav_group.idClicked.connect(self.navigate)
+        self.nav_group.idClicked.connect(lambda i: self.navigate(PAGES[i][3]))
         for i in range(len(PAGES)):
-            QShortcut(QKeySequence(f"Ctrl+{i + 1}"), self, activated=lambda i=i: self.navigate(i))
+            QShortcut(QKeySequence(f"Ctrl+{i + 1}"), self, activated=lambda i=i: self.navigate(PAGES[i][3]))
+        QShortcut(QKeySequence("Ctrl+N"), self, activated=self.new_campaign)
         self.theme_toggle.clicked.connect(self.toggle_theme)
         self.run_button.clicked.connect(self.run_button_clicked)
 
-        d = self.dashboard
-        d.open_logs.clicked.connect(lambda: self.navigate(2))
-        d.edit_campaign.clicked.connect(lambda: self.navigate(1))
-
         c = self.campaign
+        c.save.clicked.connect(self.save_campaign)
+        c.save_as_new.clicked.connect(self.save_campaign_new)
+        c.add_queue.clicked.connect(self.save_and_queue)
+        lp = self.lists_page
+        lp.filter.changed.connect(lambda _v: self.refresh_lists())
+        lp.refresh.clicked.connect(lambda: (self.refresh_csv(), self.refresh_lists()))
+        tp = self.team_page
+        tp.refresh.clicked.connect(self.refresh_team)
+        tp.mark_sent.clicked.connect(lambda: self.resolve_check(True))
+        tp.mark_not_sent.clicked.connect(lambda: self.resolve_check(False))
+        self._team_signal = _SheetSignal(self)
+        self._team_signal.done.connect(self._team_done)
+        self.results_page.runs.clicked.connect(lambda: self.navigate(RUNS))
         c.browse.clicked.connect(self.browse_csv)
         c.dnc_browse.clicked.connect(self.browse_dnc)
         c.source.changed.connect(self._source_changed)
@@ -232,7 +276,7 @@ class MainWindow(QMainWindow):
         self._sheet_signal.done.connect(self._sheet_job_done)
         c.sheet_tab.currentTextChanged.connect(self._sheet_tab_changed)
         c.retry_failed.clicked.connect(lambda: self.start_run(retry_only=True))
-        c.preview.clicked.connect(self.show_row_preview)
+        c.preview.clicked.connect(lambda: self.navigate(LISTS))
         c.random_delay.toggled.connect(lambda on: None if self._loading else self.prefs.set_random_delay(on))
 
         h = self.history
@@ -285,9 +329,9 @@ class MainWindow(QMainWindow):
         self.updater.install_failed.connect(self._update_install_failed)
 
         cp = self.campaigns_page
-        cp.save_new.clicked.connect(self.save_campaign_new)
-        cp.update_sel.clicked.connect(self.update_campaign)
+        cp.new.clicked.connect(self.new_campaign)
         cp.open_sel.clicked.connect(self.open_campaign)
+        cp.table.doubleClicked.connect(lambda _i: self.open_campaign())
         cp.duplicate.clicked.connect(lambda: self._campaign_action(self.campaign_store.duplicate))
         cp.delete.clicked.connect(self.delete_campaign)
         cp.enqueue.clicked.connect(lambda: self._campaign_action(self.campaign_store.enqueue))
@@ -360,31 +404,44 @@ class MainWindow(QMainWindow):
         msg = (f"The last run ({rec.get('mode') or 'run'}, started {rec.get('started') or '?'}) did not finish "
                f"normally. It stopped at {who}. Check Crisp before continuing: that email may or may not have "
                f"gone out, and its CSV row may not be marked.")
-        for banner in (self.dashboard.unconfirmed_banner, self.activity.unconfirmed_banner):
-            banner.set_text(msg)
-            banner.show()
+        self.activity.unconfirmed_banner.set_text(msg)
+        self.activity.unconfirmed_banner.show()
 
     # ============================================================ navigation
     def navigate(self, index: int):
-        if not 0 <= index < len(PAGES):
+        if not 0 <= index < len(TITLES):
             return
         self.stack.setCurrentIndex(index)
-        self.nav_buttons[index].setChecked(True)
-        _, title, _, subtitle = PAGES[index]
-        self.page_title.setText(title)
-        self.page_subtitle.setText(subtitle)
-        if index == 3:
+        self.nav_buttons[NAV_FOR[index]].setChecked(True)
+        self.page_title.setText(self._title_for(index))
+        if index == SETTINGS:
             exists = self.profile_dir.exists()
             self.settings.profile_state.setText(
                 "Profile exists. Your Crisp login will be reused." if exists
                 else "Not created yet. It is created the first time the browser opens.")
-        if index in (0, 1) and not self.runner.is_running():
+        if index in (EDITOR, LISTS) and not self.runner.is_running():
             self.refresh_csv()
-        if self.stack.widget(index) is self.history:
+        if index == RUNS:
             self.refresh_history()
-        if self.stack.widget(index) is self.results_page:
+        if index == RESULTS:
             self.refresh_results()
+        if index == LISTS:
+            self.refresh_lists()
+        if index == CAMPAIGNS:
+            self.refresh_campaigns()
+        if index == TEAM:
+            self.refresh_team()
+            self.team_timer.start()
+        else:
+            self.team_timer.stop()
         self._refresh_nav_icons()
+        self._style_run_button()
+
+    def _title_for(self, index: int) -> str:
+        if index == EDITOR:
+            c = self.campaign_store.get(self.prefs.editing_campaign())
+            return f"Campaign · {c.name}" if c else "New campaign"
+        return TITLES[index]
 
     # ================================================================ theme
     def set_theme(self, mode: str):
@@ -404,9 +461,10 @@ class MainWindow(QMainWindow):
         self.theme_toggle.setText("Light mode" if dark else "Dark mode")
         self.theme_toggle.setIcon(icon("sun" if dark else "moon", p.text_muted))
         self._style_run_button()
-        for bar in (self.activity.progress, self.dashboard.run_progress):
-            bar.style().unpolish(bar)
-            bar.style().polish(bar)
+        bar = self.activity.progress
+        bar.style().unpolish(bar)
+        bar.style().polish(bar)
+        self._update_mode()
 
     def _refresh_nav_icons(self):
         self._theme_changed(self.tm.palette)
@@ -745,6 +803,19 @@ class MainWindow(QMainWindow):
     def _update_mode(self):
         c = self.campaign
         dry = self.dry_run()
+        p = self.tm.palette
+        if dry:
+            self.mode_label.setText("Dry Run")
+            self.mode_label.setStyleSheet(f"color: {p.text};")
+            self.mode_icon.setPixmap(icon("check", p.text_muted).pixmap(16, 16))
+            self.mode_box.setToolTip("Dry Run is on: runs check everything but send nothing.")
+        else:
+            self.mode_label.setText("LIVE")
+            self.mode_label.setStyleSheet(f"color: {p.danger}; font-weight: 600;")
+            self.mode_icon.setPixmap(icon("alert", p.danger).pixmap(16, 16))
+            self.mode_box.setToolTip("Dry Run is off: runs send real emails (you confirm first).")
+        if hasattr(self, "campaigns_page"):
+            self.refresh_campaigns()
         if dry:
             c.mode_banner.hide()
         else:
@@ -772,6 +843,7 @@ class MainWindow(QMainWindow):
             b.setIcon(icon("play" if dry else "send", p.accent_text))
         b.style().unpolish(b)
         b.style().polish(b)
+        b.setVisible(running or self.stack.currentIndex() in RUN_BUTTON_PAGES)
         c = self.campaign.start
         c.setText(b.text() if not running else "Running…")
         c.setEnabled(not running)
@@ -780,9 +852,9 @@ class MainWindow(QMainWindow):
         c.style().unpolish(c)
         c.style().polish(c)
 
-    # ============================================================ dashboard
+    # ============================================================ editor metrics
     def _update_metrics(self):
-        d = self.dashboard
+        d = self.campaign
         st = self.stats
         if st.ok:
             ref = self.campaign.reference.text() or "(empty)"
@@ -797,13 +869,13 @@ class MainWindow(QMainWindow):
         else:
             d.m_total.set("—", "CSV not loaded")
             d.m_eligible.set("—", "")
-            d.csv_banner.set_text(f"Recipient CSV problem: {st.error} Fix it in Campaign Setup.")
+            d.csv_banner.set_text(f"Recipient list problem: {st.error}")
             d.csv_banner.show()
         self._update_run_metrics()
 
     def _update_run_metrics(self):
         """Sent/Failed come only from what the agent reported."""
-        d = self.dashboard
+        d = self.campaign
         s = self.runner.state or self.last_state
         if s is not None:
             scope = "this run" if self.runner.is_running() else "last run"
@@ -811,7 +883,7 @@ class MainWindow(QMainWindow):
                 d.m_sent.set(0, f"Dry run: {s.completed} passed, none sent")
             else:
                 d.m_sent.set(s.sent_confirmed, f"Confirmed by Crisp, {scope}")
-            d.m_failed.set(s.failed, "Details in Activity Logs" if s.failed or s.last_error else f"In the {scope}")
+            d.m_failed.set(s.failed, "Details on the Run page" if s.failed or s.last_error else f"In the {scope}")
             self._add_sent7()
             return
         last = self.prefs.last_run()
@@ -829,7 +901,7 @@ class MainWindow(QMainWindow):
 
     def _add_sent7(self):
         if self._sent7:
-            m = self.dashboard.m_sent
+            m = self.campaign.m_sent
             current = m.caption.text()
             note = f"{self._sent7} in the last 7 days"
             if note not in current:
@@ -838,27 +910,19 @@ class MainWindow(QMainWindow):
                 m.caption.setToolTip(text)
 
     def _update_summary(self):
-        kv = self.dashboard.kv
-        v = self.campaign_values()
-        csv_name = Path(v["csv"]).name if v["csv"] else ""
-        if v.get("source") == "sheet":
-            kv.set("csv", f"Google Sheet · {v.get('sheet_tab') or 'no tab'}", v.get("sheet_url", ""))
-        else:
-            kv.set("csv", csv_name, v["csv"])
-        kv.set("subject", v["subject"])
-        kv.set("shortcut", v["shortcut"] + (f"  ·  {v['shortcut_version']}" if v.get("shortcut_version") else ""))
-        kv.set("segment", v["segment"])
-        kv.set("reference", v["reference"] or "(empty)")
-        kv.set("mode", "Dry Run, no emails sent" if self.dry_run() else "Real sending")
         last = self.prefs.last_run()
         if last:
             mode = "Dry run" if last.get("mode") == "dry" else "Real run"
             outcome = str(last.get("outcome", "")).capitalize()
-            self.dashboard.last_run.setText(
+            self.activity.last_run.setText(
                 f"Last run: {mode}, {outcome.lower()} at {last.get('finished_at')}. "
                 f"{last.get('completed')} completed, {last.get('failed')} failed.")
         else:
-            self.dashboard.last_run.setText("No previous runs on this computer.")
+            self.activity.last_run.setText("No runs yet. Open a campaign and start a dry run.")
+        if self.stack.currentIndex() == EDITOR:
+            self.page_title.setText(self._title_for(EDITOR))
+        if self.stack.currentIndex() == LISTS:
+            self.refresh_lists()
 
     # ================================================================== run
     def run_button_clicked(self):
@@ -873,7 +937,7 @@ class MainWindow(QMainWindow):
             return
         self.refresh_csv()
         if not self._validate_fields():
-            self.navigate(1)
+            self.navigate(EDITOR)
             problem = (self.stats.error if not self.stats.ok
                        else self.stats.range_error or self.stats.dnc_error or "Fix the fields marked in red.")
             W.inform(self, "Check the campaign settings", problem)
@@ -882,7 +946,7 @@ class MainWindow(QMainWindow):
             W.inform(self, "Nothing to retry", "No rows have Status Failed or Skipped (in the selected rows).")
             return
         if not retry_only and self.stats.eligible == 0:
-            self.navigate(1)
+            self.navigate(EDITOR)
             W.inform(self, "No eligible recipients",
                      "No rows match the reference filter with an email and Mail Sent unchecked. "
                      "Nothing would be sent.",
@@ -939,7 +1003,8 @@ class MainWindow(QMainWindow):
         self.activity.error_banner.hide()
         self.activity.unconfirmed_banner.hide()
         self.activity.retry_banner.hide()
-        self.dashboard.unconfirmed_banner.hide()
+        self.run_rows.set_rows([])
+        self.activity.rows_empty.show()
         self.prefs.set_recovery(email="", csv=v["csv"], started=f"{datetime.now():%Y-%m-%d %H:%M}",
                                 mode="dry run" if dry else "real sending")
         self._recovery_email = ""
@@ -947,7 +1012,7 @@ class MainWindow(QMainWindow):
                        f"({'DRY RUN, nothing will be sent' if dry else 'REAL SENDING'})"
                        + (f" · {label}" if label else ""))
         self._set_inputs_locked(True)
-        self.navigate(2)
+        self.navigate(RUN)
         self._render_state(self.runner.state)
         return None
 
@@ -1047,7 +1112,7 @@ class MainWindow(QMainWindow):
     # ============================================================ state view
     def _render_state(self, s: rs.RunState | None):
         s = s or self.runner.state or self.last_state
-        a, d = self.activity, self.dashboard
+        a = self.activity
         phase = s.phase if s else rs.IDLE
         text, tone = STATUS[phase]
         if phase == rs.RUNNING and s and s.dry_run:
@@ -1071,12 +1136,8 @@ class MainWindow(QMainWindow):
         if s is None:
             a.step.setText("Not running")
             a.recipient.setText("Recipient status appears here once a run starts.")
-            d.run_step.setText("No run yet")
-            d.run_detail.setText("Start a dry run to check the campaign end to end.")
-            for bar in (a.progress, d.run_progress):
-                bar.setValue(0)
+            a.progress.setValue(0)
             a.percent.setText("0%")
-            d.run_progress_text.setText("")
             a.s_done.value.setText("0")
             a.s_failed.value.setText("0")
             a.s_remaining.value.setText("—")
@@ -1094,7 +1155,7 @@ class MainWindow(QMainWindow):
         elif phase == rs.STOPPING:
             step = f"Stopping after this recipient · {s.step}" if s.position else "Stopping…"
         a.step.setText(step)
-        d.run_step.setText(step)
+        self._sync_run_rows(s)
 
         if s.position and s.eligible:
             who = s.current_email + (f" ({s.current_name})" if s.current_name else "")
@@ -1106,20 +1167,16 @@ class MainWindow(QMainWindow):
         else:
             detail = f"{s.eligible} eligible recipient{'s' if s.eligible != 1 else ''}" if s.eligible else ""
         a.recipient.setText(detail)
-        d.run_detail.setText(detail or ("Dry run" if s.dry_run else "Real sending"))
 
         value = int(round(s.progress * 1000))
         state_prop = "failed" if phase == rs.FAILED else "done" if phase == rs.FINISHED else ""
-        for bar in (a.progress, d.run_progress):
-            bar.setValue(value)
-            if bar.property("state") != state_prop:
-                bar.setProperty("state", state_prop)
-                bar.style().unpolish(bar)
-                bar.style().polish(bar)
-        pct = f"{int(s.progress * 100)}%"
-        a.percent.setText(pct)
-        d.run_progress_text.setText(
-            f"{pct} · {s.processed} of {s.eligible} processed" if s.eligible else pct)
+        bar = a.progress
+        bar.setValue(value)
+        if bar.property("state") != state_prop:
+            bar.setProperty("state", state_prop)
+            bar.style().unpolish(bar)
+            bar.style().polish(bar)
+        a.percent.setText(f"{int(s.progress * 100)}%")
 
         a.s_done.title.setText("Passed (dry run)" if s.dry_run else "Sent")
         a.s_done.value.setText(str(s.completed if s.dry_run else s.sent_confirmed))
@@ -1145,9 +1202,8 @@ class MainWindow(QMainWindow):
             msg = (f"Send was clicked for {s.current_email or 'the last recipient'}, but Crisp did not confirm it. "
                    "The email may already have gone out and the CSV row was NOT marked. "
                    "Check that conversation in Crisp and mark the row before running again.")
-            for banner in (a.unconfirmed_banner, d.unconfirmed_banner):
-                banner.set_text(msg)
-                banner.show()
+            a.unconfirmed_banner.set_text(msg)
+            a.unconfirmed_banner.show()
         self._update_run_metrics()
 
     def check_crisp(self):
@@ -1481,12 +1537,57 @@ class MainWindow(QMainWindow):
             return
         self.refresh_campaigns(select=getattr(result, "id", cid))
 
+    def new_campaign(self):
+        if self.runner.is_running():
+            W.inform(self, "A run is in progress", "Wait until it ends, then start a new campaign.")
+            return
+        values = dict(CAMPAIGN_DEFAULTS)
+        values.update({"campaign": "", "csv": "", "source": "csv", "sheet_tab": ""})
+        self._apply_campaign_values(values)
+        self.prefs.set_editing_campaign("")
+        self.navigate(EDITOR)
+        self.campaign.campaign_name.edit.setFocus()
+
+    def save_campaign(self):
+        """Save the editor into its campaign (or create one the first time)."""
+        cid = self.prefs.editing_campaign()
+        if not self.campaign_store.get(cid):
+            self.save_campaign_new()
+            return
+        try:
+            c = self.campaign_store.update(cid, self.campaign_values())
+            name = self.campaign.campaign_name.text()
+            if name and name != c.name:
+                self.campaign_store.rename(cid, name)
+        except ValueError as exc:
+            W.inform(self, "Not saved", str(exc))
+            return
+        self._gui_line(f"Campaign '{self.campaign_store.get(cid).name}' saved.")
+        self.flash(self.campaign.save, "Saved")
+        self.page_title.setText(self._title_for(EDITOR))
+        self.refresh_campaigns(select=cid)
+
+    def save_and_queue(self):
+        self.save_campaign()
+        cid = self.prefs.editing_campaign()
+        try:
+            self.campaign_store.enqueue(cid)
+        except (ValueError, KeyError) as exc:
+            W.inform(self, "Not added to the queue", str(exc))
+            return
+        self.refresh_campaigns(select=cid)
+        self.navigate(CAMPAIGNS)
+
     def save_campaign_new(self):
         v = self.campaign_values()
         name = self.campaign.campaign_name.text() or v.get("subject", "")
         c = self.campaign_store.add(name, v)
         self.prefs.set_editing_campaign(c.id)
         self._gui_line(f"Campaign '{c.name}' saved ({c.label}).")
+        if not self.campaign.campaign_name.text():
+            self.campaign.campaign_name.edit.setText(c.name)
+        self.flash(self.campaign.save, "Saved")
+        self.page_title.setText(self._title_for(EDITOR))
         self.refresh_campaigns(select=c.id)
 
     def update_campaign(self):
@@ -1505,9 +1606,9 @@ class MainWindow(QMainWindow):
         if self.runner.is_running():
             W.inform(self, "A run is in progress", "Campaign Setup is locked while a run is in progress.")
             return
-        self._apply_campaign_values(c.settings)
         self.prefs.set_editing_campaign(c.id)
-        self.navigate(1)
+        self._apply_campaign_values(c.settings)
+        self.navigate(EDITOR)
 
     def _apply_campaign_values(self, values: dict):
         c = self.campaign
@@ -1720,9 +1821,6 @@ class MainWindow(QMainWindow):
                          "then click I checked Crisp.")
         cp.banner.set_text(" ".join(dict.fromkeys(notes)))
         cp.banner.setVisible(bool(notes))
-        live = not self.dry_run()
-        cp.mode_banner.set_text("REAL SENDING is on: the queue sends real emails."
-                               if live else "Dry Run is on: the queue checks everything but sends nothing.")
         running = [c.name for c in store.running()]
         queued = sum(1 for c in items if c.status == cs.QUEUED)
         cp.queue_status.setText(
@@ -1738,21 +1836,161 @@ class MainWindow(QMainWindow):
         c = self.campaign_store.get(cp.selected_id())
         has = c is not None
         running = has and self.queue_ctl.runner_of(c.id) is not None
-        for b in (cp.update_sel, cp.open_sel, cp.duplicate):
-            b.setEnabled(has)
-        cp.delete.setEnabled(has and not running)
-        cp.enqueue.setEnabled(has and c.status not in (cs.QUEUED, cs.RUNNING, cs.PAUSED, cs.UNCONFIRMED))
-        cp.dequeue.setEnabled(has and c.status in (cs.QUEUED, cs.PAUSED) and not running)
         in_queue = has and c.id in self.campaign_store.queue
-        cp.up.setEnabled(in_queue)
-        cp.down.setEnabled(in_queue)
-        cp.run_next.setEnabled(has and not running and c.status != cs.UNCONFIRMED)
-        cp.pause.setEnabled(has and c.status in (cs.QUEUED, cs.PAUSED, cs.RUNNING))
+        show = {
+            cp.open_sel: has and not running,
+            cp.duplicate: has,
+            cp.delete: has and not running,
+            cp.enqueue: has and c.status not in (cs.QUEUED, cs.RUNNING, cs.PAUSED, cs.UNCONFIRMED),
+            cp.dequeue: has and c.status in (cs.QUEUED, cs.PAUSED) and not running,
+            cp.up: in_queue and not running,
+            cp.down: in_queue and not running,
+            cp.run_next: has and not running and c.status == cs.QUEUED,
+            cp.pause: has and c.status in (cs.QUEUED, cs.PAUSED, cs.RUNNING),
+            cp.stop: running,
+            cp.checked: has and c.status == cs.UNCONFIRMED,
+        }
+        for b, on in show.items():
+            b.setVisible(on)
+            b.setEnabled(on)
+        cp.actions.setVisible(has)
+        cp.actions._relayout(force=True)
         cp.pause.setText("Resume" if has and c.status == cs.PAUSED else "Pause")
-        cp.stop.setEnabled(running)
-        cp.checked.setEnabled(has and c.status == cs.UNCONFIRMED)
-        cp.run_queue.setEnabled(not self.queue_ctl.active)
-        cp.stop_queue.setEnabled(self.queue_ctl.active)
+        queued = any(x.status == cs.QUEUED for x in self.campaign_store.campaigns.values())
+        cp.run_queue.setText("Run queue (dry run)" if self.dry_run() else "Run queue: LIVE")
+        cp.run_queue.setObjectName("primary" if self.dry_run() else "danger")
+        cp.run_queue.style().unpolish(cp.run_queue)
+        cp.run_queue.style().polish(cp.run_queue)
+        cp.run_queue.setEnabled(not self.queue_ctl.active and queued)
+        cp.stop_queue.setVisible(self.queue_ctl.active)
+
+    # ============================================================ run rows, lists, team
+    RESULT_TEXT = {"sent": "Sent", "dry-run": "Dry run passed", "skipped": "Skipped (before Send)",
+                   "failed": "Failed", "other runner": "Taken by another runner"}
+
+    def _sync_run_rows(self, s):
+        """Append new per-recipient results to the Run table (fast for thousands)."""
+        have = len(self.run_rows.rows)
+        if len(s.history) < have:
+            self.run_rows.set_rows([])
+            have = 0
+        new = [(str(have + i + 1), email, self.RESULT_TEXT.get(outcome, outcome))
+               for i, (email, outcome) in enumerate(s.history[have:])]
+        if new:
+            self.run_rows.append(new)
+            self.activity.rows.scrollToBottom()
+        self.activity.rows_empty.setVisible(not self.run_rows.rows)
+
+    def refresh_lists(self):
+        lp = self.lists_page
+        st = self.stats
+        v = self.campaign_values()
+        source = (f"Google Sheet · tab {v.get('sheet_tab') or '?'}" if v.get("source") == "sheet"
+                  else (Path(v["csv"]).name if v.get("csv") else "no list chosen"))
+        name = self.campaign_name(v) if v.get("subject") or v.get("campaign") else "New campaign"
+        lp.source.setText(f"{name} · {source}")
+        if not st.ok or st.range_error:
+            lp.error.set_text(st.error or st.range_error or "The list could not be read.")
+            lp.error.setVisible(bool(v.get("csv") or v.get("source") == "sheet"))
+            lp.summary.setText("")
+            self.list_rows.set_rows([])
+            lp.empty.setVisible(True)
+            return
+        lp.error.hide()
+        lp.summary.setText(st.preview())
+        rows = preview_rows(st.plan, v)
+        mode = lp.filter.value() or "all"
+        if mode == "send":
+            rows = [r for r in rows if r[-1] == "Send"]
+        elif mode == "skip":
+            rows = [r for r in rows if r[-1] != "Send"]
+        self.list_rows.set_rows(rows)
+        lp.empty.setVisible(not rows)
+        lp.empty.setText("No rows to show." if st.plan else "The list has no rows.")
+
+    def _team_source(self):
+        v = self.campaign_values()
+        if v.get("source") != "sheet" or not v.get("sheet_url") or not v.get("sheet_tab"):
+            return None
+        return v["sheet_url"], v["sheet_tab"], v["google_key"]
+
+    def refresh_team(self, auto: bool = False):
+        tp = self.team_page
+        src = self._team_source()
+        if src is None:
+            tp.info.set_text("Team activity is shown for Google Sheet campaigns. Open one in Campaigns "
+                             "(this campaign uses a CSV file).")
+            tp.info.show()
+            tp.status.setText("")
+            self.team_rows.set_rows([])
+            self.check_rows.set_rows([])
+            return
+        tp.info.hide()
+        if getattr(self, "_team_busy", False):
+            return
+        self._team_busy = True
+        if not auto:
+            tp.status.setText("Reading the Sheet…")
+        expiry = int(self._shared_values()["claim_expiry"])
+
+        def work():
+            import claims
+            try:
+                sheet = self._sheet_factory(*src)
+                snap = claims.snapshot_from_raw(claims.read_raw(sheet), expiry_min=expiry)
+                self._team_signal.done.emit("team", snap, None)
+            except Exception as exc:  # noqa: BLE001
+                self._team_signal.done.emit("team", None, str(exc))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _team_done(self, kind, snap, error):
+        self._team_busy = False
+        tp = self.team_page
+        if kind == "resolved":
+            if error:
+                W.inform(self, "Not recorded", error)
+            self.refresh_team()
+            return
+        if error:
+            tp.status.setText(f"Could not read the Sheet: {error}")
+            return
+        team = snap.team()
+        rows = [(t["runner"], t["campaign"], t["state"], t["sent"], t["claimed"], t["needs_check"],
+                 "—" if t["last_seen_min"] is None else f"{t['last_seen_min']} min ago") for t in team]
+        self.team_rows.set_rows(rows)
+        active = sum(1 for t in team if t["state"] in ("Running", "Paused"))
+        tp.status.setText(f"{active} running now · {len(team)} run(s) on this Sheet · "
+                          f"updated {datetime.now():%H:%M:%S} (every 30 s while this page is open)")
+        self._team_claims = snap.needs_check()
+        self.check_rows.set_rows([(c.email, c.state, c.runner, c.campaign, c.updated_at) for c in self._team_claims])
+        for b in (tp.mark_sent, tp.mark_not_sent):
+            b.setEnabled(bool(self._team_claims))
+
+    def resolve_check(self, was_sent: bool):
+        tp = self.team_page
+        rows = tp.checks.selectionModel().selectedRows() if tp.checks.selectionModel() else []
+        if not rows or rows[0].row() >= len(self._team_claims):
+            W.inform(self, "Choose a recipient", "Select a row in Needs a check in Crisp first.")
+            return
+        claim = self._team_claims[rows[0].row()]
+        what = "WAS sent" if was_sent else "was NOT sent"
+        if not W.ask(self, f"Record that {claim.email} {what}?",
+                     ("It then counts as sent for every runner." if was_sent else
+                      "It can then be emailed again by any runner.") + " Only record what you saw in Crisp.",
+                     confirm="Record it", tone="danger" if not was_sent else "primary"):
+            return
+        src = self._team_source()
+        who = self._shared_values()["runner_name"] or "this computer"
+
+        def work():
+            import claims
+            try:
+                sheet = self._sheet_factory(*src)
+                claims.Claims(sheet, "").resolve_manually(claim.email, claim.run, was_sent, who)
+                self._team_signal.done.emit("resolved", None, None)
+            except Exception as exc:  # noqa: BLE001
+                self._team_signal.done.emit("resolved", None, str(exc))
+        threading.Thread(target=work, daemon=True).start()
 
     def campaign_name(self, v: dict | None = None) -> str:
         v = v or self.campaign_values()
@@ -1780,7 +2018,7 @@ class MainWindow(QMainWindow):
         self._render_state(self.runner.state)
 
     def _render_eta(self, s):
-        a, d = self.activity, self.dashboard
+        a = self.activity
         if s is None or not self.runner.is_running() or not s.eligible:
             a.eta.setText("")
             return
@@ -1793,7 +2031,6 @@ class MainWindow(QMainWindow):
         text = (f"{s.processed} of {s.eligible} done · ETA {finish:%H:%M} (about {mins} min)"
                 if seconds > 0 else f"{s.processed} of {s.eligible} done")
         a.eta.setText(text)
-        d.run_progress_text.setText(text)
 
     def _close_run_log(self):
         if self._run_log:
