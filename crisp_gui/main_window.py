@@ -34,7 +34,7 @@ from .icons import icon, logo_pixmap
 from .diagnostics import build_zip
 from .preview_dialog import preview_rows, show_preview
 from . import campaign_store as cs
-from . import import_dialog, results_sync
+from . import browser, import_dialog, results_sync
 from .models import RowsModel
 from .pages import (ActivityPage, CampaignPage, CampaignsPage, HistoryPage, ListsPage, ResultsPage, SettingsPage,
                     TeamPage)
@@ -1492,7 +1492,7 @@ class MainWindow(QMainWindow):
         header = table.horizontalHeaderItem(col)
         item = table.item(row, col)
         if header and header.text() == "Conversation link" and item and item.text().startswith("http"):
-            QDesktopServices.openUrl(QUrl(item.text()))
+            browser.open_url(item.text())        # Google Chrome when installed, else the default browser
 
     def refresh_statuses(self, synced: bool = False):
         """Open each recorded conversation link in Crisp (read-only) and save the statuses.
