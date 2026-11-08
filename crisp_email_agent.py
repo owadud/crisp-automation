@@ -1230,6 +1230,7 @@ def fill_new_conversation(
     name_field.click()
     name_field.fill(name or email.split("@")[0])
 
+    last_said = []   # what Crisp showed when it refused (for the error message)
     for attempt in range(1, 4):
         chosen = select_subject_from_dropdown(page)
         if not chosen:
@@ -1252,13 +1253,41 @@ def fill_new_conversation(
             time.sleep(CREATE_WAIT)
             return
 
-        print(f"  Dialog still open after Create (attempt {attempt}); retrying.", flush=True)
+        said = crisp_messages(page)
+        print(f"  Dialog still open after Create (attempt {attempt}); retrying."
+              + (f" Crisp shows: {' | '.join(said)}" if said else ""), flush=True)
+        if said:
+            last_said = said
 
     _debug_subject(page, "create_failed")
+    said = crisp_messages(page) or last_said
     raise RuntimeError(
-        "Crisp did not accept the subject / create the conversation. "
-        "See debug_subject_select_failed.* or debug_create_failed.* in the project folder."
+        "Crisp did not create the conversation"
+        + (f" (Crisp says: {' | '.join(said)})" if said else "")
+        + ". Nothing was sent to this recipient. See debug_create_failed.* in the run folder."
     )
+
+
+def crisp_messages(page):
+    """Read-only: visible error / warning / notice texts on the page (e.g. why Crisp
+    refuses to create a conversation). Used only to explain a failure."""
+    try:
+        texts = page.evaluate(
+            """() => {
+                const sel = '[role="alert"], [class*="toast"], [class*="notification"], [class*="error"], '
+                          + '[class*="invalid"], [class*="warning"], [class*="message-box"]';
+                const out = [];
+                document.querySelectorAll(sel).forEach(e => {
+                    if (!e.offsetParent) return;
+                    const t = (e.innerText || '').replace(/\\s+/g, ' ').trim();
+                    if (t && t.length <= 240 && !out.includes(t)) out.push(t);
+                });
+                return out.slice(0, 5);
+            }"""
+        )
+        return [str(t) for t in texts or []]
+    except Exception:
+        return []
 
 
 # ============================================================
