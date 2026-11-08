@@ -17,6 +17,18 @@ if errorlevel 1 (
 echo.
 
 :launch
+rem One-time: Desktop + Start menu shortcut, so next time no terminal is needed.
+if not exist "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Crisp Automation.lnk" (
+  echo Creating the "Crisp Automation" shortcut on the Desktop and in the Start menu...
+  ".venv\Scripts\python.exe" -m crisp_gui.desktop_shortcut
+)
+if /i "%~1"=="console" goto console
+rem Open the app without a console window; this window closes right away.
+start "" ".venv\Scripts\pythonw.exe" gui_app.py
+exit /b 0
+
+:console
+rem run_windows.bat console = keep this window and show all messages (for troubleshooting).
 echo Starting Crisp Automation...
 ".venv\Scripts\python.exe" gui_app.py
 if errorlevel 1 (

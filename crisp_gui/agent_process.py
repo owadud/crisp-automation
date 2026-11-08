@@ -13,6 +13,17 @@ from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 from . import run_state as rs
 
 
+def agent_python() -> str:
+    """On Windows use pythonw.exe for the agent: no console window pops up when the
+    app was opened from a shortcut. Its output still reaches us through the pipe."""
+    exe = Path(sys.executable)
+    if sys.platform == "win32" and exe.name.lower() == "python.exe":
+        windowed = exe.with_name("pythonw.exe")
+        if windowed.exists():
+            return str(windowed)
+    return sys.executable
+
+
 class AgentRunner(QObject):
     line = Signal(str)            # one complete output line
     state_changed = Signal(object)  # RunState
@@ -107,7 +118,7 @@ class AgentRunner(QObject):
 
         self.proc.setProcessEnvironment(env)
         self.proc.setWorkingDirectory(str(self.script.parent))
-        self.proc.setProgram(sys.executable)
+        self.proc.setProgram(agent_python())
         self.proc.setArguments(["-u", str(self.script)])
         self.proc.start()
         if not self.proc.waitForStarted(8000):

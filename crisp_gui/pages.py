@@ -416,6 +416,17 @@ class SettingsPage(Page):
         card.body.addWidget(self.runner_name)
         self.add(card)
 
+        card = Card("Open like an app", "Adds Crisp Automation to the Desktop and Start menu (Windows) or the "
+                    "app grid (Ubuntu), so it opens with one click and no terminal.")
+        row = QHBoxLayout()
+        self.make_shortcut = button("Create shortcut", None, "send", tm, "text_muted")
+        row.addWidget(self.make_shortcut)
+        row.addStretch()
+        card.body.addLayout(row)
+        self.shortcut_status = label("", "faint", wrap=True)
+        card.body.addWidget(self.shortcut_status)
+        self.add(card)
+
         self.updates_slot = QVBoxLayout()            # Updates card goes here (filled below)
         self.layout_.addLayout(self.updates_slot)
 

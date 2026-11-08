@@ -299,12 +299,23 @@ segment, reference, row range and safety settings, with its own status and resul
   account and the same app-wide pace, so this is not faster; it only lets campaigns progress side
   by side. Two campaigns never share one browser tab: the subject and composer would mix up.
 
-## Ubuntu: open the app without a terminal
+## Open it like an app (no terminal)
 
-Once, in the app folder: `bash install_launcher_ubuntu.sh`. Then open **Crisp Automation**
-from the app grid (Super key, type "Crisp") and right-click its dock icon > **Pin to Dash**.
-Updates keep working. If it ever fails to start, a popup points to
-`~/.crisp_email_agent/launcher.log`.
+**Windows:** double-click `run_windows.bat` once. It finishes the setup if needed, creates a
+**Crisp Automation** shortcut on the Desktop and in the Start menu, and opens the app; the black
+window closes by itself. From then on, open **Crisp Automation** from the Desktop or Start menu
+(right-click it > **Pin to taskbar** to keep it there). No console window opens, also not for
+the automation or its browser. `run_windows.bat console` still shows every message, for
+troubleshooting.
+
+**Ubuntu:** run `bash run_ubuntu.sh` once (or `bash install_launcher_ubuntu.sh`). It adds
+**Crisp Automation** to the app grid (Super key, type "Crisp"); right-click its dock icon >
+**Pin to Dash**.
+
+Both: **Settings > Open like an app > Create shortcut** does the same from inside the app (use it
+again after moving the app folder). Updates keep working, because the shortcut points at this
+folder. If the app ever fails to start, an error box shows the reason and it is saved in
+`~/.crisp_email_agent/app.log`.
 
 ## Shortcut behavior
 

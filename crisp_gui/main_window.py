@@ -267,6 +267,7 @@ class MainWindow(QMainWindow):
         self._team_signal = _SheetSignal(self)
         self._team_signal.done.connect(self._team_done)
         self.results_page.runs.clicked.connect(lambda: self.navigate(RUNS))
+        self.settings.make_shortcut.clicked.connect(self.make_shortcut)
         c.browse.clicked.connect(self.browse_csv)
         c.dnc_browse.clicked.connect(self.browse_dnc)
         c.source.changed.connect(self._source_changed)
@@ -415,6 +416,8 @@ class MainWindow(QMainWindow):
         self.nav_buttons[NAV_FOR[index]].setChecked(True)
         self.page_title.setText(self._title_for(index))
         if index == SETTINGS:
+            from . import desktop_shortcut as ds
+            self.settings.shortcut_status.setText("Shortcut already created." if ds.installed() else "")
             exists = self.profile_dir.exists()
             self.settings.profile_state.setText(
                 "Profile exists. Your Crisp login will be reused." if exists
@@ -436,6 +439,19 @@ class MainWindow(QMainWindow):
             self.team_timer.stop()
         self._refresh_nav_icons()
         self._style_run_button()
+
+    def make_shortcut(self):
+        from . import desktop_shortcut as ds
+        try:
+            made = ds.install()
+        except (RuntimeError, OSError) as exc:
+            self.settings.shortcut_status.setText(str(exc))
+            return
+        where = ("the Desktop and the Start menu. To pin it: right-click it > Pin to taskbar."
+                 if sys.platform == "win32" else
+                 "the app grid (Super key, type Crisp). To keep it in the dock: right-click > Pin to Dash.")
+        self.settings.shortcut_status.setText(f"Done: open Crisp Automation from {where}")
+        self._gui_line("Shortcut created: " + ", ".join(str(p) for p in made))
 
     def _title_for(self, index: int) -> str:
         if index == EDITOR:
