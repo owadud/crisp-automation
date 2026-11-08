@@ -21,7 +21,7 @@ from PySide6.QtGui import QDesktopServices, QGuiApplication, QKeySequence, QShor
 from PySide6.QtWidgets import (
     QTableWidgetItem,
     QApplication, QButtonGroup, QFileDialog, QFrame, QHBoxLayout, QLabel,
-    QMainWindow, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
+    QMainWindow, QMenu, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from . import run_state as rs
@@ -34,6 +34,7 @@ from .icons import icon, logo_pixmap
 from .diagnostics import build_zip
 from .preview_dialog import preview_rows, show_preview
 from . import campaign_store as cs
+from . import import_dialog, results_sync
 from .models import RowsModel
 from .pages import (ActivityPage, CampaignPage, CampaignsPage, HistoryPage, ListsPage, ResultsPage, SettingsPage,
                     TeamPage)
@@ -96,6 +97,7 @@ class MainWindow(QMainWindow):
         self.profile_dir = Path(profile_dir or PROFILE_DIR)
         self.runner = AgentRunner(agent_script or AGENT_SCRIPT, self)
         self.campaign_store = cs.CampaignStore(self.data_dir / "campaigns.json")
+        self.sync_sources = results_sync.SyncSources(self.data_dir / "results_sources.json")
         self.queue_ctl = QueueController(self.campaign_store, self.launch_campaign, self.runner,
                                          agent_script or AGENT_SCRIPT, self.prefs_parallel, self)
         self.updater = UpdateController(GITHUB_REPO, ROOT, APP_VERSION, self)
@@ -269,6 +271,7 @@ class MainWindow(QMainWindow):
         self._team_signal.done.connect(self._team_done)
         self.results_page.runs.clicked.connect(lambda: self.navigate(RUNS))
         self.results_page.import_sends.clicked.connect(self.import_earlier_sends)
+        self.results_page.sync_now.clicked.connect(self.sync_now)
         self._import_signal = _SheetSignal(self)
         self._import_signal.done.connect(self._import_read)
         self.settings.make_shortcut.clicked.connect(self.make_shortcut)
@@ -457,66 +460,93 @@ class MainWindow(QMainWindow):
         self.settings.shortcut_status.setText(f"Done: open Crisp Automation from {where}")
         self._gui_line("Shortcut created: " + ", ".join(str(p) for p in made))
 
+    # ============================================================ import / sync recorded sends
     def import_earlier_sends(self):
-        """Read the open campaign's list (CSV or Sheet) for sends it already records."""
+        """Choose any list (CSV or Sheet tab) and add the sends it records; optionally keep it synced."""
         v = self.campaign_values()
-        sheet = v.get("source") == "sheet"
-        if sheet and not (v.get("sheet_url") and v.get("sheet_tab")):
-            W.inform(self, "Open a campaign first", "Open the campaign whose list holds the earlier sends "
-                     "(Campaigns > Open), then try again.")
+        prefill = {"kind": v.get("source") or "csv", "csv": v.get("csv", ""), "sheet_url": v.get("sheet_url", ""),
+                   "tab": v.get("sheet_tab", ""), "key": v.get("google_key", ""),
+                   "campaign": self._selected_campaign() or self.campaign_name(v),
+                   "reference": v.get("reference", "")}
+        if prefill["kind"] != "sheet" and not prefill["csv"]:
+            prefill["kind"] = "sheet"
+        chosen = import_dialog.ask_source(self, self.tm, prefill, self.results.campaigns(), self._sheet_factory)
+        if not chosen:
             return
-        if not sheet and not v.get("csv"):
-            W.inform(self, "Open a campaign first", "Open the campaign whose CSV holds the earlier sends.")
+        keep = chosen.pop("keep", False)
+        src = self.sync_sources.add(chosen) if keep else dict(chosen, id="")
+        self._run_sync([src], then=None)
+
+    def sync_now(self):
+        if not self.sync_sources.items:
+            W.inform(self, "No synced lists", "Click Import or sync…, choose a list and tick Keep in sync.")
             return
-        self.results_page.import_sends.setEnabled(False)
-        self.results_page.import_sends.setText("Reading the list…")
+        self._run_sync(list(self.sync_sources.items), then=None)
+
+    def _run_sync(self, sources, then):
+        """Read the lists in the background, then show what was added (and continue with `then`)."""
+        r = self.results_page
+        for b in (r.import_sends, r.sync_now, r.refresh):
+            b.setEnabled(False)
+        r.sync_info.setText(f"Reading {len(sources)} list(s)…")
+        self._after_sync = then
 
         def work():
             try:
-                if sheet:
-                    src = self._sheet_factory(v["sheet_url"], v["sheet_tab"], v["google_key"])
-                    rows, header = src.download()
-                    source = f"Sheet tab {v['sheet_tab']}"
-                else:
-                    with open(Path(v["csv"]).expanduser(), encoding="utf-8-sig", newline="") as f:
-                        reader = csv.DictReader(f)
-                        header, rows = list(reader.fieldnames or []), list(reader)
-                    source = Path(v["csv"]).name
-                found = cr.sends_from_list(rows, header, self.campaign_name(v), v.get("reference", ""), source)
-                self._import_signal.done.emit("import", (found, source), None)
+                reports = results_sync.sync(sources, self._sheet_factory, self.history_file)
+                self._import_signal.done.emit("sync", reports, None)
             except Exception as exc:  # noqa: BLE001
-                self._import_signal.done.emit("import", None, str(exc))
+                self._import_signal.done.emit("sync", None, str(exc))
         threading.Thread(target=work, daemon=True).start()
 
-    def _import_read(self, _kind, result, error):
-        b = self.results_page.import_sends
-        b.setEnabled(True)
-        b.setText("Import earlier sends…")
+    def _import_read(self, _kind, reports, error):
+        r = self.results_page
+        for b in (r.import_sends, r.sync_now, r.refresh):
+            b.setEnabled(True)
+        then, self._after_sync = getattr(self, "_after_sync", None), None
         if error:
-            W.inform(self, "Could not read the list", error)
+            W.inform(self, "Could not sync", error)
+            self._render_sync_info()
             return
-        (rows, counts), source = result
-        name = self.campaign_name()
-        if not rows:
-            W.inform(self, "Nothing to import", f"No rows in {source} are marked Mail Sent"
-                     + (f" with Reference “{self.campaign.reference.text()}”" if self.campaign.reference.text()
-                        else "") + ".")
-            return
-        notes = [f"{counts['found']} sent row(s) found in {source}."]
-        if counts["other_reference"]:
-            notes.append(f"{counts['other_reference']} row(s) with another Reference are left out.")
-        if counts["no_link"]:
-            notes.append(f"{counts['no_link']} have no conversation link: they count as sent but cannot be checked.")
-        notes.append("Sends already in this campaign's history are skipped. The list itself is not changed.")
-        if not W.ask(self, f"Import into campaign “{name}”?", " ".join(notes), confirm="Import"):
-            return
-        added, skipped = cr.import_into_history(self.history_file, rows)
-        self._gui_line(f"Imported {added} earlier send(s) into '{name}' ({skipped} were already there).")
+        for rep in reports:
+            if rep.get("id") and not rep["error"]:
+                self.sync_sources.mark(rep["id"], rep)
+        added = sum(x["added"] for x in reports)
+        text = results_sync.report_text(reports)
+        self._gui_line("Synced lists: " + text.replace("\n", " · "))
         self.refresh_results()
-        if name in self.results.campaigns():
-            self.results_page.campaign.setCurrentText(name)
-        W.inform(self, "Imported", f"{added} send(s) added to “{name}”, {skipped} were already there. "
-                 "Click Refresh statuses to read them from Crisp.")
+        names = {x["campaign"] for x in reports if not x["error"]}
+        if len(names) == 1 and next(iter(names)) in self.results.campaigns():
+            r.campaign.setCurrentText(next(iter(names)))
+        self._render_sync_info()
+        if then is not None:
+            then()
+        else:
+            W.inform(self, "Imported" if added else "Nothing new", text)
+
+    def _render_sync_info(self):
+        r = self.results_page
+        items = self.sync_sources.items
+        r.sync_now.setVisible(bool(items))
+        r.synced.setVisible(bool(items))
+        menu = QMenu(r.synced)
+        for item in items:
+            act = menu.addAction(f"Stop syncing: {results_sync.source_label(item)} → {item.get('campaign')}")
+            act.triggered.connect(lambda _c=False, sid=item["id"]: self._remove_sync(sid))
+        r.synced.setMenu(menu)
+        if not items:
+            r.sync_info.setText("")
+            return
+        parts = []
+        for item in items:
+            last = item.get("last_synced", "")
+            parts.append(f"{results_sync.source_label(item)} → {item.get('campaign')}"
+                         + (f" (synced {last[5:16]})" if last else ""))
+        r.sync_info.setText("Kept in sync before every refresh: " + "; ".join(parts))
+
+    def _remove_sync(self, sid):
+        self.sync_sources.remove(sid)
+        self._render_sync_info()
 
     def _title_for(self, index: int) -> str:
         if index == EDITOR:
@@ -1364,6 +1394,7 @@ class MainWindow(QMainWindow):
     def refresh_results(self):
         """Load history.csv sends into the results store and redraw the page."""
         r = self.results_page
+        self._render_sync_info()
         if self.results.sync_history(sc.read_history(self.history_file)):
             self.results.save()
         current = self._selected_campaign()
@@ -1463,10 +1494,14 @@ class MainWindow(QMainWindow):
         if header and header.text() == "Conversation link" and item and item.text().startswith("http"):
             QDesktopServices.openUrl(QUrl(item.text()))
 
-    def refresh_statuses(self):
-        """Open each recorded conversation link in Crisp (read-only) and save the statuses."""
+    def refresh_statuses(self, synced: bool = False):
+        """Open each recorded conversation link in Crisp (read-only) and save the statuses.
+        Lists kept in sync are read first, so sends made anywhere are included."""
         if self.runner.is_running() or self.updater.busy:
             W.inform(self, "Busy", "Wait until the current run or check has finished.")
+            return
+        if self.sync_sources.items and synced is not True:
+            self._run_sync(list(self.sync_sources.items), then=lambda: self.refresh_statuses(synced=True))
             return
         self.refresh_results()
         campaign = self._selected_campaign()

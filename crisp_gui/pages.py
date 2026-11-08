@@ -657,18 +657,22 @@ class ResultsPage(Page):
         row.addWidget(self.campaign, 1)
         self.refresh = button("Refresh statuses", "primary", "refresh", tm)
         self.runs = button("Runs and diagnostics", "ghost", "folder", tm, "text_muted")
-        self.import_sends = button("Import earlier sends…", "ghost", "file", tm, "text_muted")
-        self.import_sends.setToolTip("Adds sends that the open campaign's list already records (Mail Sent, "
-                                     "Sent At, Conversation link), e.g. from another computer or an older version.")
+        self.import_sends = button("Import or sync…", "ghost", "file", tm, "text_muted")
+        self.import_sends.setToolTip("Add sends recorded in any CSV or Google Sheet tab (Mail Sent, Sent At, "
+                                     "Conversation link), e.g. from another computer or an older version.")
+        self.sync_now = button("Sync now", "ghost", "refresh", tm, "text_muted")
+        self.synced = button("Synced lists", "ghost", "campaign", tm, "text_muted")
         self.stop = button("Stop", "dangerOutline", "stop", tm)
         self.stop.hide()
         row.addWidget(self.refresh)
         row.addWidget(self.stop)
         card.body.addLayout(row)
         links = ResponsiveRow(min_item_width=200, spacing=8)     # wraps on narrow windows
-        links.add(self.import_sends)
-        links.add(self.runs)
+        for b in (self.import_sends, self.sync_now, self.synced, self.runs):
+            links.add(b)
         card.body.addWidget(links)
+        self.sync_info = label("", "faint", wrap=True)
+        card.body.addWidget(self.sync_info)
         self.progress = QProgressBar()
         self.progress.setRange(0, 1000)
         self.progress.setTextVisible(False)

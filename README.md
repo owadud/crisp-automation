@@ -250,6 +250,13 @@ is typed, sent, resolved or changed.
   the split stays even, also across runs. The preview table and the live confirmation show which
   shortcut each row is expected to get. Compare the versions in Campaign Results > Compare.
   All shortcuts must use the same Email subject.
+- **Import or sync… (3.8.3)**: Results only knows sends made on THIS computer. To add sends made on
+  another computer or with an older version, click **Import or sync…**, choose any Google Sheet tab
+  (link + tab + key) or CSV file, the campaign they belong to and, optionally, a Reference (only
+  your rows). Rows with Mail Sent ticked come in with their Sent At time and conversation link; the
+  list is only read. Tick **Keep in sync** and that list is read again before every **Refresh
+  statuses** (or click **Sync now**), so sends from every computer appear. **Synced lists** stops
+  syncing one. Importing twice never adds a send twice.
 - Data stays on this computer: `history.csv` (now also saves shortcut, version and the
   conversation link of every real send) and `campaign_results.json`. No message text and no
   screenshots are stored. Sends from before 3.7 have no saved link, so they cannot be checked.

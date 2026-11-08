@@ -42,3 +42,10 @@ browser_profile/
 dist/
 *.zip
 launch_ubuntu.sh
+
+# Campaign Results check data (contains customer emails)
+results_check/
+results_sources.json
+campaigns.json
+pace.json*
+*.jsonl
