@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import shutil
 import sys
@@ -267,6 +268,9 @@ class MainWindow(QMainWindow):
         self._team_signal = _SheetSignal(self)
         self._team_signal.done.connect(self._team_done)
         self.results_page.runs.clicked.connect(lambda: self.navigate(RUNS))
+        self.results_page.import_sends.clicked.connect(self.import_earlier_sends)
+        self._import_signal = _SheetSignal(self)
+        self._import_signal.done.connect(self._import_read)
         self.settings.make_shortcut.clicked.connect(self.make_shortcut)
         c.browse.clicked.connect(self.browse_csv)
         c.dnc_browse.clicked.connect(self.browse_dnc)
@@ -452,6 +456,67 @@ class MainWindow(QMainWindow):
                  "the app grid (Super key, type Crisp). To keep it in the dock: right-click > Pin to Dash.")
         self.settings.shortcut_status.setText(f"Done: open Crisp Automation from {where}")
         self._gui_line("Shortcut created: " + ", ".join(str(p) for p in made))
+
+    def import_earlier_sends(self):
+        """Read the open campaign's list (CSV or Sheet) for sends it already records."""
+        v = self.campaign_values()
+        sheet = v.get("source") == "sheet"
+        if sheet and not (v.get("sheet_url") and v.get("sheet_tab")):
+            W.inform(self, "Open a campaign first", "Open the campaign whose list holds the earlier sends "
+                     "(Campaigns > Open), then try again.")
+            return
+        if not sheet and not v.get("csv"):
+            W.inform(self, "Open a campaign first", "Open the campaign whose CSV holds the earlier sends.")
+            return
+        self.results_page.import_sends.setEnabled(False)
+        self.results_page.import_sends.setText("Reading the list…")
+
+        def work():
+            try:
+                if sheet:
+                    src = self._sheet_factory(v["sheet_url"], v["sheet_tab"], v["google_key"])
+                    rows, header = src.download()
+                    source = f"Sheet tab {v['sheet_tab']}"
+                else:
+                    with open(Path(v["csv"]).expanduser(), encoding="utf-8-sig", newline="") as f:
+                        reader = csv.DictReader(f)
+                        header, rows = list(reader.fieldnames or []), list(reader)
+                    source = Path(v["csv"]).name
+                found = cr.sends_from_list(rows, header, self.campaign_name(v), v.get("reference", ""), source)
+                self._import_signal.done.emit("import", (found, source), None)
+            except Exception as exc:  # noqa: BLE001
+                self._import_signal.done.emit("import", None, str(exc))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _import_read(self, _kind, result, error):
+        b = self.results_page.import_sends
+        b.setEnabled(True)
+        b.setText("Import earlier sends…")
+        if error:
+            W.inform(self, "Could not read the list", error)
+            return
+        (rows, counts), source = result
+        name = self.campaign_name()
+        if not rows:
+            W.inform(self, "Nothing to import", f"No rows in {source} are marked Mail Sent"
+                     + (f" with Reference “{self.campaign.reference.text()}”" if self.campaign.reference.text()
+                        else "") + ".")
+            return
+        notes = [f"{counts['found']} sent row(s) found in {source}."]
+        if counts["other_reference"]:
+            notes.append(f"{counts['other_reference']} row(s) with another Reference are left out.")
+        if counts["no_link"]:
+            notes.append(f"{counts['no_link']} have no conversation link: they count as sent but cannot be checked.")
+        notes.append("Sends already in this campaign's history are skipped. The list itself is not changed.")
+        if not W.ask(self, f"Import into campaign “{name}”?", " ".join(notes), confirm="Import"):
+            return
+        added, skipped = cr.import_into_history(self.history_file, rows)
+        self._gui_line(f"Imported {added} earlier send(s) into '{name}' ({skipped} were already there).")
+        self.refresh_results()
+        if name in self.results.campaigns():
+            self.results_page.campaign.setCurrentText(name)
+        W.inform(self, "Imported", f"{added} send(s) added to “{name}”, {skipped} were already there. "
+                 "Click Refresh statuses to read them from Crisp.")
 
     def _title_for(self, index: int) -> str:
         if index == EDITOR:

@@ -374,3 +374,55 @@ def export_csv(rows, path: Path) -> Path:
         for r in rows:
             w.writerow(table_row(r))
     return Path(path)
+
+
+# ------------------------------------------------------------------ earlier sends recorded in a list
+def sends_from_list(rows, header, campaign: str, reference: str = "", source: str = "") -> tuple[list[dict], dict]:
+    """History rows for real sends that a list (CSV or Sheet tab) already records:
+    Mail Sent ticked, with Sent At, Status and Conversation link written by the app.
+    Rows with another person's Reference are left out. Nothing is changed in the list."""
+    import recipient_rules as rules
+    colmap = rules.map_columns(header)
+    rules.apply_aliases(rows, colmap)
+    ref = str(reference or "").strip().lower()
+    counts = {"found": 0, "other_reference": 0, "no_link": 0}
+    out = []
+    for i, row in enumerate(rows):
+        email = str(row.get("Contact Email", "")).strip().lower()
+        if not email or not rules.is_checked(row.get("Mail Sent")):
+            continue
+        row_ref = str(row.get("Reference", "")).strip().lower()
+        if ref and row_ref and row_ref != ref:
+            counts["other_reference"] += 1
+            continue
+        link = str(row.get("Conversation link", "")).strip()
+        if "session_" not in link:
+            link = ""
+            counts["no_link"] += 1
+        status = str(row.get("Status", "")).strip().lower()
+        counts["found"] += 1
+        out.append({"Time": str(row.get("Sent At", "")).strip(), "Email": email,
+                    "Name": str(row.get("Full Name", "")).strip(),
+                    "Result": "Unconfirmed" if status == "unconfirmed" else "Sent",
+                    "Campaign": campaign, "Mode": "live", "Error": "imported from the list",
+                    "Row": i + 1, "CSV": source, "Link": link})
+    return out, counts
+
+
+def import_into_history(path: Path, new_rows: list[dict]) -> tuple[int, int]:
+    """Append sends to history.csv, skipping any email already recorded as a real
+    send in the same campaign (re-importing is harmless). Returns (added, skipped)."""
+    import send_control as sc
+    have = {(str(r.get("Campaign", "")).strip().lower(), str(r.get("Email", "")).strip().lower())
+            for r in sc.read_history(path)
+            if r.get("Mode") == "live" and r.get("Result") in ("Sent", "Unconfirmed")}
+    added = skipped = 0
+    for r in new_rows:
+        key = (r["Campaign"].strip().lower(), r["Email"])
+        if key in have:
+            skipped += 1
+            continue
+        sc.append_history(path, **r)
+        have.add(key)
+        added += 1
+    return added, skipped
