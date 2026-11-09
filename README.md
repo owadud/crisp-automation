@@ -315,6 +315,14 @@ window closes by itself. From then on, open **Crisp Automation** from the Deskto
 the automation or its browser. `run_windows.bat console` still shows every message, for
 troubleshooting.
 
+**macOS (MacBook, Apple silicon or Intel):** once, open Terminal in the app folder (Finder:
+right-click the folder > New Terminal at Folder) and run `bash setup_mac.sh`. It installs what the
+app needs (Python from Homebrew if missing, or tells you where to get it) and adds **Crisp
+Automation** to your Applications folder. From then on open it from Launchpad, Applications or
+Spotlight (Cmd+Space, type Crisp); keep it in the Dock with right-click > Options > Keep in Dock.
+The first time the app opens Chromium, macOS may ask to allow it. Conversation links open in
+Google Chrome if it is installed. `bash run_mac.sh` starts it from Terminal for troubleshooting.
+
 **Ubuntu:** run `bash run_ubuntu.sh` once (or `bash install_launcher_ubuntu.sh`). It adds
 **Crisp Automation** to the app grid (Super key, type "Crisp"); right-click its dock icon >
 **Pin to Dash**.

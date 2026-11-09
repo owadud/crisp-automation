@@ -454,10 +454,7 @@ class MainWindow(QMainWindow):
         except (RuntimeError, OSError) as exc:
             self.settings.shortcut_status.setText(str(exc))
             return
-        where = ("the Desktop and the Start menu. To pin it: right-click it > Pin to taskbar."
-                 if sys.platform == "win32" else
-                 "the app grid (Super key, type Crisp). To keep it in the dock: right-click > Pin to Dash.")
-        self.settings.shortcut_status.setText(f"Done: open Crisp Automation from {where}")
+        self.settings.shortcut_status.setText(f"Done: open Crisp Automation from {ds.where_text()}")
         self._gui_line("Shortcut created: " + ", ".join(str(p) for p in made))
 
     # ============================================================ import / sync recorded sends

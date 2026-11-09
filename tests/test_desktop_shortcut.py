@@ -66,3 +66,32 @@ def test_agent_runs_without_a_console_window_on_windows(tmp_path, monkeypatch):
     assert agent_process.agent_python() == str(tmp_path / "pythonw.exe")
     monkeypatch.setattr(agent_process.sys, "platform", "linux")
     assert agent_process.agent_python() == str(exe)
+
+
+# ------------------------------------------------------------------ macOS
+def test_mac_app_bundle_opens_the_app_without_terminal(tmp_path):
+    import plistlib
+    root, home = fake_app(tmp_path, windows=False), tmp_path / "home"
+    (root / "VERSION").write_text("3.9\n")
+    registered = []
+    made = ds.mac_app(root, home, register=registered.append)
+    app = home / "Applications" / "Crisp Automation.app"
+    assert made == [app] and registered == [app]
+    info = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
+    assert info["CFBundleExecutable"] == "crisp-automation" and info["CFBundleIdentifier"] == ds.BUNDLE_ID
+    assert info["CFBundleShortVersionString"] == "3.9" and info["CFBundlePackageType"] == "APPL"
+    launcher = (app / "Contents" / "MacOS" / "crisp-automation").read_text()
+    assert launcher.startswith("#!/bin/bash")
+    assert f"cd '{root}'" in launcher and f"exec '{root / '.venv/bin/python'}' '{root / 'gui_app.py'}'" in launcher
+    icon = app / "Contents" / "Resources" / "AppIcon.icns"
+    assert (icon.exists() and info["CFBundleIconFile"] == "AppIcon") or "CFBundleIconFile" not in info
+
+
+def test_mac_app_needs_setup_first(tmp_path):
+    with pytest.raises(RuntimeError, match="setup_mac.sh"):
+        ds.mac_app(tmp_path, tmp_path / "home", register=lambda a: None)
+
+
+def test_mac_quotes_paths_with_spaces_and_quotes():
+    assert ds._sh_quote("/Users/o/Crisp App (1)/x") == "'/Users/o/Crisp App (1)/x'"
+    assert ds._sh_quote("it's") == r"'it'\''s'"

@@ -32,6 +32,11 @@ def _log_crash(text: str) -> None:
     elif sys.platform == "win32":
         import ctypes
         ctypes.windll.user32.MessageBoxW(None, msg, "Crisp Automation", 0x10)
+    elif sys.platform == "darwin":
+        import subprocess
+        text = msg[:1500].replace("\\", "\\\\").replace('"', '\\"')
+        subprocess.run(["osascript", "-e", f'display alert "Crisp Automation" message "{text}" as critical'],
+                       capture_output=True, timeout=120)
     else:
         print(msg, file=sys.__stderr__ or sys.stdout)
 

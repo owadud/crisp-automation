@@ -32,3 +32,12 @@ def test_open_url_prefers_chrome_and_falls_back():
     def broken(cmd, **kw):
         raise OSError("gone")
     assert browser.open_url(URL, chrome="/x/chrome", popen=broken, fallback=fallback.append) == "default"
+
+
+def test_mac_opens_links_with_open_a_chrome(monkeypatch):
+    monkeypatch.setattr(browser.sys, "platform", "darwin")
+    app = "/Applications/Google Chrome.app"
+    assert browser.find_chrome(exists=lambda p: str(p).replace("\\", "/").startswith(app)) == app
+    launched = []
+    assert browser.open_url(URL, chrome=app, popen=lambda cmd, **kw: launched.append(cmd)) == "chrome"
+    assert launched == [["open", "-a", app, URL]]

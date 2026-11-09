@@ -32,18 +32,18 @@ def windowed_python(root: Path = ROOT) -> Path:
     return root / ".venv" / "bin" / "python"
 
 
-def make_icon(path: Path, ico: bool) -> Path | None:
-    """Draw the app logo into a .png or .ico. Returns None if Qt cannot draw it."""
+def make_icon(path: Path, ico: bool = False) -> Path | None:
+    """Draw the app logo into a .png, .ico (Windows) or .icns (macOS), by the file's
+    extension. Returns None if Qt cannot draw or write it (the OS default icon is used)."""
+    fmt = {".ico": "ICO", ".icns": "ICNS"}.get(Path(path).suffix.lower(), "ICO" if ico else "PNG")
     try:
         from PySide6.QtGui import QGuiApplication, QImage
         app = QGuiApplication.instance() or QGuiApplication([])  # noqa: F841 (needed to paint)
         from .icons import logo_pixmap
         path.parent.mkdir(parents=True, exist_ok=True)
-        img: QImage = logo_pixmap("#5b5bd6", 256).toImage()
-        if img.save(str(path), "ICO" if ico else "PNG"):
+        img: QImage = logo_pixmap("#5b5bd6", 512 if fmt == "ICNS" else 256).toImage()
+        if img.save(str(path), fmt):
             return path
-        if ico:   # no ICO writer: Windows shortcuts can use the python icon instead
-            return None
     except Exception:  # noqa: BLE001
         return None
     return None
@@ -126,19 +126,97 @@ def linux_launcher(root: Path = ROOT, home: Path | None = None) -> list[Path]:
     return [desktop]
 
 
+# ------------------------------------------------------------------ macOS
+BUNDLE_ID = "com.crispautomation.desktop"
+
+
+def mac_app(root: Path = ROOT, home: Path | None = None, register=None) -> list[Path]:
+    """~/Applications/Crisp Automation.app: a small app bundle that starts this
+    folder's app (no Terminal). It shows in Launchpad, Spotlight and Applications;
+    keep it in the Dock with right-click > Options > Keep in Dock."""
+    home = home or Path.home()
+    python = root / ".venv" / "bin" / "python"
+    if not python.exists():
+        raise RuntimeError("Run the one-time setup first: bash setup_mac.sh")
+    app = home / "Applications" / f"{APP_NAME}.app"
+    contents = app / "Contents"
+    (contents / "MacOS").mkdir(parents=True, exist_ok=True)
+    (contents / "Resources").mkdir(parents=True, exist_ok=True)
+    icon = make_icon(contents / "Resources" / "AppIcon.icns")
+    plist = {
+        "CFBundleName": APP_NAME, "CFBundleDisplayName": APP_NAME, "CFBundleIdentifier": BUNDLE_ID,
+        "CFBundleExecutable": "crisp-automation", "CFBundlePackageType": "APPL",
+        "CFBundleShortVersionString": _version(root), "CFBundleVersion": _version(root),
+        "LSMinimumSystemVersion": "11.0", "NSHighResolutionCapable": True,
+    }
+    if icon:
+        plist["CFBundleIconFile"] = "AppIcon"
+    import plistlib
+    (contents / "Info.plist").write_bytes(plistlib.dumps(plist))
+    log = "$HOME/.crisp_email_agent/launcher.log"
+    launcher = contents / "MacOS" / "crisp-automation"
+    launcher.write_text("\n".join([
+        "#!/bin/bash",
+        "# Starts Crisp Automation from its folder (made by setup_mac.sh / Settings > Open like an app).",
+        f'cd {_sh_quote(root)} || exit 1',
+        f'mkdir -p "$HOME/.crisp_email_agent"',
+        f'exec {_sh_quote(python)} {_sh_quote(root / "gui_app.py")} >>"{log}" 2>&1',
+        "",
+    ]), encoding="utf-8")
+    launcher.chmod(0o755)
+    (register or _register_mac_app)(app)
+    return [app]
+
+
+def _sh_quote(text) -> str:
+    return "'" + str(text).replace("'", "'\\''") + "'"
+
+
+def _version(root: Path) -> str:
+    try:
+        return (root / "VERSION").read_text(encoding="utf-8").strip() or "1.0"
+    except OSError:
+        return "1.0"
+
+
+def _register_mac_app(app: Path) -> None:
+    """Tell Launchpad / Spotlight about the app (and refresh its icon). Optional."""
+    lsregister = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework"
+                  "/Support/lsregister")
+    for cmd in (["touch", str(app)], [lsregister, "-f", str(app)]):
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+
+# ------------------------------------------------------------------ all
 def install(root: Path = ROOT) -> list[Path]:
     if sys.platform == "win32":
         return windows_shortcuts(root)
+    if sys.platform == "darwin":
+        return mac_app(root)
     if sys.platform.startswith("linux"):
         return linux_launcher(root)
-    raise RuntimeError("Shortcuts are made on Windows and Ubuntu only.")
+    raise RuntimeError("Shortcuts are made on Windows, macOS and Ubuntu only.")
 
 
 def installed(root: Path = ROOT) -> bool:
     if sys.platform == "win32":
         return (Path(os.environ.get("APPDATA", str(Path.home()))) / "Microsoft" / "Windows" / "Start Menu"
                 / "Programs" / f"{APP_NAME}.lnk").exists()
+    if sys.platform == "darwin":
+        return (Path.home() / "Applications" / f"{APP_NAME}.app").exists()
     return (Path.home() / ".local" / "share" / "applications" / "crisp-automation.desktop").exists()
+
+
+def where_text() -> str:
+    if sys.platform == "win32":
+        return "the Desktop and the Start menu. To pin it: right-click it > Pin to taskbar."
+    if sys.platform == "darwin":
+        return ("Launchpad or Applications (or Spotlight: Cmd+Space, type Crisp). To keep it in the Dock: "
+                "right-click its Dock icon > Options > Keep in Dock.")
+    return "the app grid (Super key, type Crisp). To keep it in the dock: right-click > Pin to Dash."
 
 
 if __name__ == "__main__":
@@ -148,8 +226,4 @@ if __name__ == "__main__":
     except RuntimeError as exc:
         print(exc)
         sys.exit(1)
-    if sys.platform == "win32":
-        print("Open 'Crisp Automation' from the Desktop or the Start menu. To pin it: right-click > Pin to taskbar.")
-    else:
-        print("Open 'Crisp Automation' from the app grid (Super key, type Crisp). "
-              "To keep it in the dock: right-click its icon > Pin to Dash.")
+    print(f"Open 'Crisp Automation' from {where_text()}")

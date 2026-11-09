@@ -21,8 +21,10 @@ def find_chrome(env=os.environ, which=shutil.which, exists=lambda p: Path(p).is_
                     return str(path)
         return which("chrome") or ""
     if sys.platform == "darwin":
-        mac = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-        return mac if exists(mac) else ""
+        for app in ("/Applications/Google Chrome.app", str(Path.home() / "Applications" / "Google Chrome.app")):
+            if exists(Path(app) / "Contents" / "MacOS" / "Google Chrome"):
+                return app
+        return ""
     for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
         found = which(name)
         if found:
@@ -36,7 +38,8 @@ def open_url(url: str, chrome: str | None = None, popen=subprocess.Popen, fallba
     if chrome:
         try:
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-            popen([chrome, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            cmd = ["open", "-a", chrome, url] if chrome.endswith(".app") else [chrome, url]   # macOS: open -a
+            popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                   creationflags=flags if sys.platform == "win32" else 0,
                   start_new_session=sys.platform != "win32")
             return "chrome"

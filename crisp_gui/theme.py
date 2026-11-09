@@ -64,11 +64,11 @@ DARK = Palette(
 )
 
 _FONT_CANDIDATES = (
-    "Inter", "Segoe UI Variable Text", "Segoe UI", "SF Pro Text",
+    "Inter", "Segoe UI Variable Text", "Segoe UI", "SF Pro Text", ".AppleSystemUIFont", "Helvetica Neue",
     "Ubuntu", "Cantarell", "Noto Sans", "DejaVu Sans",
 )
 _MONO_CANDIDATES = (
-    "JetBrains Mono", "Cascadia Mono", "Consolas", "SF Mono",
+    "JetBrains Mono", "Cascadia Mono", "Consolas", "SF Mono", "Menlo",
     "Ubuntu Mono", "DejaVu Sans Mono", "Liberation Mono", "Monospace",
 )
 
