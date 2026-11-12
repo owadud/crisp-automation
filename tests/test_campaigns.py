@@ -367,6 +367,7 @@ def test_gui_queue_of_two_campaigns_runs_both_with_one_confirmation(qapp, tmp_pa
     for k in ("FAKE_FAIL_EMAIL", "FAKE_LOGIN_WAIT", "FAKE_STEP_DELAY"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("FAKE_ENV_OUT", str(tmp_path / "env.json"))
+    monkeypatch.setenv("CRISP_API_CONFIG", str(tmp_path / "crisp_api.json"))   # never the real token
     prefs = Preferences(QSettings(str(tmp_path / "p.ini"), QSettings.IniFormat))
     w = MainWindow(ThemeManager(qapp, "light"), prefs, agent_script=tg.FAKE, profile_dir=tmp_path / "profile",
                    data_dir=tmp_path / "data")

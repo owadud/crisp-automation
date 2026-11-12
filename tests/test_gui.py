@@ -58,6 +58,7 @@ def env(tmp_path, monkeypatch):
         monkeypatch.delenv(k, raising=False)
     out = tmp_path / "env.json"
     monkeypatch.setenv("FAKE_ENV_OUT", str(out))
+    monkeypatch.setenv("CRISP_API_CONFIG", str(tmp_path / "crisp_api.json"))   # never the real token
     return out
 
 

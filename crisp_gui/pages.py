@@ -8,7 +8,7 @@ from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
     QComboBox,
     QAbstractItemView, QFrame, QHBoxLayout, QHeaderView, QPlainTextEdit, QProgressBar, QScrollArea,
-    QSizePolicy, QTabWidget, QTableView, QTableWidget, QVBoxLayout, QWidget,
+    QLineEdit, QSizePolicy, QTabWidget, QTableView, QTableWidget, QVBoxLayout, QWidget,
 )
 
 from .config import APP_VERSION
@@ -426,6 +426,29 @@ class SettingsPage(Page):
         card.body.addLayout(row)
         self.shortcut_status = label("", "faint", wrap=True)
         card.body.addWidget(self.shortcut_status)
+        self.add(card)
+
+        card = Card("Crisp API", "Lets Campaign Results read delivered / read / replied straight from Crisp "
+                    "(no browser window). Create a token in Crisp: Settings > Workspace Settings > Advanced "
+                    "configuration > API Token > Generate Token. It is saved only on this computer.")
+        row = ResponsiveRow(min_item_width=200, spacing=12)
+        self.api_website = Field("Website ID", "Filled in from your conversation links.",
+                                 placeholder="e.g. 5b6a1eda-…")
+        self.api_identifier = Field("Token identifier", placeholder="Identifier")
+        self.api_key = Field("Token key", placeholder="Key")
+        self.api_key.edit.setEchoMode(QLineEdit.Password)
+        for f in (self.api_website, self.api_identifier, self.api_key):
+            row.add(f)
+        card.body.addWidget(row)
+        brow = QHBoxLayout()
+        self.api_save = button("Save and test", None, "check", tm, "text_muted")
+        self.api_remove = button("Remove token", "ghost")
+        brow.addWidget(self.api_save)
+        brow.addWidget(self.api_remove)
+        brow.addStretch()
+        card.body.addLayout(brow)
+        self.api_status = label("", "faint", wrap=True)
+        card.body.addWidget(self.api_status)
         self.add(card)
 
         self.updates_slot = QVBoxLayout()            # Updates card goes here (filled below)

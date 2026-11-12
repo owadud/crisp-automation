@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import shutil
 import sys
 import threading
@@ -15,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import send_control as sc  # noqa: E402
 import sheet_source as ss  # noqa: E402  (gspread is imported only when used)
 import campaign_results as cr  # noqa: E402
+import crisp_api  # noqa: E402  (Crisp REST API: read-only status tracking)
 
 from PySide6.QtCore import QObject, QProcess, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QKeySequence, QShortcut
@@ -41,6 +43,12 @@ from .pages import (ActivityPage, CampaignPage, CampaignsPage, HistoryPage, List
 from .queue_controller import QueueController
 from .theme import Palette, ThemeManager
 from .update_controller import UpdateController
+
+class _ApiSignal(QObject):
+    """Progress and results of a Crisp API status check (from a background thread)."""
+    progress = Signal(int, int)          # done, total
+    done = Signal(object, str)           # [(key, result)], error
+
 
 class _SheetSignal(QObject):
     """Carries a background Google result back to the window's thread."""
@@ -98,6 +106,8 @@ class MainWindow(QMainWindow):
         self.runner = AgentRunner(agent_script or AGENT_SCRIPT, self)
         self.campaign_store = cs.CampaignStore(self.data_dir / "campaigns.json")
         self.sync_sources = results_sync.SyncSources(self.data_dir / "results_sources.json")
+        # CRISP_API_CONFIG lets tests use a temporary file instead of the real token file.
+        self.api_config_path = Path(os.environ.get("CRISP_API_CONFIG") or crisp_api.CONFIG)
         self.queue_ctl = QueueController(self.campaign_store, self.launch_campaign, self.runner,
                                          agent_script or AGENT_SCRIPT, self.prefs_parallel, self)
         self.updater = UpdateController(GITHUB_REPO, ROOT, APP_VERSION, self)
@@ -275,6 +285,15 @@ class MainWindow(QMainWindow):
         self._import_signal = _SheetSignal(self)
         self._import_signal.done.connect(self._import_read)
         self.settings.make_shortcut.clicked.connect(self.make_shortcut)
+        self.settings.api_save.clicked.connect(self.save_api_token)
+        self.settings.api_remove.clicked.connect(self.remove_api_token)
+        self._api_signal = _ApiSignal(self)
+        self._api_signal.progress.connect(self._api_progress)
+        self._api_signal.done.connect(self._api_check_done)
+        self._api_test_signal = _SheetSignal(self)
+        self._api_test_signal.done.connect(self._api_tested)
+        self._api_stop = threading.Event()
+        self._api_checking = False
         c.browse.clicked.connect(self.browse_csv)
         c.dnc_browse.clicked.connect(self.browse_dnc)
         c.source.changed.connect(self._source_changed)
@@ -398,6 +417,7 @@ class MainWindow(QMainWindow):
         self.refresh_history()
         self.settings.parallel.edit.setText(str(self.prefs.parallel()))
         self.settings.parallel.edit.editingFinished.connect(self._save_parallel)
+        self._load_api_fields()
         notes = self.campaign_store.restore()
         for n in notes:
             self._gui_line(n)
@@ -1508,6 +1528,9 @@ class MainWindow(QMainWindow):
                      "No conversation links are recorded for this campaign yet. Links are saved for real sends "
                      "from version 3.7 on.")
             return
+        if crisp_api.configured(self._api_config()):
+            self._start_api_check(rows, campaign)
+            return
         minutes = max(1, round(len(rows) * 9 / 60))
         if not W.ask(self, f"Check {len(rows)} conversation(s) in Crisp?",
                      "Each conversation is opened and read in Chromium, one every few seconds. Nothing is typed, "
@@ -1539,9 +1562,137 @@ class MainWindow(QMainWindow):
         self._gui_line(f"Status check started for {len(rows)} conversation(s), read-only.")
 
     def _stop_status_check(self):
+        if self._api_checking:
+            self._api_stop.set()
+            self.results_page.progress_text.setText("Stopping…")
+            return
         if self.runner.is_running() and self._results_check:
             self.runner.request_stop()
             self.results_page.progress_text.setText("Stopping after the current page…")
+
+    # ============================================================ Crisp API (read-only)
+    def _api_config(self) -> dict:
+        return crisp_api.load_config(self.api_config_path)
+
+    def _load_api_fields(self):
+        cfg = self._api_config()
+        s = self.settings
+        s.api_website.edit.setText(cfg["website_id"] or self._website_from_history())
+        s.api_identifier.edit.setText(cfg["identifier"])
+        s.api_key.edit.setText(cfg["key"])
+        s.api_status.setText("Token saved. Refresh statuses reads from the Crisp API." if crisp_api.configured(cfg)
+                             else "No token yet: Refresh statuses opens conversations in Chromium instead.")
+
+    def _website_from_history(self) -> str:
+        return crisp_api.website_from_links(r.get("Link", "") for r in sc.read_history(self.history_file))
+
+    def save_api_token(self):
+        s = self.settings
+        cfg = {"website_id": s.api_website.text() or self._website_from_history(),
+               "identifier": s.api_identifier.text(), "key": s.api_key.text()}
+        if not crisp_api.configured(cfg):
+            s.api_status.setText("Fill in the website ID, the token identifier and the key.")
+            return
+        crisp_api.save_config(cfg, self.api_config_path)
+        s.api_website.edit.setText(cfg["website_id"])
+        s.api_save.setEnabled(False)
+        s.api_status.setText("Testing the token with Crisp…")
+
+        def work():
+            try:
+                site = self._api_factory(cfg).website()
+                self._api_test_signal.done.emit("api", site, None)
+            except Exception as exc:  # noqa: BLE001
+                self._api_test_signal.done.emit("api", None, str(exc))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _api_tested(self, _kind, site, error):
+        s = self.settings
+        s.api_save.setEnabled(True)
+        if error:
+            s.api_status.setText(f"Saved, but the test failed: {error}")
+            return
+        name = (site or {}).get("name") or (site or {}).get("domain") or "your website"
+        s.api_status.setText(f"Connected to {name}. Refresh statuses now reads from the Crisp API (read-only).")
+
+    def remove_api_token(self):
+        if not W.ask(self, "Remove the Crisp API token from this computer?",
+                     "Refresh statuses then opens conversations in Chromium again. The token itself stays valid "
+                     "in Crisp; revoke it there if you no longer need it.", confirm="Remove"):
+            return
+        Path(self.api_config_path).unlink(missing_ok=True)
+        self.settings.api_identifier.edit.clear()
+        self.settings.api_key.edit.clear()
+        self._load_api_fields()
+
+    def _api_factory(self, cfg: dict):
+        return crisp_api.CrispAPI(cfg["website_id"], cfg["identifier"], cfg["key"])
+
+    def _start_api_check(self, rows, campaign):
+        cfg = self._api_config()
+        if not W.ask(self, f"Read {len(rows)} conversation(s) through the Crisp API?",
+                     "Read-only: nothing is sent, changed or resolved. About 2 requests per conversation "
+                     "(your token allows 10,000 a day). No browser window opens.",
+                     details=[("Campaign", campaign or "All campaigns")], confirm="Start check"):
+            return
+        items = [(cr.rkey(x["campaign"], x["email"]), x["link"], x.get("sent_at", "")) for x in rows]
+        self._api_stop.clear()
+        self._api_checking, self._results_campaign = True, campaign
+        r = self.results_page
+        r.refresh.setEnabled(False)
+        r.stop.show()
+        r.progress.setValue(0)
+        r.progress.show()
+        r.progress_text.setText(f"Reading 0 of {len(items)} through the Crisp API…")
+        self._gui_line(f"Status check (Crisp API, read-only) started for {len(items)} conversation(s).")
+
+        def work():
+            api = self._api_factory(cfg)
+            out, error = [], ""
+            for i, (key, link, sent_at) in enumerate(items, start=1):
+                if self._api_stop.is_set():
+                    error = "Stopped."
+                    break
+                try:
+                    out.append((key, crisp_api.check(api, link, sent_at)))
+                except crisp_api.CrispAPIError as exc:
+                    error = str(exc)
+                    break
+                self._api_signal.progress.emit(i, len(items))
+            self._api_signal.done.emit(out, error)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _api_progress(self, done, total):
+        r = self.results_page
+        r.progress.setValue(int(1000 * done / max(1, total)))
+        r.progress_text.setText(f"Read {done} of {total} through the Crisp API…")
+
+    def _api_check_done(self, results, error):
+        self._api_checking = False
+        now = datetime.now()
+        problems = {}
+        for key, result in results:
+            if result.get("problem"):
+                problems[result["problem"]] = problems.get(result["problem"], 0) + 1
+            if key in self.results.recipients:
+                self.results.apply(key, result, now)
+        if results:
+            self.results.record_check(self._results_campaign or "(all)")
+        self.results.save()
+        r = self.results_page
+        r.refresh.setEnabled(True)
+        r.stop.hide()
+        r.progress.hide()
+        labels = {"not_found": "no longer in Crisp", "no_our_message": "without our message",
+                  "no_link": "without a link"}
+        extra = "; ".join(f"{n} {labels.get(k, k)}" for k, n in problems.items())
+        r.progress_text.setText(f"Read {len(results)} conversation(s) through the Crisp API."
+                                + (f" ({extra})" if extra else "") + (f" {error}" if error else ""))
+        self._gui_line(f"Status check (Crisp API) finished: {len(results)} conversation(s) read."
+                       + (f" {error}" if error else ""))
+        self.refresh_results()
+        if error and error != "Stopped.":
+            W.inform(self, "Status check stopped", error)
 
     def _render_check_progress(self, s):
         r = self.results_page

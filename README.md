@@ -250,6 +250,14 @@ is typed, sent, resolved or changed.
   the split stays even, also across runs. The preview table and the live confirmation show which
   shortcut each row is expected to get. Compare the versions in Campaign Results > Compare.
   All shortcuts must use the same Email subject.
+- **Crisp API (3.10)**: with a Crisp Website Token saved in **Settings > Crisp API**, **Refresh
+  statuses** reads every conversation straight from the Crisp REST API (read-only): delivered, read,
+  replied (exact time) and open/resolved, with no browser window and no sign-in. About 2 requests per
+  conversation; the token allows 10,000 a day. Create it in Crisp (workspace owner): Settings >
+  Workspace Settings > Advanced configuration > API Token > Generate Token, then paste the
+  identifier and key into the app and click **Save and test**. The token is stored only in
+  `~/.crisp_email_agent/crisp_api.json` on this computer. Without a token, Refresh statuses uses the
+  browser as before. Sending still uses the browser (the API cannot use saved Shortcuts).
 - **Import or sync… (3.8.3)**: Results only knows sends made on THIS computer. To add sends made on
   another computer or with an older version, click **Import or sync…**, choose any Google Sheet tab
   (link + tab + key) or CSV file, the campaign they belong to and, optionally, a Reference (only
