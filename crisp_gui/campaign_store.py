@@ -25,11 +25,14 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import send_control as sc  # noqa: E402
 
-DRAFT, READY, QUEUED, RUNNING, PAUSED, FINISHED, STOPPED, FAILED, UNCONFIRMED = (
-    "draft", "ready", "queued", "running", "paused", "finished", "stopped", "failed", "unconfirmed")
+DRAFT, READY, QUEUED, RUNNING, PAUSED, FINISHED, STOPPED, FAILED, UNCONFIRMED, SCHEDULED = (
+    "draft", "ready", "queued", "running", "paused", "finished", "stopped", "failed", "unconfirmed", "scheduled")
 STATUS_LABELS = {DRAFT: "Draft", READY: "Ready", QUEUED: "Queued", RUNNING: "Running", PAUSED: "Paused",
                  FINISHED: "Finished", STOPPED: "Stopped", FAILED: "Failed",
-                 UNCONFIRMED: "Unconfirmed: check Crisp"}
+                 UNCONFIRMED: "Unconfirmed: check Crisp", SCHEDULED: "Scheduled"}
+# A scheduled campaign that could not start within this many minutes of its time
+# (app closed, computer asleep) is never sent late: it is marked missed.
+MISSED_AFTER_MINUTES = 15
 
 # Settings that belong to the WHOLE app, never to one campaign (so several
 # campaigns can never multiply the sending speed).
@@ -53,6 +56,7 @@ class Campaign:
     note: str = ""                 # why it stopped / what to check
     last_run_dir: str = ""
     last: dict = field(default_factory=dict)   # sent / failed / skipped / elsewhere / eligible of the last run
+    schedule: dict = field(default_factory=dict)   # {"at": "YYYY-MM-DD HH:MM" Dhaka, "live": bool}
 
     @property
     def label(self) -> str:
@@ -232,6 +236,47 @@ class CampaignStore:
             c.status, c.note = (DRAFT if c.missing() else READY), "Checked in Crisp."
             self.save()
 
+    # ---------------------------------------------------------------- schedule
+    def schedule(self, cid: str, at: str, live: bool) -> None:
+        """Start this campaign at `at` (Dhaka, 'YYYY-MM-DD HH:MM'). `live` was confirmed
+        by the user when scheduling; it is never changed to live afterwards."""
+        c = self.campaigns[cid]
+        if c.missing():
+            raise ValueError(f"'{c.name}' is missing: {', '.join(c.missing())}.")
+        if c.status in (RUNNING, PAUSED, UNCONFIRMED):
+            raise ValueError(f"'{c.name}' is {c.label.lower()}; it cannot be scheduled now.")
+        if cid in self.queue:
+            self.queue.remove(cid)
+        c.status, c.note, c.schedule = SCHEDULED, "", {"at": at, "live": bool(live)}
+        self.save()
+
+    def unschedule(self, cid: str, note: str = "") -> None:
+        c = self.campaigns[cid]
+        if c.status == SCHEDULED:
+            c.status = DRAFT if c.missing() else READY
+        c.schedule, c.note = {}, note
+        self.save()
+
+    def scheduled(self) -> list[Campaign]:
+        return sorted((c for c in self.campaigns.values() if c.status == SCHEDULED),
+                      key=lambda c: c.schedule.get("at", ""))
+
+    def due(self, now: str) -> tuple[list[Campaign], list[Campaign]]:
+        """(start now, missed) at Dhaka time `now`. Missed ones are unscheduled with a note."""
+        start, missed = [], []
+        late = _minus_minutes(now, MISSED_AFTER_MINUTES)
+        for c in self.scheduled():
+            at = c.schedule.get("at", "")
+            if not at or at > now:
+                continue
+            if at < late:
+                missed.append(c)
+                self.unschedule(c.id, f"Missed the scheduled time {at} (the app was closed or the computer "
+                                      "was asleep). Nothing was sent. Schedule it again.")
+            else:
+                start.append(c)
+        return start, missed
+
     def running(self) -> list[Campaign]:
         return [c for c in self.campaigns.values() if c.status == RUNNING]
 
@@ -267,6 +312,9 @@ class CampaignStore:
                     self.queue.remove(c.id)
                 notes.append(f"'{c.name}' was running when the app closed: check Crisp before running it again.")
         queued = [c for c in self.list() if c.status in (QUEUED, PAUSED)]
+        for c in self.scheduled():
+            notes.append(f"'{c.name}' is scheduled for {c.schedule.get('at')} (Dhaka, "
+                         f"{'REAL SENDING' if c.schedule.get('live') else 'dry run'}). Keep the app open then.")
         if queued:
             notes.append(f"{len(queued)} queued or paused campaign(s) restored. Nothing starts until you click "
                          "Run queue.")
@@ -311,3 +359,12 @@ def duration_text(seconds: float) -> str:
     if minutes < 60:
         return f"about {max(1, minutes)} min"
     return f"about {minutes // 60} h {minutes % 60:02d} min"
+
+
+def _minus_minutes(stamp: str, minutes: int) -> str:
+    from datetime import datetime, timedelta
+    try:
+        return (datetime.strptime(stamp[:16], "%Y-%m-%d %H:%M") - timedelta(minutes=minutes)).strftime(
+            "%Y-%m-%d %H:%M")
+    except ValueError:
+        return stamp

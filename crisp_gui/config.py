@@ -112,6 +112,26 @@ class Preferences:
         if key in SHARED_DEFAULTS:
             self._s.setValue(f"shared/{key}", value)
 
+    # Campaign Results: background checks through the Crisp API ------------------
+    def auto_check(self) -> bool:
+        return str(self._s.value("results/auto_check", "true")) == "true"
+
+    def set_auto_check(self, on: bool) -> None:
+        self._s.setValue("results/auto_check", "true" if on else "false")
+
+    def api_requests_today(self, day: str) -> int:
+        """Requests the automatic checks used on this (Dhaka) day."""
+        if str(self._s.value("results/api_day", "")) != day:
+            return 0
+        try:
+            return int(self._s.value("results/api_count", 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def add_api_requests(self, day: str, n: int) -> None:
+        self._s.setValue("results/api_count", self.api_requests_today(day) + int(n))
+        self._s.setValue("results/api_day", day)
+
     # campaign queue ----------------------------------------------------------
     def parallel(self) -> int:
         try:

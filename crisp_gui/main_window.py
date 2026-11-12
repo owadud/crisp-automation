@@ -36,13 +36,18 @@ from .icons import icon, logo_pixmap
 from .diagnostics import build_zip
 from .preview_dialog import preview_rows, show_preview
 from . import campaign_store as cs
-from . import browser, import_dialog, results_sync
+from . import browser, import_dialog, results_sync, schedule_dialog
 from .models import RowsModel
 from .pages import (ActivityPage, CampaignPage, CampaignsPage, HistoryPage, ListsPage, ResultsPage, SettingsPage,
                     TeamPage)
 from .queue_controller import QueueController
 from .theme import Palette, ThemeManager
 from .update_controller import UpdateController
+
+AUTO_CHECK_MINUTES = 30          # background "Read at" checks through the Crisp API
+AUTO_CHECK_DAYS = 14             # only emails sent in the last 14 days
+AUTO_CHECK_DAILY_BUDGET = 6000   # of the token's 10,000 requests a day; the rest stays for you
+
 
 class _ApiSignal(QObject):
     """Progress and results of a Crisp API status check (from a background thread)."""
@@ -300,6 +305,12 @@ class MainWindow(QMainWindow):
         self._api_test_signal.done.connect(self._api_tested)
         self._api_stop = threading.Event()
         self._api_checking = False
+        self._api_quiet = False
+        self.settings.api_auto.toggled.connect(lambda on: self.prefs.set_auto_check(on))
+        self.auto_check_timer = QTimer(self)
+        self.auto_check_timer.setInterval(AUTO_CHECK_MINUTES * 60_000)
+        self.auto_check_timer.timeout.connect(self.auto_check_statuses)
+        self.auto_check_timer.start()
         c.browse.clicked.connect(self.browse_csv)
         c.dnc_browse.clicked.connect(self.browse_dnc)
         c.source.changed.connect(self._source_changed)
@@ -379,6 +390,13 @@ class MainWindow(QMainWindow):
         cp.stop.clicked.connect(self.stop_campaign)
         cp.checked.clicked.connect(lambda: self._campaign_action(self.campaign_store.mark_checked))
         cp.run_queue.clicked.connect(self.run_queue)
+        cp.schedule.clicked.connect(self.schedule_campaign)
+        cp.unschedule.clicked.connect(lambda: self._campaign_action(
+            lambda cid: self.campaign_store.unschedule(cid, "Schedule cancelled.")))
+        self.schedule_timer = QTimer(self)
+        self.schedule_timer.setInterval(30_000)
+        self.schedule_timer.timeout.connect(self.check_schedules)
+        self.schedule_timer.start()
         cp.stop_queue.clicked.connect(self.queue_ctl.stop_queue)
         cp.table.itemSelectionChanged.connect(self._update_campaign_buttons)
         self.queue_ctl.changed.connect(self.refresh_campaigns)
@@ -1645,6 +1663,9 @@ class MainWindow(QMainWindow):
         s.api_website.edit.setText(cfg["website_id"] or self._website_from_history())
         s.api_identifier.edit.setText(cfg["identifier"])
         s.api_key.edit.setText(cfg["key"])
+        s.api_auto.blockSignals(True)
+        s.api_auto.setChecked(self.prefs.auto_check())
+        s.api_auto.blockSignals(False)
         if not s.api_test_subject.text():
             s.api_test_subject.edit.setText(self.campaign.subject.text())
         s.api_status.setText("Token saved. Refresh statuses reads from the Crisp API." if crisp_api.configured(cfg)
@@ -1750,22 +1771,46 @@ class MainWindow(QMainWindow):
         return crisp_api.CrispAPI(cfg["website_id"], cfg["identifier"], cfg["key"])
 
     def _start_api_check(self, rows, campaign):
+        if self._api_checking:
+            W.inform(self, "A check is running", "An automatic status check is finishing. Try again in a moment.")
+            return
         cfg = self._api_config()
         if not W.ask(self, f"Read {len(rows)} conversation(s) through the Crisp API?",
                      "Read-only: nothing is sent, changed or resolved. About 2 requests per conversation "
                      "(your token allows 10,000 a day). No browser window opens.",
                      details=[("Campaign", campaign or "All campaigns")], confirm="Start check"):
             return
+        self._run_api_check(rows, campaign, cfg, quiet=False)
+
+    def auto_check_statuses(self):
+        """Every 30 min: re-read emails that are not yet replied (sent in the last 14 days),
+        quietly, so each one gets a 'Read at' time within about 30 minutes."""
+        cfg = self._api_config()
+        if (not self.prefs.auto_check() or not crisp_api.configured(cfg) or self._api_checking
+                or (self.runner.is_running() and self._results_check)):
+            return
+        if self.results.sync_history(sc.read_history(self.history_file)):
+            self.results.save()
+        since = (datetime.now() - timedelta(days=AUTO_CHECK_DAYS)).strftime("%Y-%m-%d %H:%M")
+        rows = [x for x in self.results.rows("") if x.get("link") and x["status"] not in (cr.REPLIED, cr.FAILED)
+                and (x.get("sent_at") or "") >= since]
+        day = sc.now_dhaka().strftime("%Y-%m-%d")
+        if not rows or self.prefs.api_requests_today(day) + 2 * len(rows) > AUTO_CHECK_DAILY_BUDGET:
+            return
+        self._run_api_check(rows, "", cfg, quiet=True)
+
+    def _run_api_check(self, rows, campaign, cfg, quiet: bool):
         items = [(cr.rkey(x["campaign"], x["email"]), x["link"], x.get("sent_at", "")) for x in rows]
         self._api_stop.clear()
-        self._api_checking, self._results_campaign = True, campaign
+        self._api_checking, self._results_campaign, self._api_quiet = True, campaign, quiet
         r = self.results_page
-        r.refresh.setEnabled(False)
-        r.stop.show()
-        r.progress.setValue(0)
-        r.progress.show()
-        r.progress_text.setText(f"Reading 0 of {len(items)} through the Crisp API…")
-        self._gui_line(f"Status check (Crisp API, read-only) started for {len(items)} conversation(s).")
+        if not quiet:
+            r.refresh.setEnabled(False)
+            r.stop.show()
+            r.progress.setValue(0)
+            r.progress.show()
+            r.progress_text.setText(f"Reading 0 of {len(items)} through the Crisp API…")
+            self._gui_line(f"Status check (Crisp API, read-only) started for {len(items)} conversation(s).")
 
         def work():
             api = self._api_factory(cfg)
@@ -1780,23 +1825,43 @@ class MainWindow(QMainWindow):
                     error = str(exc)
                     break
                 self._api_signal.progress.emit(i, len(items))
+            self._api_requests_used = api.requests
             self._api_signal.done.emit(out, error)
         threading.Thread(target=work, daemon=True).start()
 
     def _api_progress(self, done, total):
+        if self._api_quiet:
+            return
         r = self.results_page
         r.progress.setValue(int(1000 * done / max(1, total)))
         r.progress_text.setText(f"Read {done} of {total} through the Crisp API…")
 
     def _api_check_done(self, results, error):
         self._api_checking = False
+        quiet, self._api_quiet = self._api_quiet, False
+        self.prefs.add_api_requests(sc.now_dhaka().strftime("%Y-%m-%d"), getattr(self, "_api_requests_used", 0))
         now = datetime.now()
         problems = {}
+        if quiet:
+            before = {k: self.results.recipients[k]["status"] for k, _r in results if k in self.results.recipients}
         for key, result in results:
             if result.get("problem"):
                 problems[result["problem"]] = problems.get(result["problem"], 0) + 1
             if key in self.results.recipients:
                 self.results.apply(key, result, now)
+        if quiet:
+            self.results.save()
+            changed = [k for k, _r in results if k in before and self.results.recipients[k]["status"] != before[k]]
+            if changed:
+                news = {}
+                for k in changed:
+                    st = self.results.recipients[k]["status"]
+                    news[st] = news.get(st, 0) + 1
+                self._gui_line("Automatic check (Crisp API): " + ", ".join(f"{n} now {s.lower()}"
+                                                                        for s, n in news.items()) + ".")
+            if self.stack.currentIndex() == RESULTS:
+                self.refresh_results()
+            return
         if results:
             self.results.record_check(self._results_campaign or "(all)")
         self.results.save()
@@ -2043,6 +2108,71 @@ class MainWindow(QMainWindow):
             self._gui_line("Stop requested for this campaign: it stops before its next recipient.")
         self.refresh_campaigns(select=cid)
 
+    # ============================================================ scheduled campaigns
+    def schedule_campaign(self):
+        """Pick a time, then confirm exactly what will happen (live or dry run, as the top
+        switch is now). The campaign then starts by itself at that time."""
+        cid = self.campaigns_page.selected_id()
+        c = self.campaign_store.get(cid)
+        if c is None:
+            return
+        if c.missing():
+            W.inform(self, "Not ready", f"'{c.name}' is missing: {', '.join(c.missing())}.")
+            return
+        now = sc.now_dhaka().replace(tzinfo=None)
+        at = schedule_dialog.ask_when(self, c.name, now)
+        if not at:
+            return
+        if at <= now.strftime("%Y-%m-%d %H:%M"):
+            W.inform(self, "Choose a later time", "The time must be in the future (Dhaka time).")
+            return
+        live = not self.dry_run()
+        emails, _dups, note, error = self._campaign_plan(c)
+        if error:
+            W.inform(self, "Fix this campaign first", error)
+            return
+        count = note or f"{len(emails)} email(s) (counted now; it is counted again when it starts)"
+        details = [("Campaign", c.name), ("When", f"{at} (Dhaka)"),
+                   ("Mode", "REAL SENDING" if live else "Dry run, nothing is sent"),
+                   ("Subject", c.settings.get("subject", "")), ("Send with", self._shortcut_text(c.settings)),
+                   ("Recipients", count)]
+        title = (f"Schedule REAL sending of '{c.name}' at {at}?" if live
+                 else f"Schedule a dry run of '{c.name}' at {at}?")
+        if not W.ask(self, title, "At that time the campaign starts by itself without asking again. The usual "
+                     "rules apply (pace, daily cap, recently contacted, Stop). Change the top Dry Run switch "
+                     "before scheduling to change the mode.", details=details,
+                     confirm="Schedule real sending" if live else "Schedule dry run",
+                     tone="danger" if live else "primary"):
+            return
+        try:
+            self.campaign_store.schedule(cid, at, live)
+        except ValueError as exc:
+            W.inform(self, "Not scheduled", str(exc))
+            return
+        self._gui_line(f"Scheduled '{c.name}' for {at} (Dhaka, {'REAL SENDING' if live else 'dry run'}).")
+        self.refresh_campaigns(select=cid)
+
+    def check_schedules(self, now: str | None = None):
+        """Every 30 s: start a scheduled campaign at its time (one at a time); mark it
+        missed if it could not start within 15 minutes. Never sends late."""
+        now = now or sc.now_dhaka().strftime("%Y-%m-%d %H:%M")
+        start, missed = self.campaign_store.due(now)
+        for c in missed:
+            self._gui_line(f"Missed schedule: '{c.name}' ({c.note})")
+        if missed:
+            self.refresh_campaigns()
+            W.inform(self, "Scheduled campaign missed",
+                     "\n".join(f"'{c.name}': {c.note}" for c in missed))
+        if not start or self.queue_ctl.active or self.runner.is_running() or self.queue_ctl.busy():
+            return                 # waits (up to 15 minutes) for the current run to end
+        c = start[0]
+        live = bool(c.schedule.get("live"))
+        c.schedule = {}
+        self.campaign_store.run_next(c.id)
+        self._gui_line(f"Scheduled start: '{c.name}' ({'REAL SENDING' if live else 'dry run'}).")
+        self.queue_ctl.start(dry=not live, only=c.id)
+        self.refresh_campaigns(select=c.id)
+
     def _campaign_plan(self, c):
         """(emails to send, duplicates, note, error) for the queue summary."""
         s = c.settings
@@ -2178,6 +2308,8 @@ class MainWindow(QMainWindow):
             status = c.label
             runner = self.queue_ctl.runner_of(c.id)
             st = runner.state if runner is not None else None
+            if c.status == cs.SCHEDULED and c.schedule:
+                status += f" · {c.schedule.get('at')} · {'LIVE' if c.schedule.get('live') else 'dry run'}"
             if st is not None and runner.is_running():
                 status += f" · {st.processed}/{st.eligible or '?'}"
                 if self.queue_ctl.slot_of(c.id):
@@ -2203,6 +2335,10 @@ class MainWindow(QMainWindow):
         cp.table.resizeColumnsToContents()
         cp.empty.setVisible(not items)
         notes = list(getattr(self, "_restore_notes", []))
+        for c in store.scheduled():
+            notes.append(f"Scheduled: '{c.name}' at {c.schedule.get('at')} (Dhaka), "
+                         f"{'REAL SENDING' if c.schedule.get('live') else 'dry run'}. Keep the app open and the "
+                         "computer awake then.")
         unconfirmed = [c.name for c in items if c.status == cs.UNCONFIRMED]
         if unconfirmed:
             notes.append("Unconfirmed: " + ", ".join(unconfirmed) + ". Check the last conversation in Crisp, "
@@ -2237,6 +2373,8 @@ class MainWindow(QMainWindow):
             cp.pause: has and c.status in (cs.QUEUED, cs.PAUSED, cs.RUNNING),
             cp.stop: running,
             cp.checked: has and c.status == cs.UNCONFIRMED,
+            cp.schedule: has and not running and c.status not in (cs.UNCONFIRMED, cs.SCHEDULED, cs.PAUSED),
+            cp.unschedule: has and c.status == cs.SCHEDULED,
         }
         for b, on in show.items():
             b.setVisible(on)

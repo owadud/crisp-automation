@@ -52,6 +52,7 @@ class QueueController(QObject):
         self.max_parallel = max_parallel
         self.active = False
         self.dry = True
+        self.only = ""             # a scheduled start runs just this campaign
         self.slots: dict[int, tuple[str, AgentRunner]] = {}
         self._extra: dict[int, AgentRunner] = {}
 
@@ -67,9 +68,10 @@ class QueueController(QObject):
         return bool(self.slots)
 
     # ---------------------------------------------------------------- queue
-    def start(self, dry: bool) -> None:
-        self.active, self.dry = True, dry
-        self.message.emit(f"Queue started ({'DRY RUN' if dry else 'REAL SENDING'}).")
+    def start(self, dry: bool, only: str = "") -> None:
+        self.active, self.dry, self.only = True, dry, only
+        self.message.emit(("Scheduled campaign started" if only else "Queue started")
+                          + f" ({'DRY RUN' if dry else 'REAL SENDING'}).")
         self.fill()
 
     def stop_queue(self) -> None:
@@ -90,7 +92,11 @@ class QueueController(QObject):
 
     def fill(self) -> None:
         while self.active:
-            nxt = self.store.next_queued()
+            if self.only:
+                c = self.store.get(self.only)
+                nxt = c if c is not None and c.status == cs.QUEUED else None
+            else:
+                nxt = self.store.next_queued()
             if nxt is None:
                 if not self.slots:
                     self.active = False

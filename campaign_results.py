@@ -252,6 +252,7 @@ class ResultsStore:
         """Merge one observation. Never downgrades; first-seen times are flagged."""
         rec = self.recipients[key]
         now_s = fmt(now or datetime.now())
+        before = rec.get("last_checked", "")    # the previous check: the change happened after it
         rec["last_checked"] = now_s
         if result.get("problem"):
             rec["note"] = {"no_our_message": "our message not found in the conversation"}.get(
@@ -266,9 +267,12 @@ class ResultsStore:
         rank = RANK.get(rec["status"], 0)
         if rank >= RANK[DELIVERED] and rec["status"] != FAILED and not rec["delivered_at"]:
             rec["delivered_at"], rec["delivered_seen"] = now_s, True
+            rec["delivered_from"] = before if before and before < now_s else ""
         if rank >= RANK[READ] and not rec["read_at"] and new in (READ, REPLIED):
             if new == READ or result.get("reply_at"):
                 rec["read_at"], rec["read_seen"] = now_s, True
+                # Crisp gives no read time: it was read between the previous check and this one.
+                rec["read_from"] = before if before and before < now_s else ""
         if new == REPLIED and not rec["reply_at"]:
             if result.get("reply_at"):
                 rec["reply_at"], rec["reply_seen"] = result["reply_at"], result.get("reply_kind") != "exact"
@@ -351,17 +355,26 @@ def recheck_suggestions(rows, last_checked: str, now: datetime | None = None) ->
     return out[-1:]   # the latest one that is due
 
 
-TABLE_COLUMNS = ["Email", "Name", "Status", "Sent", "Delivered", "Read", "Replied", "Shortcut version",
+TABLE_COLUMNS = ["Email", "Name", "Status", "Sent", "Delivered", "Read at", "Replied", "Shortcut version",
                  "Campaign", "Conversation link", "Note"]
 
 
+def window(start: str, end: str) -> str:
+    """'2026-11-12 10:00–10:30' (same day) or 'between A and B': when something happened."""
+    if start[:10] == end[:10]:
+        return f"{end[:10]} {start[11:16]}–{end[11:16]}"
+    return f"between {start} and {end}"
+
+
 def table_row(r: dict) -> list[str]:
-    def seen(value, flag):
+    def seen(value, flag, since=""):
+        if value and flag and since:
+            return window(since, value)
         return f"{value} (first seen)" if value and flag else value
     status = r["status"] + (f": {r['reason']}" if r["status"] == FAILED and r.get("reason") else "")
     return [r["email"], r.get("name", ""), status, r.get("sent_at", ""),
-            seen(r.get("delivered_at", ""), r.get("delivered_seen")),
-            seen(r.get("read_at", ""), r.get("read_seen")),
+            seen(r.get("delivered_at", ""), r.get("delivered_seen"), r.get("delivered_from", "")),
+            seen(r.get("read_at", ""), r.get("read_seen"), r.get("read_from", "")),
             seen(r.get("reply_at", ""), r.get("reply_seen")),
             r.get("version", ""), r["campaign"], r.get("link", ""),
             r.get("note") or ("" if r.get("link") else "no conversation link recorded")]

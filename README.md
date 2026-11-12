@@ -250,6 +250,17 @@ is typed, sent, resolved or changed.
   the split stays even, also across runs. The preview table and the live confirmation show which
   shortcut each row is expected to get. Compare the versions in Campaign Results > Compare.
   All shortcuts must use the same Email subject.
+- **Read at (3.11)**: Crisp's API says that an email was read, not when. With the API token saved,
+  the app re-checks emails that have no reply yet (sent in the last 14 days) every 30 minutes while
+  it is open, quietly. Results > **Read at** then shows the window it happened in, e.g.
+  `2026-11-12 10:00–10:30`. A reply has its exact time. Switch it off in Settings > Crisp API.
+  Automatic checks use at most 6,000 of the token's 10,000 requests a day.
+- **Scheduled campaigns (3.11)**: Campaigns > select a campaign > **Schedule…** > pick a date and time
+  (Dhaka) > confirm. The mode is the top switch at that moment (Dry Run or LIVE), and the
+  confirmation names the campaign, time, mode, subject, message and recipient count. At that time
+  the campaign starts by itself (only that campaign, with all the usual rules). The app must be
+  open and the computer awake: if it could not start within 15 minutes, it is marked missed and
+  **nothing is sent late**. **Cancel schedule** removes it.
 - **Send with the Crisp API (3.11)**: in a campaign, **Message > Send with: Crisp API** sends without
   a browser: the app creates the conversation in Crisp, sets the email, name, subject and segment,
   posts your **Message text** (`{name}` / `{first_name}` are filled in; a line with only `---`

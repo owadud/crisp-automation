@@ -8,7 +8,7 @@ from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
     QComboBox,
     QAbstractItemView, QFrame, QHBoxLayout, QHeaderView, QPlainTextEdit, QProgressBar, QScrollArea,
-    QLineEdit, QSizePolicy, QTabWidget, QTableView, QTableWidget, QVBoxLayout, QWidget,
+    QCheckBox, QLineEdit, QSizePolicy, QTabWidget, QTableView, QTableWidget, QVBoxLayout, QWidget,
 )
 
 from .config import APP_VERSION
@@ -468,6 +468,10 @@ class SettingsPage(Page):
         card.body.addLayout(brow)
         self.api_status = label("", "faint", wrap=True)
         card.body.addWidget(self.api_status)
+        self.api_auto = QCheckBox("Check new reads and replies every 30 minutes while the app is open "
+                                  "(gives each email a 'Read at' time within about 30 minutes)")
+        self.api_auto.setChecked(True)
+        card.body.addWidget(self.api_auto)
         card.body.addWidget(label("Send a test email through the API", "fieldLabel"))
         card.body.addWidget(label("Sends ONE real email to the address you type (use your own), to check that "
                                   "Crisp delivers API messages by email before campaigns use the API.",
@@ -692,10 +696,13 @@ class CampaignsPage(Page):
         self.pause = button("Pause", None)
         self.stop = button("Stop campaign", "dangerOutline", "stop", tm)
         self.checked = button("I checked Crisp", None, "check", tm, "text_muted")
+        self.schedule = button("Schedule…", None, "play", tm, "text_muted")
+        self.unschedule = button("Cancel schedule", None, "stop", tm, "text_muted")
         self.duplicate = button("Duplicate", None, "copy", tm, "text_muted")
         self.delete = button("Delete", "dangerOutline", "trash", tm)
-        self.action_buttons = (self.open_sel, self.enqueue, self.dequeue, self.up, self.down, self.run_next,
-                               self.pause, self.stop, self.checked, self.duplicate, self.delete)
+        self.action_buttons = (self.open_sel, self.schedule, self.unschedule, self.enqueue, self.dequeue, self.up,
+                               self.down, self.run_next, self.pause, self.stop, self.checked, self.duplicate,
+                               self.delete)
         for b in self.action_buttons:
             self.actions.add(b)
         card.body.addWidget(self.actions)
