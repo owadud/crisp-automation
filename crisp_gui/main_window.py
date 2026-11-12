@@ -36,7 +36,7 @@ from .icons import icon, logo_pixmap
 from .diagnostics import build_zip
 from .preview_dialog import preview_rows, show_preview
 from . import campaign_store as cs
-from . import browser, import_dialog, results_sync, schedule_dialog
+from . import ai_openers, browser, import_dialog, results_sync, schedule_dialog
 from .models import RowsModel
 from .pages import (ActivityPage, CampaignPage, CampaignsPage, HistoryPage, ListsPage, ResultsPage, SettingsPage,
                     TeamPage)
@@ -47,6 +47,12 @@ from .update_controller import UpdateController
 AUTO_CHECK_MINUTES = 30          # background "Read at" checks through the Crisp API
 AUTO_CHECK_DAYS = 14             # only emails sent in the last 14 days
 AUTO_CHECK_DAILY_BUDGET = 6000   # of the token's 10,000 requests a day; the rest stays for you
+
+
+class _AiSignal(QObject):
+    """Progress and result of AI opening-line generation (background thread)."""
+    progress = Signal(int, int)
+    done = Signal(object, str)
 
 
 class _ApiSignal(QObject):
@@ -348,6 +354,21 @@ class MainWindow(QMainWindow):
         for key, field in c.fields().items():
             field.edit.textChanged.connect(lambda value, k=key: self._field_changed(k, value))
         c.send_mode.changed.connect(self._send_mode_changed)
+        c.ai_enabled.toggled.connect(lambda on: (self._field_changed("ai_opener", "true" if on else "false"),
+                                                 self._ai_refresh_status()))
+        c.ai_generate.clicked.connect(self.generate_ai_openers)
+        c.ai_review.clicked.connect(lambda: self.navigate(LISTS))
+        self._ai_signal = _AiSignal(self)
+        self._ai_signal.progress.connect(lambda d, t: self.campaign.ai_status.setText(
+            f"Writing opening lines… {d} of {t}"))
+        self._ai_signal.done.connect(self._ai_generated)
+        self._ai_busy = False
+        s = self.settings
+        s.ai_save.clicked.connect(self.save_ai_key)
+        s.ai_remove.clicked.connect(self.remove_ai_key)
+        self._ai_key_signal = _SheetSignal(self)
+        self._ai_key_signal.done.connect(self._ai_key_tested)
+        self.lists_page.table.doubleClicked.connect(self._edit_ai_line)
         c.api_message.textChanged.connect(
             lambda: self._field_changed("api_message", c.api_message.toPlainText()))
         self.csv_timer.timeout.connect(self.refresh_csv)
@@ -413,7 +434,10 @@ class MainWindow(QMainWindow):
         for key, field in self.campaign.fields().items():
             field.edit.setText(values[key])
         self.campaign.api_message.setPlainText(values.get("api_message", ""))
+        self.campaign.ai_enabled.setChecked(values.get("ai_opener") == "true")
         self._apply_send_mode(values.get("send_mode", "browser"))
+        self.settings.ai_key.edit.setText(ai_openers.load_key())
+        self.settings.ai_key_status.setText("Key saved." if ai_openers.load_key() else "")
         self.campaign.dry.setChecked(True)   # always start safe
         self.campaign.skip_failed.setChecked(False)   # opt-in every launch
         self.campaign.random_delay.setChecked(self.prefs.random_delay())
@@ -660,8 +684,163 @@ class MainWindow(QMainWindow):
         values["api_message"] = self.campaign.api_message.toPlainText().strip()
         values["api_messages"] = json.dumps(sc.split_messages(values["api_message"]))
         values["api_config"] = str(self.api_config_path)
+        values["ai_opener"] = "true" if self.campaign.ai_enabled.isChecked() else "false"
+        values["ai_openers_file"] = (str(self._ai_store(values).path)
+                                     if values["send_mode"] == "api" and values["ai_opener"] == "true" else "")
         values.update(self._shared_values())
         return values
+
+    # ============================================================ AI opening lines
+    def _ai_store(self, v: dict | None = None):
+        v = v or self.campaign_values()
+        return ai_openers.OpenerStore(self.data_dir / "ai_openers", self.campaign_name(v))
+
+    def _ai_recipients(self) -> list:
+        return [(p["email"], p["name"]) for p in self.stats.plan if p.get("send") and p.get("email")]
+
+    def _ai_text(self, v: dict) -> str:
+        """Line for the live confirmation: how many AI opening lines are ready."""
+        if v.get("send_mode") != "api" or v.get("ai_opener") != "true":
+            return ""
+        store = self._ai_store(v)
+        emails = [e for e, _n in self._ai_recipients()]
+        ready, look, missing = store.counts(emails)
+        sample = next((store.get(e) for e in emails if store.get(e)), "")
+        return (f"AI opening lines: {ready} ready, {look} need a look, {missing} missing (sent without one)"
+                + (f". Example: “{sample[:120]}”" if sample else "") + "\n")
+
+    def _ai_refresh_status(self):
+        c = self.campaign
+        if not c.ai_box.isVisibleTo(c) and c.send_mode.value() != "api":
+            return
+        on = c.ai_enabled.isChecked()
+        c.ai_generate.setEnabled(on and not self._ai_busy)
+        c.ai_review.setEnabled(on)
+        if not on:
+            c.ai_status.setText("")
+            return
+        if not ai_openers.available():
+            c.ai_status.setText("The AI package is not installed (needs Python 3.10+). Update the app or run setup again.")
+            return
+        if not ai_openers.load_key():
+            c.ai_status.setText("Save your Anthropic API key first: Settings > AI (Claude).")
+            return
+        emails = [e for e, _n in self._ai_recipients()]
+        ready, look, missing = self._ai_store().counts(emails)
+        hint = "" if "{ai_opener}" in c.api_message.toPlainText() else " Goes after the greeting (or use {ai_opener})."
+        c.ai_status.setText(f"{ready} ready, {look} need a look, {missing} missing of {len(emails)} recipients."
+                            + hint)
+
+    def generate_ai_openers(self):
+        c = self.campaign
+        if self._ai_busy:
+            return
+        self.refresh_csv()
+        people = self._ai_recipients()
+        if not people:
+            W.inform(self, "Nothing to write", "No recipients would be sent right now (check the list).")
+            return
+        if not ai_openers.load_key():
+            W.inform(self, "Anthropic API key needed", "Save it in Settings > AI (Claude).")
+            return
+        store = self._ai_store()
+        todo = [(e, n) for e, n in people if not store.get(e)]
+        redo = False
+        if not todo:
+            redo = W.ask(self, "All lines are written", "Write them all again? Lines you edited are kept.",
+                         confirm="Write again")
+            if not redo:
+                return
+            todo = people
+        v = self.campaign_values()
+        cost = max(0.01, len(todo) * ai_openers.COST_PER_RECIPIENT)
+        if not W.ask(self, f"Write {len(todo)} opening line(s) with Claude?",
+                     "Claude receives your subject and message, and per person only a first name and the company "
+                     "from the email domain (not the email address). You review the lines in Lists before sending.",
+                     details=[("Model", ai_openers.MODEL), ("Recipients", str(len(todo))),
+                              ("Estimated cost", f"about US${cost:.2f} on your Anthropic account")],
+                     confirm="Write lines"):
+            return
+        self._ai_busy = True
+        c.ai_generate.setEnabled(False)
+        c.ai_status.setText(f"Writing opening lines… 0 of {len(todo)}")
+        subject, message = v["subject"], v["api_message"]
+
+        def work():
+            try:
+                result = ai_openers.generate(todo, subject, message,
+                                             progress=lambda d, t: self._ai_signal.progress.emit(d, t))
+                self._ai_signal.done.emit(result, "")
+            except Exception as exc:  # noqa: BLE001
+                self._ai_signal.done.emit({}, str(exc))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _ai_generated(self, result, error):
+        self._ai_busy = False
+        errors = list(result.pop("_errors", [])) if isinstance(result, dict) else []
+        if error:
+            errors.append(error)
+        n = self._ai_store().merge(result or {})
+        self._gui_line(f"AI opening lines: {n} written." + (f" {'; '.join(errors)}" if errors else ""))
+        self._ai_refresh_status()
+        if errors:
+            W.inform(self, "Some lines were not written", "\n".join(errors[:6]))
+        if self.stack.currentIndex() == LISTS:
+            self.refresh_lists()
+
+    def _edit_ai_line(self, index):
+        v = self.campaign_values()
+        if v.get("send_mode") != "api" or v.get("ai_opener") != "true":
+            return
+        row = self.list_rows.rows[index.row()] if index.row() < len(self.list_rows.rows) else None
+        if not row or not row[1]:
+            return
+        email = row[1]
+        store = self._ai_store(v)
+        text = ai_openers.edit_line(self, email, store.get(email))
+        if text is None:
+            return
+        store.edit(email, text)
+        self.refresh_lists()
+        self._ai_refresh_status()
+
+    def save_ai_key(self):
+        s = self.settings
+        key = s.ai_key.text()
+        if not key:
+            s.ai_key_status.setText("Paste your Anthropic API key first.")
+            return
+        if not ai_openers.available():
+            s.ai_key_status.setText("The AI package is not installed (needs Python 3.10+). Update the app first.")
+            return
+        ai_openers.save_key(key)
+        s.ai_save.setEnabled(False)
+        s.ai_key_status.setText("Testing the key with Anthropic…")
+
+        def work():
+            try:
+                ai_openers.client(key).models.retrieve(ai_openers.MODEL)
+                self._ai_key_signal.done.emit("ai", True, None)
+            except Exception as exc:  # noqa: BLE001
+                self._ai_key_signal.done.emit("ai", None, f"{type(exc).__name__}: {exc}"[:200])
+        threading.Thread(target=work, daemon=True).start()
+
+    def _ai_key_tested(self, _kind, ok, error):
+        s = self.settings
+        s.ai_save.setEnabled(True)
+        s.ai_key_status.setText(f"Saved, but the test failed: {error}" if error
+                                else f"Connected: {ai_openers.MODEL} is ready for opening lines.")
+        self._ai_refresh_status()
+
+    def remove_ai_key(self):
+        if not W.ask(self, "Remove the Anthropic API key from this computer?",
+                     "Generated lines stay. Revoke the key at console.anthropic.com if you no longer need it.",
+                     confirm="Remove"):
+            return
+        ai_openers.config_path().unlink(missing_ok=True)
+        self.settings.ai_key.edit.clear()
+        self.settings.ai_key_status.setText("Key removed.")
+        self._ai_refresh_status()
 
     def _send_mode_changed(self, mode):
         if not self._loading:
@@ -675,8 +854,9 @@ class MainWindow(QMainWindow):
         api = mode == "api"
         c.send_mode.set_value("api" if api else "browser")
         c.shortcut.setVisible(not api)
-        for w in (c.api_message_label, c.api_message, c.api_message_help):
+        for w in (c.api_message_label, c.api_message, c.api_message_help, c.ai_box):
             w.setVisible(api)
+        self._ai_refresh_status()
 
     @staticmethod
     def _shortcut_text(v: dict) -> str:
@@ -1175,7 +1355,7 @@ class MainWindow(QMainWindow):
             summary = (f"Dry Run is off: real emails go out through Crisp and each sent row is marked. "
                        f"This can't be undone.\n{self.stats.preview()}\n"
                        f"Campaign: {self.campaign_name(v)} · Subject: {v['subject']} · "
-                       f"{self._shortcut_text(v)}\n"
+                       f"{self._shortcut_text(v)}\n" + self._ai_text(v) +
                        f"Rows {self.stats.range_from}–{self.stats.range_to} "
                        f"of {self.stats.total} · {source} · {self._limits_text(v)}"
                        + (" · retry failed only" if retry_only else ""))
@@ -2067,6 +2247,7 @@ class MainWindow(QMainWindow):
                 f.edit.setText(values[key])
         c.skip_failed.setChecked(values.get("skip_failed") == "true")
         c.api_message.setPlainText(values.get("api_message", ""))
+        c.ai_enabled.setChecked(values.get("ai_opener") == "true")
         self._apply_send_mode(values.get("send_mode", "browser"))
         self.prefs.set_campaign_value("send_mode", values.get("send_mode", "browser") or "browser")
         source = values.get("source", "csv")
@@ -2268,6 +2449,10 @@ class MainWindow(QMainWindow):
         v["campaign"] = c.name
         v["retry_only"] = "false"
         v["workcopy_tag"] = c.id
+        v["api_messages"] = json.dumps(sc.split_messages(v.get("api_message", "")))
+        v["api_config"] = str(self.api_config_path)
+        v["ai_openers_file"] = (str(ai_openers.OpenerStore(self.data_dir / "ai_openers", c.name).path)
+                                if v.get("send_mode") == "api" and v.get("ai_opener") == "true" else "")
         try:
             v["recent_days"] = str(max(1, int(v.get("recent_days") or 7)))   # never twice in a day across campaigns
         except ValueError:
@@ -2425,11 +2610,18 @@ class MainWindow(QMainWindow):
         lp.error.hide()
         lp.summary.setText(st.preview())
         rows = preview_rows(st.plan, v)
+        base_cols = ("Row", "Email", "Name used", "Subject", "Shortcut", "Segment", "Reference", "Action")
+        if v.get("send_mode") == "api" and v.get("ai_opener") == "true":
+            store = self._ai_store(v)
+            self.list_rows.columns = base_cols + ("AI opening line (double-click to edit)",)
+            rows = [tuple(r) + ((store.get(r[1]) or ("—" if r[-1] == "Send" else "")),) for r in rows]
+        else:
+            self.list_rows.columns = base_cols
         mode = lp.filter.value() or "all"
         if mode == "send":
-            rows = [r for r in rows if r[-1] == "Send"]
+            rows = [r for r in rows if r[7] == "Send"]
         elif mode == "skip":
-            rows = [r for r in rows if r[-1] != "Send"]
+            rows = [r for r in rows if r[7] != "Send"]
         self.list_rows.set_rows(rows)
         lp.empty.setVisible(not rows)
         lp.empty.setText("No rows to show." if st.plan else "The list has no rows.")

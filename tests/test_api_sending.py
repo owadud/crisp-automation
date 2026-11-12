@@ -192,3 +192,13 @@ def test_live_confirmation_names_the_api_and_the_message(tmp_path, monkeypatch):
         assert rows_[0][4] == "api-1"                                       # message version per row
     finally:
         w.close()
+
+
+def test_api_send_puts_each_persons_ai_line_after_the_greeting(api_agent, tmp_path):
+    path = write(tmp_path / "r.csv", HEADER, rows(2))
+    openers = tmp_path / "openers.json"
+    openers.write_text(json.dumps({"p0@x.com": {"opener": "Loved your store, Ann."}}), encoding="utf-8")
+    mod = api_agent(path, messages=("Hi {first_name},\n\nOur offer.",), CRISP_AI_OPENERS=str(openers))
+    mod.main()
+    texts = [c[2] for c in FakeAPI.calls if c[0] == "send"]
+    assert texts == ["Hi Ann,\n\nLoved your store, Ann.\n\nOur offer.", "Hi Ann,\n\nOur offer."]

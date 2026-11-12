@@ -50,6 +50,7 @@ CAMPAIGN_DEFAULTS = {
     "shortcut_version": "",    # your label for the shortcut text, e.g. v2 (Campaign Results)
     "send_mode": "browser",    # "browser" (Crisp inbox + shortcut) or "api" (Crisp REST API + message text)
     "api_message": "",         # message text for API sending; a line with --- separates A/B versions
+    "ai_opener": "false",      # "true": a Claude-written opening line per recipient (generated and reviewed first)
 }
 
 THEMES = ("light", "dark", "system")

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from .config import APP_VERSION
+from .message_editor import MessageEditor
 from .theme import ThemeManager
 from .widgets import (
     Banner, Card, Collapsible, Field, KeyValueList, MetricCard, ResponsiveRow,
@@ -202,13 +203,28 @@ class CampaignPage(Page):
         card.body.addWidget(self.subject)
         card.body.addWidget(self.shortcut)
         self.api_message_label = label("Message text", "fieldLabel")
-        self.api_message = QPlainTextEdit()
+        self.api_message = MessageEditor(tm)
         self.api_message.setPlaceholderText("Hi {first_name},\n\nYour message…")
-        self.api_message.setMinimumHeight(140)
+        self.api_message.setMinimumHeight(180)
         self.api_message_help = label("Sent as the email body through the Crisp API. {name} and {first_name} "
                                       "become the recipient's name. For an A/B test, put a line with only --- "
                                       "between the versions.", "fieldHelp", wrap=True)
-        for w in (self.api_message_label, self.api_message, self.api_message_help):
+        self.ai_box = QWidget()
+        ai = QVBoxLayout(self.ai_box)
+        ai.setContentsMargins(0, 0, 0, 0)
+        ai.setSpacing(6)
+        self.ai_enabled = QCheckBox("Personalize the opening line with AI (Claude)")
+        ai.addWidget(self.ai_enabled)
+        arow = QHBoxLayout()
+        self.ai_generate = button("Generate with AI…", None, "send", tm, "text_muted")
+        self.ai_review = button("Review in Lists", "ghost")
+        arow.addWidget(self.ai_generate)
+        arow.addWidget(self.ai_review)
+        arow.addStretch()
+        ai.addLayout(arow)
+        self.ai_status = label("", "faint", wrap=True)
+        ai.addWidget(self.ai_status)
+        for w in (self.api_message_label, self.api_message, self.api_message_help, self.ai_box):
             card.body.addWidget(w)
             w.hide()
         card.body.addWidget(self.shortcut_version)
@@ -498,6 +514,25 @@ class SettingsPage(Page):
         self.api_test_result = label("", "faint", wrap=True)
         self.api_test_result.setTextInteractionFlags(Qt.TextSelectableByMouse)
         card.body.addWidget(self.api_test_result)
+        self.add(card)
+
+        card = Card("AI (Claude)", "Writes a personal opening line per recipient for Crisp API campaigns. "
+                    "Uses your own Anthropic API key (console.anthropic.com > API Keys), saved only on this "
+                    "computer. Claude receives your subject and message, and per person only a first name and "
+                    "the company from the email domain.")
+        self.ai_key = Field("Anthropic API key", placeholder="sk-ant-…")
+        self.ai_key.edit.setEchoMode(QLineEdit.Password)
+        self.ai_key.setMaximumWidth(520)
+        card.body.addWidget(self.ai_key)
+        krow = QHBoxLayout()
+        self.ai_save = button("Save and test", None, "check", tm, "text_muted")
+        self.ai_remove = button("Remove key", "ghost")
+        krow.addWidget(self.ai_save)
+        krow.addWidget(self.ai_remove)
+        krow.addStretch()
+        card.body.addLayout(krow)
+        self.ai_key_status = label("", "faint", wrap=True)
+        card.body.addWidget(self.ai_key_status)
         self.add(card)
 
         self.updates_slot = QVBoxLayout()            # Updates card goes here (filled below)

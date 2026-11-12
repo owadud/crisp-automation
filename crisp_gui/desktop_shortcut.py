@@ -123,7 +123,35 @@ def linux_launcher(root: Path = ROOT, home: Path | None = None) -> list[Path]:
         subprocess.run(["update-desktop-database", str(apps)], capture_output=True, timeout=20)
     except (OSError, subprocess.TimeoutExpired):
         pass
-    return [desktop]
+    made = [desktop]
+    # A Desktop icon too. GNOME opens it only when it is marked trusted
+    # ("Allow Launching"), which gio does for us; without gio it asks once.
+    desk = desktop_folder(home)
+    if desk is not None:
+        icon_link = desk / "crisp-automation.desktop"
+        icon_link.write_text(desktop.read_text(encoding="utf-8"), encoding="utf-8")
+        icon_link.chmod(0o755)
+        for cmd in (["gio", "set", str(icon_link), "metadata::trusted", "true"],
+                    ["gio", "set", "-t", "string", str(icon_link), "metadata::trusted", "true"]):
+            try:
+                if subprocess.run(cmd, capture_output=True, timeout=20).returncode == 0:
+                    break
+            except (OSError, subprocess.TimeoutExpired):
+                break
+        made.append(icon_link)
+    return made
+
+
+def desktop_folder(home: Path) -> Path | None:
+    """The user's Desktop folder (it has another name in other languages), if it exists."""
+    try:
+        out = subprocess.run(["xdg-user-dir", "DESKTOP"], capture_output=True, text=True, timeout=10).stdout.strip()
+        if out and Path(out).is_dir() and Path(out) != home:
+            return Path(out)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    fallback = home / "Desktop"
+    return fallback if fallback.is_dir() else None
 
 
 # ------------------------------------------------------------------ macOS
@@ -216,7 +244,8 @@ def where_text() -> str:
     if sys.platform == "darwin":
         return ("Launchpad or Applications (or Spotlight: Cmd+Space, type Crisp). To keep it in the Dock: "
                 "right-click its Dock icon > Options > Keep in Dock.")
-    return "the app grid (Super key, type Crisp). To keep it in the dock: right-click > Pin to Dash."
+    return ("the Desktop or the app grid (Super key, type Crisp). If the Desktop icon shows a warning, "
+            "right-click it > Allow Launching. To keep it in the dock: right-click > Pin to Dash.")
 
 
 if __name__ == "__main__":

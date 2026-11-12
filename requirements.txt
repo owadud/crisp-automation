@@ -3,3 +3,5 @@ PySide6>=6.7,<7
 # Google Sheet source (Phase 6)
 gspread>=6,<7
 google-auth>=2,<3
+# AI opening lines (optional; needs Python 3.10+)
+anthropic>=2,<3; python_version >= "3.10"

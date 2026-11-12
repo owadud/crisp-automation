@@ -250,6 +250,19 @@ is typed, sent, resolved or changed.
   the split stays even, also across runs. The preview table and the live confirmation show which
   shortcut each row is expected to get. Compare the versions in Campaign Results > Compare.
   All shortcuts must use the same Email subject.
+- **Message editor (3.12)**: in a Crisp API campaign the Message text box has a toolbar: Bold, Italic,
+  Strikethrough, lists, Quote, Code, Link, Image, `{first_name}`, `{name}`, `{ai_opener}`, an A/B
+  divider and a Preview. It writes the same Markdown Crisp stores for your shortcuts (`**bold**`).
+  Send yourself a test email (Settings > Crisp API) to see how it looks in an inbox.
+- **AI opening lines (3.12)**: Campaign > Message > *Personalize the opening line with AI (Claude)* >
+  **Generate with AI…**. Claude (`claude-opus-5-5`, low effort, with Anthropic's automatic fallback if
+  it declines) writes one or two personal sentences per recipient; your approved message stays as it
+  is. Claude gets your subject and message and, per person, only a first name and the company from the
+  email domain, never the email address. Review and edit every line in **Lists** (double-click); the
+  live confirmation shows how many are ready. Sending uses exactly the stored lines; a person without
+  one gets the email without it. The line goes into `{ai_opener}`, or after the greeting. Needs your
+  own Anthropic API key in Settings > AI (Claude), stored only on this computer; roughly US$0.002 per
+  recipient. Needs Python 3.10 or newer (Windows and Ubuntu setups have it).
 - **Read at (3.11)**: Crisp's API says that an email was read, not when. With the API token saved,
   the app re-checks emails that have no reply yet (sent in the last 14 days) every 30 minutes while
   it is open, quietly. Results > **Read at** then shows the window it happened in, e.g.

@@ -276,6 +276,22 @@ def split_messages(text: str) -> list[str]:
     return [p for p in parts if p]
 
 
+def insert_opener(text: str, opener: str) -> str:
+    """Put the AI opening line into {ai_opener}; without that placeholder, right after a
+    greeting line ("Hi {first_name},") or at the top. No line: the placeholder disappears."""
+    opener = str(opener or "").strip()
+    if "{ai_opener}" in text:
+        if not opener:
+            text = re.sub(r"[ \t]*\{ai_opener\}[ \t]*\n?\n?", "", text)
+        return text.replace("{ai_opener}", opener)
+    if not opener:
+        return text
+    first, _sep, rest = text.partition("\n")
+    if rest and re.match(r"^\s*(hi|hello|hey|dear|greetings|good (morning|afternoon|evening))\b", first, re.I):
+        return f"{first}\n\n{opener}\n\n{rest.lstrip(chr(10))}"
+    return f"{opener}\n\n{text}"
+
+
 def api_variants(text: str, versions: str = "") -> list[tuple[str, str]]:
     """Variant names api-1, api-2, ... (one per message text) with their labels."""
     n = max(1, len(split_messages(text)))

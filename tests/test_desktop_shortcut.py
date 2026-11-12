@@ -95,3 +95,22 @@ def test_mac_app_needs_setup_first(tmp_path):
 def test_mac_quotes_paths_with_spaces_and_quotes():
     assert ds._sh_quote("/Users/o/Crisp App (1)/x") == "'/Users/o/Crisp App (1)/x'"
     assert ds._sh_quote("it's") == r"'it'\''s'"
+
+
+def test_linux_also_puts_an_icon_on_the_desktop(tmp_path, monkeypatch):
+    monkeypatch.setattr(ds.sys, "platform", "linux")
+    root, home = fake_app(tmp_path, windows=False), tmp_path / "home"
+    (home / "Desktop").mkdir(parents=True)
+    calls = []
+    real_run = ds.subprocess.run
+
+    def run(cmd, **kw):
+        calls.append(cmd[0])
+        if cmd[0] in ("gio", "xdg-user-dir", "update-desktop-database"):
+            raise OSError("not on this test machine")
+        return real_run(cmd, **kw)
+    monkeypatch.setattr(ds.subprocess, "run", run)
+    made = ds.linux_launcher(root, home)
+    assert made[1] == home / "Desktop" / "crisp-automation.desktop"
+    assert made[1].read_text(encoding="utf-8") == made[0].read_text(encoding="utf-8")
+    assert "Icon=" in made[1].read_text(encoding="utf-8") and "gio" in calls

@@ -473,6 +473,22 @@ class Dialog(QDialog):
         else:
             self.confirm_button.setDefault(True)
 
+    def showEvent(self, event):
+        """Wrapped text needs height that depends on the width: grow to fit it, so no
+        line is squeezed or cut (seen on Ubuntu, where the first layout pass is too short)."""
+        super().showEvent(event)
+        self.fit_text()
+
+    def fit_text(self):
+        lay = self.layout()
+        if lay is None or not lay.hasHeightForWidth():
+            return
+        need = lay.totalHeightForWidth(self.width())
+        if need > 0:
+            self.setMinimumHeight(need)
+            if self.height() < need:
+                self.resize(self.width(), need)
+
 
 # Overridable in tests so dialogs can be answered automatically.
 DIALOG_HOOK = None

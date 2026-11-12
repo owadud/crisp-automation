@@ -168,6 +168,12 @@ try:
 except ValueError:
     API_TEXTS = []
 API = None            # crisp_api.CrispAPI during an API run
+# AI opening lines (generated and reviewed in the app): {email: {"opener": ...}}.
+AI_OPENERS_FILE = os.environ.get("CRISP_AI_OPENERS", "").strip()
+try:
+    AI_OPENERS = json.loads(Path(AI_OPENERS_FILE).read_text(encoding="utf-8")) if AI_OPENERS_FILE else {}
+except (OSError, ValueError):
+    AI_OPENERS = {}
 API_TEXT = ""         # message text for the current recipient
 API_SESSION = ""      # conversation created for the current recipient
 API_LINK = ""
@@ -225,7 +231,12 @@ def api_send(row):
     name, from_email = rules.display_name(row)
     print(f"  Recipient: {email} | {name}" + (" (name from email)" if from_email else "") + " (Crisp API)")
     API_SESSION = API_LINK = ""
-    text = personalize(API_TEXT, name)
+    opener = ""
+    if AI_OPENERS_FILE:
+        opener = str((AI_OPENERS.get(email.strip().lower()) or {}).get("opener", ""))
+        if not opener:
+            print("  No AI opening line for this recipient; sending without one.")
+    text = personalize(sc.insert_opener(API_TEXT, opener), name)
     if not text.strip():
         raise RuntimeError("The message text is empty.")
     if DRY_RUN:
