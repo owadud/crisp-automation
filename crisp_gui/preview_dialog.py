@@ -22,7 +22,10 @@ def preview_rows(plan, campaign: dict) -> list[tuple]:
     A/B test: the expected shortcut per row (the real run balances by actual sends)."""
     import send_control as sc
     try:
-        variants = sc.parse_variants(campaign.get("shortcut", ""), campaign.get("shortcut_version", ""))
+        if campaign.get("send_mode") == "api":
+            variants = sc.api_variants(campaign.get("api_message", ""), campaign.get("shortcut_version", ""))
+        else:
+            variants = sc.parse_variants(campaign.get("shortcut", ""), campaign.get("shortcut_version", ""))
     except ValueError:
         variants = [(campaign.get("shortcut", ""), "")]
     counts = [0] * len(variants)

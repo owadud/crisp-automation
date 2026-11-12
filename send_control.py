@@ -263,6 +263,25 @@ def parse_variants(shortcuts: str, versions: str = "") -> list[tuple[str, str]]:
     return list(zip(names, labels))
 
 
+def split_messages(text: str) -> list[str]:
+    """API message box -> message texts. A line with only --- separates A/B versions."""
+    parts, cur = [], []
+    for line in str(text or "").splitlines():
+        if re.fullmatch(r"\s*-{3,}\s*", line):
+            parts.append("\n".join(cur).strip())
+            cur = []
+        else:
+            cur.append(line)
+    parts.append("\n".join(cur).strip())
+    return [p for p in parts if p]
+
+
+def api_variants(text: str, versions: str = "") -> list[tuple[str, str]]:
+    """Variant names api-1, api-2, ... (one per message text) with their labels."""
+    n = max(1, len(split_messages(text)))
+    return parse_variants(", ".join(f"api-{i + 1}" for i in range(n)), versions)
+
+
 def variant_counts(path: Path, campaign: str, variants) -> list[int]:
     """Live sends so far in this campaign per variant (history.csv), to keep the split even."""
     counts = [0] * len(variants)

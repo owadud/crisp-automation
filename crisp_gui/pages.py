@@ -190,8 +190,27 @@ class CampaignPage(Page):
         self.shortcut_version = Field("Version label(s)", "One label per shortcut, same order (e.g. v1, v2). "
                                       "Compare them in Campaign Results. Blank = the shortcut names.",
                                       placeholder="Optional, e.g. v1, v2")
+        mrow = QHBoxLayout()
+        mrow.addWidget(label("Send with", "fieldLabel"))
+        mrow.addSpacing(8)
+        self.send_mode = SegmentedControl([("browser", "Browser", None), ("api", "Crisp API", None)], tm)
+        self.send_mode.setToolTip("Browser: Crisp inbox with your saved shortcut. "
+                                  "Crisp API: no browser, your message text below.")
+        mrow.addWidget(self.send_mode)
+        mrow.addStretch()
+        card.body.addLayout(mrow)
         card.body.addWidget(self.subject)
         card.body.addWidget(self.shortcut)
+        self.api_message_label = label("Message text", "fieldLabel")
+        self.api_message = QPlainTextEdit()
+        self.api_message.setPlaceholderText("Hi {first_name},\n\nYour message…")
+        self.api_message.setMinimumHeight(140)
+        self.api_message_help = label("Sent as the email body through the Crisp API. {name} and {first_name} "
+                                      "become the recipient's name. For an A/B test, put a line with only --- "
+                                      "between the versions.", "fieldHelp", wrap=True)
+        for w in (self.api_message_label, self.api_message, self.api_message_help):
+            card.body.addWidget(w)
+            w.hide()
         card.body.addWidget(self.shortcut_version)
         self.add(card)
 

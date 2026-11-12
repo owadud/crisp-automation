@@ -48,6 +48,8 @@ CAMPAIGN_DEFAULTS = {
     "campaign": "",            # campaign name for history; blank = the subject
     "recent_days": "7",        # skip anyone emailed in the last N days (0 = off)
     "shortcut_version": "",    # your label for the shortcut text, e.g. v2 (Campaign Results)
+    "send_mode": "browser",    # "browser" (Crisp inbox + shortcut) or "api" (Crisp REST API + message text)
+    "api_message": "",         # message text for API sending; a line with --- separates A/B versions
 }
 
 THEMES = ("light", "dark", "system")

@@ -250,6 +250,13 @@ is typed, sent, resolved or changed.
   the split stays even, also across runs. The preview table and the live confirmation show which
   shortcut each row is expected to get. Compare the versions in Campaign Results > Compare.
   All shortcuts must use the same Email subject.
+- **Send with the Crisp API (3.11)**: in a campaign, **Message > Send with: Crisp API** sends without
+  a browser: the app creates the conversation in Crisp, sets the email, name, subject and segment,
+  posts your **Message text** (`{name}` / `{first_name}` are filled in; a line with only `---`
+  separates A/B versions) and resolves it. All the usual rules apply: claims, recently-contacted,
+  pace, daily cap, Stop/Pause and the live confirmation. If Crisp refuses the message it is Failed
+  (nothing sent); if the connection breaks while posting it is **Unconfirmed** and never repeated.
+  Needs the API token (Settings > Crisp API). **Browser** (Crisp shortcut) stays the default.
 - **Crisp API (3.10)**: with a Crisp Website Token saved in **Settings > Crisp API**, **Refresh
   statuses** reads every conversation straight from the Crisp REST API (read-only): delivered, read,
   replied (exact time) and open/resolved, with no browser window and no sign-in. About 2 requests per

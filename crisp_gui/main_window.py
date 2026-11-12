@@ -336,6 +336,9 @@ class MainWindow(QMainWindow):
         c.dry.toggled.connect(self._dry_toggled)
         for key, field in c.fields().items():
             field.edit.textChanged.connect(lambda value, k=key: self._field_changed(k, value))
+        c.send_mode.changed.connect(self._send_mode_changed)
+        c.api_message.textChanged.connect(
+            lambda: self._field_changed("api_message", c.api_message.toPlainText()))
         self.csv_timer.timeout.connect(self.refresh_csv)
 
         a = self.activity
@@ -391,6 +394,8 @@ class MainWindow(QMainWindow):
         values = self.prefs.campaign()
         for key, field in self.campaign.fields().items():
             field.edit.setText(values[key])
+        self.campaign.api_message.setPlainText(values.get("api_message", ""))
+        self._apply_send_mode(values.get("send_mode", "browser"))
         self.campaign.dry.setChecked(True)   # always start safe
         self.campaign.skip_failed.setChecked(False)   # opt-in every launch
         self.campaign.random_delay.setChecked(self.prefs.random_delay())
@@ -633,11 +638,39 @@ class MainWindow(QMainWindow):
         values["source"] = self.source()
         values["sheet_tab"] = self.campaign.sheet_tab.currentText().strip()
         values["data_dir"] = str(self.data_dir)
+        values["send_mode"] = self.campaign.send_mode.value() or "browser"
+        values["api_message"] = self.campaign.api_message.toPlainText().strip()
+        values["api_messages"] = json.dumps(sc.split_messages(values["api_message"]))
+        values["api_config"] = str(self.api_config_path)
         values.update(self._shared_values())
         return values
 
+    def _send_mode_changed(self, mode):
+        if not self._loading:
+            self.prefs.set_campaign_value("send_mode", mode or "browser")
+        self._apply_send_mode(mode)
+        self._validate_fields()
+        self._update_summary()
+
+    def _apply_send_mode(self, mode):
+        c = self.campaign
+        api = mode == "api"
+        c.send_mode.set_value("api" if api else "browser")
+        c.shortcut.setVisible(not api)
+        for w in (c.api_message_label, c.api_message, c.api_message_help):
+            w.setVisible(api)
+
     @staticmethod
     def _shortcut_text(v: dict) -> str:
+        if v.get("send_mode") == "api":
+            texts = sc.split_messages(v.get("api_message", ""))
+            first = (texts[0] if texts else "").replace("\n", " ")
+            head = "Send with: Crisp API (no browser)"
+            if len(texts) > 1:
+                labels = " / ".join(lab for _n, lab in sc.api_variants(v.get("api_message", ""),
+                                                                         v.get("shortcut_version", "")))
+                return f"{head} · A/B test, {len(texts)} message versions: {labels}"
+            return f"{head} · message: “{first[:80]}{'…' if len(first) > 80 else ''}”"
         try:
             variants = sc.parse_variants(v.get("shortcut", ""), v.get("shortcut_version", ""))
         except ValueError:
@@ -896,14 +929,40 @@ class MainWindow(QMainWindow):
                                   and not self.runner.is_running())
         c.retry_failed.setText(f"Retry failed only ({st.retry_candidates})" if st.retry_candidates
                                else "Retry failed only")
-        for key in ("subject", "shortcut", "segment"):
+        api = c.send_mode.value() == "api"
+        for key in ("subject", "segment") + (() if api else ("shortcut",)):
             f = c.fields()[key]
             if not f.text():
                 f.set_state("error", "Required.")
                 ok = False
             else:
                 f.set_state("help")
-        if c.shortcut.text():
+        if api:
+            c.shortcut.set_state("help")
+            texts = sc.split_messages(c.api_message.toPlainText())
+            problem = ""
+            if not texts:
+                problem = "Type the message text for the Crisp API."
+            elif not crisp_api.configured(self._api_config()):
+                problem = "Save the Crisp API token first: Settings > Crisp API."
+            else:
+                try:
+                    variants = sc.api_variants(c.api_message.toPlainText(), c.shortcut_version.text())
+                    c.shortcut_version.set_state("help")
+                    if len(variants) > 1:
+                        c.shortcut_version.set_state("ok", f"A/B test: {len(variants)} message versions, split "
+                                                     "evenly: " + " · ".join(lab for _n, lab in variants))
+                except ValueError as exc:
+                    c.shortcut_version.set_state("error", str(exc))
+                    ok = False
+            c.api_message_help.setObjectName("fieldError" if problem else "fieldHelp")
+            c.api_message_help.setText(problem or ("Sent as the email body through the Crisp API. {name} and "
+                                                   "{first_name} become the recipient's name. For an A/B test, "
+                                                   "put a line with only --- between the versions."))
+            c.api_message_help.style().unpolish(c.api_message_help)
+            c.api_message_help.style().polish(c.api_message_help)
+            ok = ok and not problem
+        elif c.shortcut.text():
             try:
                 variants = sc.parse_variants(c.shortcut.text(), c.shortcut_version.text())
                 c.shortcut_version.set_state("help")
@@ -1942,6 +2001,9 @@ class MainWindow(QMainWindow):
             if key in values and key not in cs.APP_WIDE:
                 f.edit.setText(values[key])
         c.skip_failed.setChecked(values.get("skip_failed") == "true")
+        c.api_message.setPlainText(values.get("api_message", ""))
+        self._apply_send_mode(values.get("send_mode", "browser"))
+        self.prefs.set_campaign_value("send_mode", values.get("send_mode", "browser") or "browser")
         source = values.get("source", "csv")
         self.prefs.set_source(source)
         self._apply_source(source)

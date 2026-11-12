@@ -60,7 +60,8 @@ class Campaign:
 
     def missing(self) -> list[str]:
         s = self.settings
-        out = [k for k in REQUIRED if not str(s.get(k, "")).strip()]
+        required = REQUIRED if s.get("send_mode") != "api" else ("subject", "api_message", "segment")
+        out = [k for k in required if not str(s.get(k, "")).strip()]
         if s.get("source") == "sheet":
             out += [k for k in ("sheet_url", "sheet_tab", "google_key") if not str(s.get(k, "")).strip()]
         elif not str(s.get("csv", "")).strip():

@@ -46,6 +46,7 @@ import recipient_rules as rules  # noqa: E402  (same rules as the GUI preview)
 import send_control as sc  # noqa: E402  (limits, Dhaka time, history, run folders)
 import claims  # noqa: E402  (per-recipient claims on a shared Google Sheet)
 import pacing  # noqa: E402  (app-wide send pace across campaigns)
+import crisp_api  # noqa: E402  (Crisp REST API: optional sending without a browser)
 
 
 # ============================================================
@@ -157,8 +158,26 @@ SHORTCUT_VERSION = os.environ.get("CRISP_SHORTCUT_VERSION", "").strip()
 
 # A/B test: several shortcuts ("!a, !b") with labels ("v1, v2"). Each recipient gets
 # the variant with the fewest sends so far in this campaign, so the split stays even.
+# Sending: "browser" (Crisp inbox + saved shortcut, the default) or "api" (Crisp REST
+# API with the campaign's own message text; no browser). A/B in API mode = several
+# message texts; each variant is named "api-1", "api-2", ... with the same labels.
+SEND_MODE = "api" if os.environ.get("CRISP_SEND_MODE", "").strip().lower() == "api" else "browser"
+API_MODE = SEND_MODE == "api"
 try:
-    VARIANTS = sc.parse_variants(SHORTCUT, SHORTCUT_VERSION)
+    API_TEXTS = [str(t) for t in json.loads(os.environ.get("CRISP_API_MESSAGES", "") or "[]") if str(t).strip()]
+except ValueError:
+    API_TEXTS = []
+API = None            # crisp_api.CrispAPI during an API run
+API_TEXT = ""         # message text for the current recipient
+API_SESSION = ""      # conversation created for the current recipient
+API_LINK = ""
+
+try:
+    if API_MODE:
+        VARIANTS = sc.parse_variants(", ".join(f"api-{i + 1}" for i in range(max(1, len(API_TEXTS)))),
+                                     SHORTCUT_VERSION)
+    else:
+        VARIANTS = sc.parse_variants(SHORTCUT, SHORTCUT_VERSION)
 except ValueError:
     VARIANTS = [(SHORTCUT, SHORTCUT_VERSION)]
 VARIANT_COUNTS = None
@@ -172,7 +191,65 @@ def choose_variant():
                           else sc.variant_counts(HISTORY_FILE, CAMPAIGN, VARIANTS))
     index = sc.pick_variant(VARIANT_COUNTS)
     SHORTCUT, SHORTCUT_VERSION = VARIANTS[index]
+    if API_MODE:
+        global API_TEXT
+        API_TEXT = API_TEXTS[index] if index < len(API_TEXTS) else ""
     return index
+
+
+def personalize(text, name):
+    """{name} and {first_name} in an API message become the recipient's name."""
+    first = (name or "").split()[0] if (name or "").split() else ""
+    return str(text).replace("{first_name}", first).replace("{name}", name or "")
+
+
+def open_api():
+    """API mode: the saved Crisp token (Settings > Crisp API), checked with one read."""
+    global API
+    cfg = crisp_api.load_config(Path(os.environ.get("CRISP_API_CONFIG") or crisp_api.CONFIG))
+    if not crisp_api.configured(cfg):
+        raise RuntimeError("Sending with the Crisp API needs the API token: Settings > Crisp API.")
+    if not API_TEXTS:
+        raise RuntimeError("Sending with the Crisp API needs the message text (Campaign > Message).")
+    API = crisp_api.CrispAPI(cfg["website_id"], cfg["identifier"], cfg["key"])
+    site = API.website()
+    print(f"Crisp API connected: {site.get('name') or cfg['website_id']}. No browser is used.")
+
+
+def api_send(row):
+    """One recipient through the Crisp API: new conversation, email / name / subject /
+    segment, then the message. 'Sending' is recorded (shared Sheet) right before the
+    message is posted; after that point a failure is never repeated."""
+    global API_SESSION, API_LINK, SEND_CLICKED
+    email = clean(row.get("Contact Email"))
+    name, from_email = rules.display_name(row)
+    print(f"  Recipient: {email} | {name}" + (" (name from email)" if from_email else "") + " (Crisp API)")
+    API_SESSION = API_LINK = ""
+    text = personalize(API_TEXT, name)
+    if not text.strip():
+        raise RuntimeError("The message text is empty.")
+    if DRY_RUN:
+        print(f"  [DRY RUN] Crisp API: would create the conversation and send {len(text)} characters. "
+              "Nothing was created or sent.")
+        return True
+    API_SESSION = API.create_conversation()
+    API_LINK = API.link(API_SESSION)
+    API.set_meta(API_SESSION, email=email, nickname=name, subject=SUBJECT,
+                 segments=[SEGMENT_NAME] if SEGMENT_NAME else None)
+    print("  Conversation created; email, name, subject and segment set.")
+    before_send_click()   # shared Sheet: record "Sending" and re-check the claim
+    print("  Sending through the Crisp API...")
+    SEND_CLICKED = True
+    try:
+        API.send_text(API_SESSION, text, origin="email")
+    except crisp_api.CrispAPIError as exc:
+        if not exc.uncertain:
+            SEND_CLICKED = False           # Crisp refused it: nothing was sent
+            raise RuntimeError(f"Crisp did not accept the message: {exc}")
+        raise RuntimeError(f"{exc} The email MAY already have been sent.")
+    print("  Email sent successfully.", flush=True)
+    emit("sent")
+    return True
 
 # Campaign Results: read-only status check of saved conversation links.
 RESULTS_CHECK = os.environ.get("CRISP_RESULTS_CHECK", "false").lower() in {"1", "true", "yes", "on"}
@@ -671,6 +748,8 @@ def log_result(row_index, row, result, error="", link=""):
 
 
 def failure_screenshot(page, position, email):
+    if API_MODE:
+        return
     if not RUN_DIR:
         return
     try:
@@ -2018,6 +2097,8 @@ def all_composer_texts(page):
 # ============================================================
 
 def add_segment(page):
+    if API_MODE:
+        return            # the segment was set with the conversation (Crisp API)
 
     print(
         f"  Adding segment: {SEGMENT_NAME}"
@@ -2136,6 +2217,11 @@ def add_segment(page):
 # ============================================================
 
 def resolve_conversation(page):
+    if API_MODE:
+        if API_SESSION:
+            API.set_state(API_SESSION, "resolved")
+            print("  Conversation resolved (Crisp API).")
+        return
 
     if DRY_RUN:
 
@@ -2186,6 +2272,8 @@ def process_recipient(
     page,
     row
 ):
+    if API_MODE:
+        return api_send(row)
 
     email = clean(
         row.get("Contact Email")
@@ -2247,6 +2335,8 @@ def process_recipient(
 
 
 def recover_page(page):
+    if API_MODE:
+        return True       # no page to recover
     """After a failure BEFORE Send: close dialogs and return to the Inbox."""
     try:
         for _ in range(3):
@@ -2434,6 +2524,67 @@ def health_check():
             pass
 
 
+class _NoBrowser:
+    """Stands in for sync_playwright() when sending through the Crisp API."""
+
+    def __enter__(self):
+        return None
+
+    def __exit__(self, *exc):
+        return False
+
+
+def open_crisp_page(p):
+    """Start Chromium with the saved Crisp login and wait for the Inbox (browser mode)."""
+
+    context = (
+        p.chromium.launch_persistent_context(
+            user_data_dir=str(
+                PROFILE_DIR
+            ),
+            headless=False,
+            viewport={
+                "width": 1600,
+                "height": 900
+            },
+            args=[
+                "--start-maximized"
+            ]
+        )
+    )
+
+    if context.pages:
+
+        page = context.pages[0]
+
+    else:
+
+        page = context.new_page()
+
+    try:
+
+        page.goto(
+            CRISP_URL,
+            wait_until="domcontentloaded",
+            timeout=60000
+        )
+
+    except Exception:
+        pass
+
+    wait_for_crisp(
+        page
+    )
+
+    print()
+    print("Browser is open. Waiting for automatic Inbox detection.")
+    print("Complete Crisp login in Chromium if requested.")
+    # wait_for_crisp() above returns only after the authenticated Inbox
+    # is detected, so no manual Enter prompt is needed here.
+
+    return context, page
+
+
 def _main():
     if HEALTH_CHECK:
         health_check()
@@ -2450,16 +2601,22 @@ def _main():
         f"CSV: {CSV_FILE}"
     )
 
+    if API_MODE:
+        print(f"Send with: Crisp API ({len(API_TEXTS)} message text(s)); no browser.")
     if len(VARIANTS) > 1:
         print("A/B test, split evenly: " + " · ".join(f"{n} ({lab})" for n, lab in VARIANTS))
-    else:
+    elif not API_MODE:
         print(
             f"Shortcut: {SHORTCUT}"
         )
     try:
-        sc.parse_variants(os.environ.get("CRISP_SHORTCUT", SHORTCUT), os.environ.get("CRISP_SHORTCUT_VERSION", ""))
+        if API_MODE:
+            sc.parse_variants(", ".join(f"api-{i + 1}" for i in range(max(1, len(API_TEXTS)))),
+                              os.environ.get("CRISP_SHORTCUT_VERSION", ""))
+        else:
+            sc.parse_variants(os.environ.get("CRISP_SHORTCUT", SHORTCUT), os.environ.get("CRISP_SHORTCUT_VERSION", ""))
     except ValueError as exc:
-        raise RuntimeError(f"Shortcut settings: {exc}")
+        raise RuntimeError(f"Message / shortcut settings: {exc}")
 
     print(
         f"Subject: {SUBJECT}"
@@ -2558,54 +2715,14 @@ def _main():
             return
         print("Scheduled time reached.")
 
-    print("Launching Chromium. Complete your Crisp login when the browser opens.")
+    if API_MODE:
+        open_api()
+    else:
+        print("Launching Chromium. Complete your Crisp login when the browser opens.")
 
-    with sync_playwright() as p:
+    with (_NoBrowser() if API_MODE else sync_playwright()) as p:
 
-        context = (
-            p.chromium.launch_persistent_context(
-                user_data_dir=str(
-                    PROFILE_DIR
-                ),
-                headless=False,
-                viewport={
-                    "width": 1600,
-                    "height": 900
-                },
-                args=[
-                    "--start-maximized"
-                ]
-            )
-        )
-
-        if context.pages:
-
-            page = context.pages[0]
-
-        else:
-
-            page = context.new_page()
-
-        try:
-
-            page.goto(
-                CRISP_URL,
-                wait_until="domcontentloaded",
-                timeout=60000
-            )
-
-        except Exception:
-            pass
-
-        wait_for_crisp(
-            page
-        )
-
-        print()
-        print("Browser is open. Waiting for automatic Inbox detection.")
-        print("Complete Crisp login in Chromium if requested.")
-        # wait_for_crisp() above returns only after the authenticated Inbox
-        # is detected, so no manual Enter prompt is needed here.
+        context, page = (None, None) if API_MODE else open_crisp_page(p)
 
         completed = 0
         failed = 0
@@ -2742,7 +2859,7 @@ def _main():
                 # MAIL SENT CSV UPDATE
                 # ------------------------------------------------
 
-                link = current_conversation_link(page)
+                link = API_LINK if API_MODE else current_conversation_link(page)
 
                 if not DRY_RUN:
 
@@ -2955,7 +3072,7 @@ def _main():
             "Browser will remain open for review."
         )
 
-        if os.environ.get("CRISP_GUI_MODE") != "1":
+        if os.environ.get("CRISP_GUI_MODE") != "1" and context is not None:
             try:
                 input("Press ENTER to close the browser...")
             except KeyboardInterrupt:
@@ -2963,7 +3080,8 @@ def _main():
 
         try:
 
-            context.close()
+            if context is not None:
+                context.close()
 
         except Exception:
             pass
