@@ -287,6 +287,12 @@ class MainWindow(QMainWindow):
         self.settings.make_shortcut.clicked.connect(self.make_shortcut)
         self.settings.api_save.clicked.connect(self.save_api_token)
         self.settings.api_remove.clicked.connect(self.remove_api_token)
+        self.settings.api_test_send.clicked.connect(self.send_api_test)
+        self.settings.api_test_open.clicked.connect(
+            lambda: browser.open_url(getattr(self, "_api_test_link", "")) if getattr(self, "_api_test_link", "")
+            else None)
+        self._api_send_signal = _SheetSignal(self)
+        self._api_send_signal.done.connect(self._api_test_sent)
         self._api_signal = _ApiSignal(self)
         self._api_signal.progress.connect(self._api_progress)
         self._api_signal.done.connect(self._api_check_done)
@@ -1580,6 +1586,8 @@ class MainWindow(QMainWindow):
         s.api_website.edit.setText(cfg["website_id"] or self._website_from_history())
         s.api_identifier.edit.setText(cfg["identifier"])
         s.api_key.edit.setText(cfg["key"])
+        if not s.api_test_subject.text():
+            s.api_test_subject.edit.setText(self.campaign.subject.text())
         s.api_status.setText("Token saved. Refresh statuses reads from the Crisp API." if crisp_api.configured(cfg)
                              else "No token yet: Refresh statuses opens conversations in Chromium instead.")
 
@@ -1624,6 +1632,60 @@ class MainWindow(QMainWindow):
         self.settings.api_identifier.edit.clear()
         self.settings.api_key.edit.clear()
         self._load_api_fields()
+
+    def send_api_test(self):
+        """ONE real email to the address typed in, through the Crisp API (Phase B check)."""
+        s = self.settings
+        cfg = self._api_config()
+        if not crisp_api.configured(cfg):
+            s.api_test_result.setText("Save the Crisp API token first.")
+            return
+        to = s.api_test_to.text()
+        subject = s.api_test_subject.text() or "Test from Crisp Automation"
+        text = s.api_test_text.toPlainText().strip()
+        import recipient_rules as rules
+        if not to or rules.email_problem(to):
+            s.api_test_result.setText("Type a valid email address (your own).")
+            return
+        if not text:
+            s.api_test_result.setText("Type a message.")
+            return
+        if not W.ask(self, f"Send one real email to {to} through the Crisp API?",
+                     "A new conversation is created in Crisp with this subject and message. Use your own address. "
+                     "Nothing else is sent.", details=[("To", to), ("Subject", subject)],
+                     confirm="Send test email", tone="danger"):
+            return
+        s.api_test_send.setEnabled(False)
+        s.api_test_open.hide()
+        s.api_test_result.setText("Sending, then reading it back from Crisp (up to about a minute)…")
+
+        def work():
+            try:
+                report = crisp_api.send_test(self._api_factory(cfg), to, subject, text)
+                self._api_send_signal.done.emit("send", report, None)
+            except Exception as exc:  # noqa: BLE001
+                self._api_send_signal.done.emit("send", None, str(exc))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _api_test_sent(self, _kind, report, error):
+        s = self.settings
+        s.api_test_send.setEnabled(True)
+        if error or not report:
+            s.api_test_result.setText(f"Test failed: {error}")
+            return
+        self._api_test_link = report.get("link", "")
+        s.api_test_open.setVisible(bool(self._api_test_link))
+        lines = ["Steps: " + ", ".join(report["steps"]) + "."]
+        if report["error"]:
+            lines.append(f"Problem: {report['error']}")
+        if report["visible_message"]:
+            lines.append("Crisp reports the message: delivered = " + (report["delivered"] or "not yet")
+                         + ", read = " + (report["read"] or "not yet")
+                         + (f", ignored = {report['ignored']}" if report["ignored"] else "") + ".")
+        lines.append("Now check the inbox (and spam folder) of that address, and open the conversation in Crisp. "
+                     "Tell Claude: did the email arrive, with the right subject and text?")
+        s.api_test_result.setText("\n".join(lines))
+        self._gui_line("Crisp API test email: " + " ".join(lines[:3]))
 
     def _api_factory(self, cfg: dict):
         return crisp_api.CrispAPI(cfg["website_id"], cfg["identifier"], cfg["key"])

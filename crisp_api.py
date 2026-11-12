@@ -36,6 +36,16 @@ class CrispAPIError(RuntimeError):
     def __init__(self, message: str, code: int = 0):
         super().__init__(message)
         self.code = code
+        self.uncertain = False      # a write may have happened (never repeat it automatically)
+
+
+def _reason(exc) -> str:
+    """Crisp's own short reason from an error response, if any."""
+    try:
+        body = json.loads(exc.read().decode("utf-8") or "{}")
+        return str(body.get("reason") or "")[:120]
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 # ------------------------------------------------------------------ settings (local only)
@@ -93,34 +103,82 @@ class CrispAPI:
         self.requests = 0
 
     def _get(self, path: str, params: dict | None = None):
+        return self._request("GET", path, params=params)
+
+    def _request(self, method: str, path: str, params: dict | None = None, body: dict | None = None):
+        """GET is retried on rate limits, server and network errors. A WRITE is retried
+        only when Crisp says it is rate limiting (420/429: nothing was done); after a
+        server or network error a write may already have happened, so it raises with
+        .uncertain = True and is never repeated automatically."""
         url = f"{API}{path}" + (f"?{urllib.parse.urlencode(params)}" if params else "")
+        write = method != "GET"
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        headers = dict(self._headers, **({"Content-Type": "application/json"} if data is not None else {}))
         delay = 2.0
         for attempt in range(1, self.tries + 1):
-            req = urllib.request.Request(url, headers=self._headers, method="GET")
+            req = urllib.request.Request(url, data=data, headers=headers, method=method)
             self.requests += 1
             try:
                 with self._open(req) as resp:
-                    body = json.loads(resp.read().decode("utf-8") or "{}")
-                    return body.get("data")
+                    payload = json.loads(resp.read().decode("utf-8") or "{}")
+                    return payload.get("data")
             except urllib.error.HTTPError as exc:
                 code = exc.code
+                reason = _reason(exc)
                 if code in (401, 403):
                     raise CrispAPIError("Crisp refused the API token (check the identifier, key and website ID, "
-                                        "and that the token was not revoked).", code) from exc
+                                        "and that the token was not revoked)." + (f" [{reason}]" if reason else ""),
+                                        code) from exc
                 if code == 404:
                     raise CrispAPIError("not found", 404) from exc
-                if code in (420, 429) or code >= 500:
+                if code in (420, 429):
                     if attempt == self.tries:
                         raise CrispAPIError("Crisp is limiting requests right now (daily quota or rate limit). "
                                             "Try again later.", code) from exc
+                elif code >= 500:
+                    if write:
+                        err = CrispAPIError(f"Crisp server error {code} while writing: it may or may not have "
+                                            "been done. Check Crisp before trying again.", code)
+                        err.uncertain = True
+                        raise err from exc
+                    if attempt == self.tries:
+                        raise CrispAPIError(f"Crisp server error {code}. Try again later.", code) from exc
                 else:
-                    raise CrispAPIError(f"Crisp API error {code}.", code) from exc
+                    raise CrispAPIError(f"Crisp API error {code}" + (f": {reason}" if reason else "") + ".",
+                                        code) from exc
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                if write:
+                    err = CrispAPIError(f"Lost the connection to Crisp while writing ({exc}): it may or may not "
+                                        "have been done. Check Crisp before trying again.")
+                    err.uncertain = True
+                    raise err from exc
                 if attempt == self.tries:
                     raise CrispAPIError(f"Could not reach Crisp ({exc}).") from exc
             self.sleep(delay)
             delay *= 2
         raise CrispAPIError("Crisp did not answer.")
+
+    # -------------------------------------------------------------- writes (sending)
+    def create_conversation(self) -> str:
+        data = self._request("POST", f"/website/{self.website_id}/conversation", body={}) or {}
+        session_id = str(data.get("session_id") or "")
+        if not session_id.startswith("session_"):
+            raise CrispAPIError("Crisp did not return a conversation ID.")
+        return session_id
+
+    def set_meta(self, session_id: str, **meta) -> None:
+        self._request("PATCH", f"/website/{self.website_id}/conversation/{session_id}/meta",
+                      body={k: v for k, v in meta.items() if v not in (None, "", [])})
+
+    def send_text(self, session_id: str, text: str, origin: str = "email") -> None:
+        self._request("POST", f"/website/{self.website_id}/conversation/{session_id}/message",
+                      body={"type": "text", "from": "operator", "origin": origin, "content": text})
+
+    def set_state(self, session_id: str, state: str) -> None:
+        self._request("PATCH", f"/website/{self.website_id}/conversation/{session_id}/state", body={"state": state})
+
+    def link(self, session_id: str) -> str:
+        return f"https://app.crisp.chat/website/{self.website_id}/inbox/{session_id}/"
 
     # -------------------------------------------------------------- read-only calls
     def website(self) -> dict:
@@ -200,3 +258,45 @@ def check(api: CrispAPI, link: str, sent_at: str = "") -> dict:
             return {"problem": "not_found"}
         raise
     return analyze(conv, msgs, sent_at)
+
+
+# ------------------------------------------------------------------ one test email (Settings)
+def send_test(api: CrispAPI, to_email: str, subject: str, text: str, name: str = "", origin: str = "email",
+              wait_s: int = 45, poll=None, step: int = 15) -> dict:
+    """Create ONE conversation to `to_email`, set email / name / subject, post the
+    text as an operator message, then read it back a few times to see what Crisp
+    reports (delivered / read / ignored). Never repeats a write. Returns a report."""
+    report = {"session_id": "", "link": "", "steps": [], "delivered": "", "read": "", "ignored": "",
+              "state": "", "visible_message": False, "error": ""}
+    try:
+        sid = api.create_conversation()
+        report.update(session_id=sid, link=api.link(sid))
+        report["steps"].append("conversation created")
+        api.set_meta(sid, email=to_email.strip(), nickname=name or to_email.split("@")[0], subject=subject)
+        report["steps"].append("email, name and subject set")
+        api.send_text(sid, text, origin=origin)
+        report["steps"].append(f"message posted (origin {origin})")
+    except CrispAPIError as exc:
+        report["error"] = str(exc)
+        return report
+    waited = 0
+    sleep = poll or time.sleep
+    while True:
+        try:
+            msgs = api.messages(sid)
+            conv = api.conversation(sid)
+        except CrispAPIError as exc:
+            report["error"] = f"Sent, but could not read it back: {exc}"
+            return report
+        mine = [m for m in msgs if isinstance(m, dict) and m.get("from") == "operator"
+                and m.get("type") == "text"]
+        if mine:
+            m = mine[-1]
+            report.update(visible_message=True, delivered=str(m.get("delivered") or ""),
+                          read=str(m.get("read") or ""),
+                          ignored=json.dumps(m.get("ignored")) if m.get("ignored") else "")
+        report["state"] = str(conv.get("state") or "")
+        if report["delivered"] or report["ignored"] or waited >= wait_s:
+            return report
+        sleep(step)
+        waited += step
