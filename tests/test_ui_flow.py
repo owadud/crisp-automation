@@ -228,3 +228,22 @@ def test_lists_has_an_emailed_recently_filter(win):
     assert "recent" in win.lists_page.filter.buttons
     win.show_recent_skips()
     assert win.lists_page.filter.value() == "recent"
+
+
+def test_check_in_crisp_marks_each_version(win):
+    c = win.campaign
+    vt = c.versions
+    c.shortcut.edit.setText("bf-offer-1, bf-offer-9")
+    c.subject.edit.setText("Hi there")
+    c.shortcut_version.edit.setText("")
+    status = lambda: [vt.table.item(i, vt.IN_CRISP).text() for i in range(vt.table.rowCount())]  # noqa: E731
+    assert status() == ["Not checked", "Not checked"] or vt.crisp_lists        # nothing read yet on a new PC
+    st = rs.RunState()
+    st.crisp_lists = {"subjects": ["Hi there️"], "shortcuts": ["!bf-offer-1"]}   # Crisp's own spacing / emoji
+    win._health = True
+    win._run_finished(st)
+    assert status() == ["✓ Found", "✗ Shortcut not seen"]
+    assert vt.status.objectName() == "fieldError" and "not in Crisp" in vt.status.text()
+    assert "Checked" in vt.checked.text() and win._load_crisp_lists()["subjects"] == ["Hi there️"]
+    vt.table.item(1, vt.SHORTCUT).setText("bf-offer-1")                # fixing the row clears it
+    assert status()[1] == "✓ Found"

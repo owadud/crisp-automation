@@ -2396,8 +2396,9 @@ def results_check():
 
 def health_check():
     """'Check Crisp': open Crisp and look for the subject dropdown, the
-    Shortcuts tab and the segment field. Never types into a message, never
-    creates a conversation, never sends."""
+    Shortcuts tab and the segment field, and read the saved subjects and
+    shortcut names (so the app can say which versions exist in Crisp).
+    Never types into a message, never creates a conversation, never sends."""
     print("Crisp health check: nothing is created or sent.")
     emit("health_start")
     results = []
@@ -2422,8 +2423,18 @@ def health_check():
         # 1) New conversation dialog + subject dropdown (dialog is closed, not submitted)
         try:
             open_new_conversation(page)
-            _subject_input(page).wait_for(state="visible", timeout=ELEMENT_TIMEOUT)
-            report("Subject dropdown", True, "found in the New conversation dialog")
+            field = _subject_input(page)
+            field.wait_for(state="visible", timeout=ELEMENT_TIMEOUT)
+            subjects = []
+            try:                     # open the menu (nothing typed) and read its saved subjects
+                field.click()
+                page.wait_for_timeout(900)
+                subjects = list(dict.fromkeys(t for _, t in _menu_rows(page) if t))
+            except Exception:
+                pass
+            emit("crisp_lists", subjects=subjects)
+            report("Subject dropdown", True, f"found in the New conversation dialog, {len(subjects)} saved "
+                   "subject(s) read")
         except Exception as exc:
             report("Subject dropdown", False, f"{type(exc).__name__}: {exc}")
         finally:
@@ -2450,8 +2461,12 @@ def health_check():
             except Exception:
                 pass
             time.sleep(1)
-        report("Shortcuts tab", shortcuts, "visible in the conversation" if shortcuts
-               else "not found (open a conversation and click the message box, then check again)")
+        names = []
+        if shortcuts:
+            names = read_shortcut_names(page)
+            emit("crisp_lists", shortcuts=names)
+        report("Shortcuts tab", shortcuts, f"visible in the conversation, {len(names)} shortcut name(s) read"
+               if shortcuts else "not found (open a conversation and click the message box, then check again)")
         report("Segment field", segment, "visible in the conversation profile" if segment
                else "not found (open a conversation with the profile panel visible)")
         passed = sum(1 for ok in results if ok)
@@ -2461,6 +2476,28 @@ def health_check():
             context.close()
         except Exception:
             pass
+
+
+def read_shortcut_names(page):
+    """Click the Shortcuts tab and read the listed '!name' rows. Nothing is typed or inserted."""
+    try:
+        found = [(box(item)["y"], item) for item in
+                 (page.get_by_text("Shortcuts", exact=True).nth(i)
+                  for i in range(page.get_by_text("Shortcuts", exact=True).count()))
+                 if visible(item) and box(item)]
+        if not found:
+            return []
+        max(found, key=lambda x: x[0])[1].click(timeout=3000)   # the composer's tab (lowest on screen)
+        page.wait_for_timeout(1200)
+        rows = page.get_by_text(re.compile(r"^\s*![^\s!]+\s*$"))
+        names = []
+        for i in range(min(rows.count(), 500)):
+            item = rows.nth(i)
+            if visible(item):
+                names.append(item.inner_text().strip().lstrip("!"))
+        return list(dict.fromkeys(n for n in names if n))
+    except Exception:
+        return []
 
 
 class _NoBrowser:

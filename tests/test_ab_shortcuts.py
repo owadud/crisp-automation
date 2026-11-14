@@ -137,3 +137,11 @@ def test_version_table_round_trips_through_the_saved_texts():
     assert sc.versions_to_text([("", "", ""), ("!a", "Hi", "")]) == ("!a", "Hi", "")   # blank rows dropped
     assert sc.versions_to_text([("!a", "A", "x"), ("!b", "B", "")])[2] == "x, v2"      # labels stay in order
     assert sc.versions_from_text("!a, !b, !c", "A | B", "") == [("!a", "A", ""), ("!b", "B", ""), ("!c", "", "")]
+
+
+def test_version_status_from_the_last_check():
+    lists = {"subjects": ["Hi there"], "shortcuts": ["!a"]}
+    assert sc.version_status("!a", "hi  there", lists) == ("Found", True)
+    assert sc.version_status("b", "Other", lists) == ("Subject not saved in Crisp; shortcut not seen", False)
+    assert sc.version_status("b", "Hi there", lists, api=True) == ("Found", True)     # API: no shortcut
+    assert sc.version_status("a", "x", {}) == ("Not checked", None)

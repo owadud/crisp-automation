@@ -340,7 +340,9 @@ class MainWindow(QMainWindow):
         c.sheet_tab.currentTextChanged.connect(self._sheet_tab_changed)
         c.retry_failed.clicked.connect(lambda: self.start_run(retry_only=True))
         c.preview.clicked.connect(lambda: self.navigate(LISTS))
-        c.recent_rule.see_who.clicked.connect(self.show_recent_skips)   # each skipped row with who / when
+        c.recent_rule.see_who.clicked.connect(self.show_recent_skips)
+        c.versions.check.clicked.connect(self.check_crisp)
+        c.versions.set_crisp_lists(self._load_crisp_lists())   # each skipped row with who / when
         c.random_delay.toggled.connect(lambda on: None if self._loading else self.prefs.set_random_delay(on))
 
         h = self.history
@@ -1690,10 +1692,38 @@ class MainWindow(QMainWindow):
             return
         self._health = True
         self.settings.check_crisp.setEnabled(False)
+        self.campaign.versions.check.setEnabled(False)
+        self.campaign.versions.checked.setText("Checking in Crisp… open any conversation when asked")
         self.settings.health_result.setText("Checking… sign in to Crisp in the Chromium window if asked, "
                                             "then open any existing conversation.")
         self._gui_line("Crisp health check started (nothing is created or sent).")
         self._render_state(self.runner.state)
+
+    def _crisp_lists_path(self) -> Path:
+        return Path(self.data_dir) / "crisp_lists.json"
+
+    def _load_crisp_lists(self) -> dict:
+        try:
+            return json.loads(self._crisp_lists_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def _save_crisp_lists(self, found: dict):
+        """Keep the last lists Crisp showed; a list the check could not read keeps its old value."""
+        lists = self._load_crisp_lists()
+        for key in ("subjects", "shortcuts"):
+            if found.get(key):
+                lists[key] = found[key]
+        lists["checked_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        try:
+            self._crisp_lists_path().parent.mkdir(parents=True, exist_ok=True)
+            self._crisp_lists_path().write_text(json.dumps(lists, ensure_ascii=False, indent=1), encoding="utf-8")
+        except OSError:
+            pass
+
+    def _refresh_versions_check(self):
+        self.campaign.versions.set_crisp_lists(self._load_crisp_lists())
+        self.refresh_csv()
 
     def _run_finished(self, s: rs.RunState):
         if self._results_check:
@@ -1707,6 +1737,10 @@ class MainWindow(QMainWindow):
                 lines = [s.last_error or "The check stopped before it finished."]
             self.settings.health_result.setText("\n".join(lines))
             self.settings.check_crisp.setEnabled(True)
+            self.campaign.versions.check.setEnabled(True)
+            if s.crisp_lists:
+                self._save_crisp_lists(s.crisp_lists)
+                self._refresh_versions_check()
             self._gui_line("Crisp health check finished.")
             self._render_state(s)
             return

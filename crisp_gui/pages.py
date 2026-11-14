@@ -4,7 +4,7 @@ MainWindow wires behaviour so all logic lives in one place."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QIntValidator
+from PySide6.QtGui import QColor, QIntValidator
 from PySide6.QtWidgets import (
     QComboBox,
     QAbstractItemView, QFrame, QHBoxLayout, QHeaderView, QPlainTextEdit, QProgressBar, QScrollArea,
@@ -76,12 +76,14 @@ class VersionTable(QWidget):
     sending are unchanged. Messages from the hidden fields (Required, A/B summary,
     errors) are shown under the table by mirror()."""
 
-    LABEL, SHORTCUT, SUBJECT = range(3)
+    LABEL, SHORTCUT, SUBJECT, IN_CRISP = range(4)
 
     def __init__(self, shortcut: "Field", subject: "Field", labels: "Field", tm: ThemeManager):
         super().__init__()
         self.fields = (shortcut, subject, labels)
         self.api = False
+        self.crisp_lists = {}          # from the last Check Crisp: saved subjects and shortcut names
+        self.tm = tm
         self._syncing = False
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -89,8 +91,8 @@ class VersionTable(QWidget):
         lay.addWidget(label("Versions", "fieldLabel"))
         self.hint = label("", "fieldHelp", wrap=True)
         lay.addWidget(self.hint)
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Label", "Crisp shortcut", "Subject"])
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Label", "Crisp shortcut", "Subject", "In Crisp"])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.AllEditTriggers)
@@ -98,6 +100,7 @@ class VersionTable(QWidget):
         head.setSectionResizeMode(self.LABEL, QHeaderView.Interactive)
         head.setSectionResizeMode(self.SHORTCUT, QHeaderView.Interactive)
         head.setSectionResizeMode(self.SUBJECT, QHeaderView.Stretch)
+        head.setSectionResizeMode(self.IN_CRISP, QHeaderView.ResizeToContents)
         self.table.setColumnWidth(self.LABEL, 90)
         self.table.setColumnWidth(self.SHORTCUT, 200)
         self.table.itemChanged.connect(lambda _item: self._write())
@@ -107,9 +110,14 @@ class VersionTable(QWidget):
         self.remove_row = button("Remove selected", "ghost")
         self.add_row.clicked.connect(self.add_version)
         self.remove_row.clicked.connect(self.remove_selected)
+        self.check = button("Check in Crisp", None, "check", tm, "text_muted")
+        self.check.setToolTip("Opens Crisp and reads the saved subjects and shortcuts. Nothing is created or sent.")
+        self.checked = label("", "fieldHelp")
         row.addWidget(self.add_row)
         row.addWidget(self.remove_row)
         row.addStretch()
+        row.addWidget(self.checked)
+        row.addWidget(self.check)
         lay.addLayout(row)
         self.status = label("", "fieldHelp", wrap=True)
         self.status.hide()
@@ -131,8 +139,35 @@ class VersionTable(QWidget):
         self.table.setRowCount(0)
         for r in rows:
             self._append(r)
+        self._paint_status()
         self.table.blockSignals(False)
         self._fit()
+
+    def set_crisp_lists(self, lists: dict):
+        """Saved subjects / shortcut names from the last Check Crisp (stored by the app)."""
+        self.crisp_lists = dict(lists or {})
+        at = self.crisp_lists.get("checked_at", "")
+        self.checked.setText(f"Checked {at}" if at else "Not checked in Crisp yet")
+        self.table.blockSignals(True)
+        self._paint_status()
+        self.table.blockSignals(False)
+
+    def _paint_status(self):
+        for i, (shortcut, subject, _lab) in enumerate(self.rows()):
+            text, ok = sc.version_status(shortcut, subject, self.crisp_lists, self.api)
+            item = QTableWidgetItem(("✓ " if ok else "✗ " if ok is False else "") + text)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            item.setData(Qt.UserRole, ok)
+            if ok is False:
+                item.setForeground(QColor(self.tm.palette.danger))
+            elif ok:
+                item.setForeground(QColor(self.tm.palette.success))
+            self.table.setItem(i, self.IN_CRISP, item)
+
+    def any_missing(self) -> bool:
+        return any(self.table.item(i, self.IN_CRISP) is not None
+                   and self.table.item(i, self.IN_CRISP).data(Qt.UserRole) is False
+                   for i in range(self.table.rowCount()))
 
     def _append(self, r):
         i = self.table.rowCount()
@@ -156,6 +191,9 @@ class VersionTable(QWidget):
                 for i in range(self.table.rowCount())]
 
     def _write(self):
+        self.table.blockSignals(True)
+        self._paint_status()
+        self.table.blockSignals(False)
         shortcut, subject, labels = sc.versions_to_text(self.rows())
         self._syncing = True
         try:
@@ -193,6 +231,9 @@ class VersionTable(QWidget):
     # -------------------------------------------------------------- mode and messages
     def set_api(self, api: bool):
         self.api = api
+        self.table.blockSignals(True)
+        self._paint_status()
+        self.table.blockSignals(False)
         self.table.setColumnHidden(self.SHORTCUT, api)
         self.hint.setText("One row per subject. The message versions are the texts below (--- between them)."
                           if api else "One row per version. Recipients are split evenly between the rows. The "
@@ -209,6 +250,9 @@ class VersionTable(QWidget):
             text = f.message.text()
             if kind and text and kind not in found:
                 found[kind] = f"{what}: {text}" if text == "Required." else text
+        if "error" not in found and self.any_missing():
+            found["error"] = ("A version is not in Crisp (see In Crisp). Fix the subject or shortcut, or click "
+                              "Check in Crisp again if you just saved it there.")
         kind = "error" if "error" in found else "ok" if "ok" in found else ""
         if kind == "ok" and found["ok"].startswith("A/B test"):   # the rows already show each version
             n = self.table.rowCount()

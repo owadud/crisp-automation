@@ -312,6 +312,30 @@ def ab_plan(shortcuts: str, versions: str = "", subjects: str = "") -> tuple[lis
     return list(zip(names, labels)), subs
 
 
+def norm_text(text: str) -> str:
+    """Compare subjects / shortcut names the way the agent does (emoji selectors, spaces, case)."""
+    import unicodedata
+    text = unicodedata.normalize("NFKC", str(text or ""))
+    for ch in ("\ufe0f", "\u200b", "\u200d", "\u00a0"):
+        text = text.replace(ch, " " if ch == "\u00a0" else "")
+    return re.sub(r"\s+", " ", text).strip().casefold()
+
+
+def version_status(shortcut: str, subject: str, lists: dict, api: bool = False) -> tuple[str, bool | None]:
+    """'In Crisp' for one version from the last Check Crisp: (text, ok); ok None = not checked."""
+    subjects = {norm_text(s) for s in lists.get("subjects") or []}
+    shortcuts = {norm_text(s).lstrip("!") for s in lists.get("shortcuts") or []}
+    if not subjects and not shortcuts:
+        return "Not checked", None
+    problems = []
+    if subjects and norm_text(subject) not in subjects:
+        problems.append("subject not saved in Crisp")
+    if not api and shortcuts and norm_text(shortcut).lstrip("!") not in shortcuts:
+        problems.append("shortcut not seen")
+    text = "; ".join(problems)
+    return ("Found" if not problems else text[:1].upper() + text[1:]), not problems
+
+
 def versions_to_text(rows) -> tuple[str, str, str]:
     """Version table rows [(shortcut, subject, label)] -> (shortcuts, subjects, labels) as saved:
     one subject for all -> 'A'; one shortcut for all -> '!a'; otherwise both listed in order.

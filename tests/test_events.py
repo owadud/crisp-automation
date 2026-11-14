@@ -130,12 +130,16 @@ class _Loc:
         if not self.n:
             raise TimeoutError("not visible")
 
+    def click(self, **kw):
+        pass
+
 
 def test_health_check_reports_without_sending(load_agent, monkeypatch, capsys):
     mod = load_agent(ROWS, CRISP_HEALTH_CHECK="true")
     created = []
     page = SimpleNamespace(goto=lambda *a, **k: None, keyboard=SimpleNamespace(press=lambda *a: None),
-                           get_by_text=lambda *a, **k: _Loc(1), locator=lambda *a, **k: _Loc(0))
+                           get_by_text=lambda *a, **k: _Loc(1), locator=lambda *a, **k: _Loc(0),
+                           wait_for_timeout=lambda ms: None)
     context = SimpleNamespace(pages=[page], new_page=lambda: page, close=lambda: None)
 
     class PW(_FakePlaywright):
@@ -147,16 +151,19 @@ def test_health_check_reports_without_sending(load_agent, monkeypatch, capsys):
     monkeypatch.setattr(mod, "_subject_input", lambda page: _Loc(1))
     monkeypatch.setattr(mod, "visible", lambda loc: loc.count() > 0)
     monkeypatch.setattr(mod, "process_recipient", lambda *a: created.append(a))
+    monkeypatch.setattr(mod, "_menu_rows", lambda page: [(None, "Hi there"), (None, "Offer"), (None, "Offer")])
+    monkeypatch.setattr(mod, "read_shortcut_names", lambda page: ["bf-offer-1", "bf-offer-2"])
     monkeypatch.setattr(mod.time, "time", iter(range(0, 10_000, 50)).__next__)
     monkeypatch.setattr(mod.time, "sleep", lambda s: None)
     mod.main()
     out = capsys.readouterr().out
     st = parse(out.splitlines())
     assert created == []
-    assert st.health == [("Subject dropdown", True, "found in the New conversation dialog"),
-                         ("Shortcuts tab", True, "visible in the conversation"),
+    assert st.health == [("Subject dropdown", True, "found in the New conversation dialog, 2 saved subject(s) read"),
+                         ("Shortcuts tab", True, "visible in the conversation, 2 shortcut name(s) read"),
                          ("Segment field", False,
                           "not found (open a conversation with the profile panel visible)")]
     assert "Health check: 2 of 3 passed." in out
+    assert st.crisp_lists == {"subjects": ["Hi there", "Offer"], "shortcuts": ["bf-offer-1", "bf-offer-2"]}
     text_only = parse([ln for ln in out.splitlines() if not ln.startswith("@@EVENT")])
     assert text_only.health == st.health

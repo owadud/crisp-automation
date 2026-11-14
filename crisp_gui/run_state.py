@@ -87,6 +87,7 @@ class RunState:
     no_eligible: bool = False
     history: list = field(default_factory=list)  # (email, outcome)
     health: list = field(default_factory=list)   # (check, ok, detail) from "Check Crisp"
+    crisp_lists: dict = field(default_factory=dict)  # "Check Crisp": {"subjects": [...], "shortcuts": [...]}
     # pause / ETA
     paused: bool = False
     paused_after: str = ""
@@ -391,6 +392,10 @@ class RunParser:
         elif kind == "error":
             s.last_error = str(ev.get("message") or "Error")
             s.step = "Error"
+        elif kind == "crisp_lists":
+            for key in ("subjects", "shortcuts"):
+                if isinstance(ev.get(key), list):
+                    s.crisp_lists[key] = [str(x) for x in ev[key]]
         elif kind == "health":
             s.health.append((str(ev.get("check")), bool(ev.get("ok")), str(ev.get("detail") or "")))
         elif kind == "paused":
