@@ -16,7 +16,7 @@ from .message_editor import MessageEditor
 from .theme import ThemeManager
 from .widgets import (
     Banner, Card, Collapsible, Field, KeyValueList, MetricCard, ResponsiveRow,
-    SegmentedControl, ToggleSwitch, button, label,
+    SegmentedControl, SettingRow, SettingsGroup, ToggleSwitch, button, label,
 )
 
 
@@ -216,7 +216,7 @@ class CampaignPage(Page):
         ai = QVBoxLayout(self.ai_box)
         ai.setContentsMargins(0, 0, 0, 0)
         ai.setSpacing(6)
-        self.ai_enabled = QCheckBox("Personalize the opening line with AI (Claude)")
+        self.ai_enabled = QCheckBox("Personalize the opening line with AI")
         ai.addWidget(self.ai_enabled)
         arow = QHBoxLayout()
         self.ai_generate = button("Generate with AI…", None, "send", tm, "text_muted")
@@ -434,79 +434,69 @@ class ActivityPage(Page):
 
 # =====================================================================
 class SettingsPage(Page):
+    """Grouped rows: name and explanation on the left, the control on the right.
+    Long forms (Crisp API, AI) fold out under their row with Edit."""
+
     def __init__(self, tm: ThemeManager):
         super().__init__()
-        card = Card("Appearance")
-        row = QHBoxLayout()
-        texts = QVBoxLayout()
-        texts.setSpacing(3)
-        texts.addWidget(label("Theme", "fieldLabel"))
-        texts.addWidget(label("System follows your operating system's light or dark setting.", "fieldHelp", wrap=True))
-        row.addLayout(texts, 1)
+
+        def short(field: Field, width: int) -> Field:
+            field.title.hide()
+            field.setFixedWidth(width)
+            return field
+
+        # ------------------------------------------------------------ General
+        group = self.add(SettingsGroup("General"))
         self.theme = SegmentedControl(
             [("light", "Light", "sun"), ("dark", "Dark", "moon"), ("system", "System", "monitor")], tm)
-        row.addWidget(self.theme, 0, Qt.AlignVCenter)
-        card.body.addLayout(row)
-        self.add(card)
+        group.add(SettingRow("Theme", "System follows your operating system's light or dark setting.")
+                  .add_control(self.theme))
+        self.runner_name = short(Field("Name", placeholder="e.g. Owadud"), 240)
+        group.add(SettingRow("Your name", "Shown to teammates who send from the same Google Sheet. "
+                             "Blank = this computer's name.").add_control(self.runner_name))
 
-        card = Card("Your name", "Shown to teammates who send from the same Google Sheet.")
-        self.runner_name = Field("Name", "Blank = this computer's name.", placeholder="e.g. Owadud")
-        self.runner_name.setMaximumWidth(360)
-        card.body.addWidget(self.runner_name)
-        self.add(card)
-
-        card = Card("Open like an app", "Adds Crisp Automation to the Desktop and Start menu (Windows), "
-                    "Applications and Launchpad (Mac) or the app grid (Ubuntu), so it opens with one click and "
-                    "no terminal.")
-        row = QHBoxLayout()
-        self.make_shortcut = button("Create shortcut", None, "send", tm, "text_muted")
-        row.addWidget(self.make_shortcut)
-        row.addStretch()
-        card.body.addLayout(row)
-        self.shortcut_status = label("", "faint", wrap=True)
-        card.body.addWidget(self.shortcut_status)
-        self.add(card)
-
-        card = Card("Crisp API", "Lets Campaign Results read delivered / read / replied straight from Crisp "
-                    "(no browser window). Create a token in Crisp: Settings > Workspace Settings > Advanced "
-                    "configuration > API Token > Generate Token. It is saved only on this computer.")
-        row = ResponsiveRow(min_item_width=200, spacing=12)
-        self.api_website = Field("Website ID", "Filled in from your conversation links.",
-                                 placeholder="e.g. 5b6a1eda-…")
+        # ------------------------------------------------------------ Connections
+        group = self.add(SettingsGroup("Connections"))
+        row = group.add(SettingRow("Crisp API", "Sends without the browser and reads delivered / read / replied. "
+                                   "Token: Crisp Settings > Workspace Settings > Advanced configuration > API Token. "
+                                   "Saved only on this computer."))
+        form = QWidget()
+        fl = QVBoxLayout(form)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.setSpacing(12)
+        frow = ResponsiveRow(min_item_width=200, spacing=12)
+        self.api_website = Field("Website ID", "Filled in from your conversation links.", placeholder="e.g. 5b6a1eda-…")
         self.api_identifier = Field("Token identifier", placeholder="Identifier")
         self.api_key = Field("Token key", placeholder="Key")
         self.api_key.edit.setEchoMode(QLineEdit.Password)
         for f in (self.api_website, self.api_identifier, self.api_key):
-            row.add(f)
-        card.body.addWidget(row)
+            frow.add(f)
+        fl.addWidget(frow)
         brow = QHBoxLayout()
         self.api_save = button("Save and test", None, "check", tm, "text_muted")
         self.api_remove = button("Remove token", "ghost")
         brow.addWidget(self.api_save)
         brow.addWidget(self.api_remove)
         brow.addStretch()
-        card.body.addLayout(brow)
-        self.api_status = label("", "faint", wrap=True)
-        card.body.addWidget(self.api_status)
+        fl.addLayout(brow)
         self.api_auto = QCheckBox("Check new reads and replies every 30 minutes while the app is open "
                                   "(gives each email a 'Read at' time within about 30 minutes)")
         self.api_auto.setChecked(True)
-        card.body.addWidget(self.api_auto)
-        card.body.addWidget(label("Send a test email through the API", "fieldLabel"))
-        card.body.addWidget(label("Sends ONE real email to the address you type (use your own), to check that "
-                                  "Crisp delivers API messages by email before campaigns use the API.",
-                                  "fieldHelp", wrap=True))
+        fl.addWidget(self.api_auto)
+        fl.addWidget(label("Send a test email through the API", "fieldLabel"))
+        fl.addWidget(label("Sends ONE real email to the address you type (use your own), to check that "
+                           "Crisp delivers API messages by email before campaigns use the API.", "fieldHelp", wrap=True))
         trow = ResponsiveRow(min_item_width=220, spacing=12)
         self.api_test_to = Field("To (your own email)", placeholder="you@example.com")
         self.api_test_subject = Field("Subject", placeholder="Test from Crisp Automation")
         trow.add(self.api_test_to)
         trow.add(self.api_test_subject)
-        card.body.addWidget(trow)
+        fl.addWidget(trow)
         self.api_test_text = QPlainTextEdit()
         self.api_test_text.setPlaceholderText("Message text")
         self.api_test_text.setPlainText("Hi, this is a test message sent through the Crisp API by Crisp Automation.")
         self.api_test_text.setFixedHeight(80)
-        card.body.addWidget(self.api_test_text)
+        fl.addWidget(self.api_test_text)
         t2 = QHBoxLayout()
         self.api_test_send = button("Send test email", None, "send", tm, "text_muted")
         self.api_test_open = button("Open in Crisp", "ghost")
@@ -514,118 +504,122 @@ class SettingsPage(Page):
         t2.addWidget(self.api_test_send)
         t2.addWidget(self.api_test_open)
         t2.addStretch()
-        card.body.addLayout(t2)
+        fl.addLayout(t2)
         self.api_test_result = label("", "faint", wrap=True)
         self.api_test_result.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        card.body.addWidget(self.api_test_result)
-        self.add(card)
+        fl.addWidget(self.api_test_result)
+        row.set_details(form)
+        self.api_status = row.add_below(label("", "faint", wrap=True))
+        self.api_row = row
 
-        card = Card("AI (Claude)", "Writes a personal opening line per recipient for Crisp API campaigns. "
-                    "Uses your own Anthropic API key (console.anthropic.com > API Keys), saved only on this "
-                    "computer. Claude receives your subject and message, and per person only a first name and "
-                    "the company from the email domain.")
-        self.ai_key = Field("Anthropic API key", placeholder="sk-ant-…")
+        row = group.add(SettingRow("AI for opening lines", "Claude, ChatGPT, Gemini, a free one (Groq, OpenRouter, "
+                                   "Ollama on this computer) or any OpenAI-compatible service. The AI receives your "
+                                   "subject and message, and per person only a first name and the company from the "
+                                   "email domain. The key is saved only on this computer."))
+        form = QWidget()
+        fl = QVBoxLayout(form)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.setSpacing(12)
+        prow = QVBoxLayout()
+        prow.setSpacing(6)
+        prow.addWidget(label("Provider", "fieldLabel"))
+        self.ai_provider = QComboBox()
+        self.ai_provider.setMaximumWidth(520)
+        prow.addWidget(self.ai_provider)
+        self.ai_provider_help = label("", "fieldHelp", wrap=True)
+        prow.addWidget(self.ai_provider_help)
+        fl.addLayout(prow)
+        self.ai_key = Field("API key", placeholder="Paste the key")
         self.ai_key.edit.setEchoMode(QLineEdit.Password)
         self.ai_key.setMaximumWidth(520)
-        card.body.addWidget(self.ai_key)
+        fl.addWidget(self.ai_key)
+        self.ai_base_url = Field("Base URL", "OpenAI-compatible address, e.g. https://api.example.com/v1",
+                                 placeholder="https://…/v1")
+        self.ai_base_url.setMaximumWidth(520)
+        fl.addWidget(self.ai_base_url)
+        self.ai_model = Field("Model", "Click Load models to pick from the provider's current list.",
+                              placeholder="Model id")
+        self.ai_model.setMaximumWidth(520)
+        fl.addWidget(self.ai_model)
+        mrow = QHBoxLayout()
+        self.ai_load_models = button("Load models", None, "refresh", tm, "text_muted")
+        self.ai_models = QComboBox()
+        self.ai_models.setVisible(False)
+        self.ai_models.setMinimumWidth(260)
+        mrow.addWidget(self.ai_load_models)
+        mrow.addWidget(self.ai_models)
+        mrow.addStretch()
+        fl.addLayout(mrow)
         krow = QHBoxLayout()
         self.ai_save = button("Save and test", None, "check", tm, "text_muted")
         self.ai_remove = button("Remove key", "ghost")
         krow.addWidget(self.ai_save)
         krow.addWidget(self.ai_remove)
         krow.addStretch()
-        card.body.addLayout(krow)
-        self.ai_key_status = label("", "faint", wrap=True)
-        card.body.addWidget(self.ai_key_status)
-        self.add(card)
+        fl.addLayout(krow)
+        row.set_details(form)
+        self.ai_key_status = row.add_below(label("", "faint", wrap=True))
+        self.ai_row = row
 
-        self.updates_slot = QVBoxLayout()            # Updates card goes here (filled below)
-        self.layout_.addLayout(self.updates_slot)
+        # ------------------------------------------------------------ Sending
+        group = self.add(SettingsGroup("Sending"))
+        self.parallel = short(Field("Campaigns at the same time", placeholder="1"), 90)
+        group.add(SettingRow("Campaigns at the same time",
+                             "1 = one after another in your Crisp browser (the safe default). 2 or 3 run together, "
+                             "each in its own browser window with its own Crisp login. The delay and daily cap still "
+                             "count for all of them together, so it is not faster.").add_control(self.parallel))
+        self.claim_batch = short(Field("Batch size", placeholder="10"), 90)
+        group.add(SettingRow("Shared Sheet: batch size",
+                             "Recipients each runner claims at a time, so teammates sending from the same Sheet "
+                             "never email the same person.").add_control(self.claim_batch))
+        self.claim_expiry = short(Field("Claim expiry (minutes)", placeholder="5"), 90)
+        group.add(SettingRow("Shared Sheet: claim expiry (minutes)",
+                             "Unsent claims of a runner that stopped responding are freed after this.")
+                  .add_control(self.claim_expiry))
 
-        self.advanced = self.add(Collapsible("Advanced"))
-
-        card = Card("Browser session", "Your Crisp login is saved in this Chromium profile, so you only sign in once. "
-                    "It stays on this computer and is never part of the project files.")
-        self.profile_path = label("", "kvValue", wrap=True)
+        # ------------------------------------------------------------ This computer
+        group = self.add(SettingsGroup("This computer"))
+        self.make_shortcut = button("Create shortcut", None, "send", tm, "text_muted")
+        row = group.add(SettingRow("Desktop icon", "Adds Crisp Automation to the Desktop and app menu, so it opens "
+                                   "with one click and no terminal. Clicking it while the app is open (even during "
+                                   "a campaign) brings the open window to the front.").add_control(self.make_shortcut))
+        self.shortcut_status = row.add_below(label("", "faint", wrap=True))
+        self.open_profile = button("Open folder", None, "folder", tm, "text_muted")
+        self.copy_profile = button("Copy path", None, "copy", tm, "text_muted")
+        row = group.add(SettingRow("Browser session", "Your Crisp login is saved in this Chromium profile, so you "
+                                   "sign in once. It never leaves this computer.")
+                        .add_control(self.open_profile, self.copy_profile))
+        self.profile_path = row.add_below(label("", "kvValue", wrap=True))
         self.profile_path.setMinimumWidth(1)
         self.profile_path.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.profile_path.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.profile_state = label("", "faint")
-        card.body.addWidget(self.profile_path)
-        card.body.addWidget(self.profile_state)
-        btns = QHBoxLayout()
-        self.open_profile = button("Open folder", None, "folder", tm, "text_muted")
-        self.copy_profile = button("Copy path", None, "copy", tm, "text_muted")
-        btns.addWidget(self.open_profile)
-        btns.addWidget(self.copy_profile)
-        btns.addStretch()
-        card.body.addLayout(btns)
-        self.advanced.add(card)
+        self.profile_state = row.add_below(label("", "faint"))
+        self.check_crisp = button("Check Crisp", None, "check", tm, "text_muted")
+        row = group.add(SettingRow("Check Crisp", "Opens Crisp and looks for the subject dropdown, the Shortcuts tab "
+                                   "and the segment field. Nothing is created or sent.").add_control(self.check_crisp))
+        self.health_result = row.add_below(label("", "faint", wrap=True))
+        self.health_result.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
-        card = Card("Shared Google Sheet", "Teammates can send from the same Sheet at the same time. "
-                    "Each recipient is claimed before sending, so nobody is emailed twice.")
-        row = ResponsiveRow(min_item_width=180)
-        self.claim_batch = Field("Batch size", "Recipients claimed at a time.", placeholder="10")
-        self.claim_expiry = Field("Claim expiry (minutes)", "Unsent claims of a runner that stopped "
-                                  "responding are freed after this.", placeholder="5")
-        for f in (self.claim_batch, self.claim_expiry):
-            row.add(f)
-        card.body.addWidget(row)
-        self.advanced.add(card)
-
-        card = Card("Campaign queue", "1 = campaigns run one after another in your Crisp browser (the safe "
-                    "default). 2 or 3 run at the same time, each in its own browser window with its own Crisp "
-                    "login (sign in once per window). They all use YOUR Crisp account: the delay between emails "
-                    "and the daily cap still count for all of them together, so it is not faster.")
-        self.parallel = Field("Campaigns at the same time", "1, 2 or 3.", placeholder="1")
-        self.parallel.setMaximumWidth(260)
-        card.body.addWidget(self.parallel)
-        self.advanced.add(card)
-
-        card = Card("Campaign defaults", "Restore the subject, shortcut, segment, reference and CSV to the original values.")
-        self.reset = button("Reset campaign fields", "dangerOutline")
-        h = QHBoxLayout()
-        h.addWidget(self.reset)
-        h.addStretch()
-        card.body.addLayout(h)
-        self.advanced.add(card)
-
-        card = Card("Updates", "New versions download from GitHub. Your settings, CSV files, history, "
-                    "Crisp login and logs are never changed. The old code is kept in backups/.")
-        self.update_status = label("Not checked yet.", "faint", wrap=True)
-        card.body.addWidget(self.update_status)
-        h = QHBoxLayout()
+        # ------------------------------------------------------------ App
+        group = self.add(SettingsGroup("App"))
         self.check_updates = button("Check for updates", None, "refresh", tm, "text_muted")
         self.install_update = button("Update now", "primary")
         self.install_update.hide()
-        h.addWidget(self.check_updates)
-        h.addWidget(self.install_update)
-        h.addStretch()
-        card.body.addLayout(h)
-        self.updates_slot.addWidget(card)
-
-        card = Card("Check Crisp", "Opens Crisp and looks for the subject dropdown, the Shortcuts tab and the "
-                    "segment field. Nothing is created or sent. When asked, open any existing conversation.")
-        h = QHBoxLayout()
-        self.check_crisp = button("Check Crisp", None, "check", tm, "text_muted")
-        h.addWidget(self.check_crisp)
-        h.addStretch()
-        card.body.addLayout(h)
-        self.health_result = label("", "faint", wrap=True)
-        self.health_result.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        card.body.addWidget(self.health_result)
-        self.advanced.add(card)
-
-        card = Card("About")
-        self.about = KeyValueList()
+        row = group.add(SettingRow("Updates", "New versions download from GitHub. Your settings, lists, history, "
+                                   "Crisp login and logs are never changed; the old code is kept in backups/.")
+                        .add_control(self.check_updates, self.install_update))
+        self.update_status = row.add_below(label("Not checked yet.", "faint", wrap=True))
+        self.updates_slot = QVBoxLayout()            # kept for older code; Updates now lives in the App group
+        self.reset = button("Reset campaign fields", "dangerOutline")
+        group.add(SettingRow("Campaign defaults", "Restore the subject, shortcut, segment, reference and CSV to "
+                             "the original values.").add_control(self.reset))
+        row = group.add(SettingRow("About"))
+        self.about = row.add_below(KeyValueList())
         for key, title in (("version", "Version"), ("agent", "Agent script"),
                            ("python", "Python"), ("config", "Preferences file")):
             self.about.add(key, title)
         self.about.set("version", f"Crisp Automation Desktop {APP_VERSION}")
-        card.body.addWidget(self.about)
-        self.advanced.add(card)
         self.finish()
-
 
 # =====================================================================
 class HistoryPage(Page):

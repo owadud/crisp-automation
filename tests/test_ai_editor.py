@@ -160,7 +160,7 @@ def test_ai_lines_generate_review_edit_and_confirm(win, dialogs, monkeypatch, tm
     win.refresh_csv()
     win.generate_ai_openers()
     assert wait_until(lambda: not win._ai_busy, 10)
-    assert dialogs["seen"][0].startswith("Write 3 opening line(s) with Claude?")
+    assert dialogs["seen"][0].startswith("Write 3 opening line(s) with Claude (Anthropic)?")
     assert "3 ready, 0 need a look, 0 missing" in c.ai_status.text()
     win.navigate(4)
     assert win.list_rows.columns[-1].startswith("AI opening line")
@@ -170,3 +170,64 @@ def test_ai_lines_generate_review_edit_and_confirm(win, dialogs, monkeypatch, tm
     assert win.list_rows.rows[first][-1] == "My own line."
     v = win.campaign_values()
     assert v["ai_openers_file"].endswith(".json") and "AI opening lines: 3 ready" in win._ai_text(v)
+
+
+# ------------------------------------------------------------------ other providers (OpenAI-compatible)
+class FakeHttp:
+    def __init__(self, content=None, status=None, models=("m-small", "models/m-big"), bad_json_mode=False):
+        self.content, self.status, self.models, self.bad_json_mode, self.calls = content, status, models, bad_json_mode, []
+
+    def __call__(self, method, url, key="", body=None, timeout=120):
+        self.calls.append((method, url, key, body))
+        if self.status:
+            raise ai.ApiError(self.status, "nope")
+        if url.endswith("/models"):
+            return {"data": [{"id": m} for m in self.models]}
+        if self.bad_json_mode and "response_format" in body:
+            raise ai.ApiError(400, "response_format not supported")
+        return {"choices": [{"finish_reason": "stop", "message": {"content": self.content}}]}
+
+
+def test_gemini_writes_lines_through_the_openai_compatible_api():
+    s = {"provider": "gemini", "api_key": "g-key", "model": "m-small", "base_url": ""}
+    http = FakeHttp(content='```json\n{"openers": [{"id": 0, "opener": "Nice store, Acme."}]}\n```')
+    out = ai.generate([("a@acme.com", "Ann")], "S", "M", settings=s, http=http)
+    method, url, key, body = http.calls[0]
+    assert url == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions" and key == "g-key"
+    assert body["model"] == "m-small" and "a@acme.com" not in json.dumps(body)       # never the address
+    assert out["a@acme.com"]["opener"] == "Nice store, Acme." and out["_errors"] == []
+
+
+def test_json_mode_fallback_refused_key_and_model_list():
+    s = {"provider": "custom", "api_key": "", "model": "x", "base_url": "http://box:8000/v1/"}
+    http = FakeHttp(content='{"openers": [{"id": 0, "opener": "Hi there."}]}', bad_json_mode=True)
+    assert ai.generate([("b@x.org", "B")], "S", "M", settings=s, http=http)["b@x.org"]["opener"] == "Hi there."
+    assert http.calls[-1][1] == "http://box:8000/v1/chat/completions"
+    refused = ai.generate([("b@x.org", "B")] * 50, "S", "M", settings=dict(s, provider="openai"),
+                          http=FakeHttp(status=401))
+    assert len(refused["_errors"]) == 1 and "ChatGPT (OpenAI) refused the API key" in refused["_errors"][0]
+    assert ai.list_models(dict(s, provider="groq"), FakeHttp()) == ["m-big", "m-small"]
+    with pytest.raises(ValueError):
+        ai.test_connection(dict(s, provider="groq", model="gone"), FakeHttp())
+
+
+def test_settings_file_keeps_old_claude_keys_and_reports_what_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("CRISP_AI_CONFIG", str(tmp_path / "anthropic.json"))
+    (tmp_path / "anthropic.json").write_text('{"api_key": "sk-old"}')
+    assert ai.load_settings()["provider"] == "anthropic" and ai.load_key() == "sk-old"
+    ai.save_settings("ollama", "", "", "")
+    assert "model" in ai.not_ready() and ai.PROVIDERS["ollama"][2] is False      # no key needed
+    ai.save_settings("openai", "", "some-model")
+    assert "API key" in ai.not_ready()
+
+
+def test_settings_card_switches_provider(win, tmp_path, monkeypatch):
+    monkeypatch.setenv("CRISP_AI_CONFIG", str(tmp_path / "anthropic.json"))
+    s = win.settings
+    s.ai_provider.setCurrentIndex(s.ai_provider.findData("gemini"))
+    assert s.ai_model.text() == "" and s.ai_base_url.isHidden() and "aistudio" in s.ai_provider_help.text()
+    s.ai_provider.setCurrentIndex(s.ai_provider.findData("custom"))
+    assert not s.ai_base_url.isHidden() and s.ai_key.title.text() == "API key (optional)"
+    s.ai_base_url.edit.setText("http://box/v1/")
+    s.ai_model.edit.setText("m")
+    assert win._ai_form() == {"provider": "custom", "api_key": "", "model": "m", "base_url": "http://box/v1"}

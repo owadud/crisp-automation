@@ -58,6 +58,10 @@ def main() -> int:
     app.setOrganizationName("CrispAutomation")
     app.setDesktopFileName("crisp-automation")  # matches the Ubuntu launcher (dock icon)
     app.setStyle("Fusion")  # consistent rendering on Windows and Ubuntu
+    from crisp_gui import single_instance
+    if single_instance.ask_running_copy_to_show():
+        return 0   # already open (maybe sending): its window was brought to the front
+
     from crisp_gui.icons import logo_pixmap
     icon = QIcon()
     for size in (16, 24, 32, 48, 64, 128, 256):
@@ -71,6 +75,7 @@ def main() -> int:
     app.setFont(font)
 
     window = MainWindow(tm, prefs)
+    instance = single_instance.InstanceServer(lambda token: single_instance.bring_to_front(window, token))  # noqa: F841
     window.show()
     window.check_updates_on_start()  # background, never blocks the window
     return app.exec()

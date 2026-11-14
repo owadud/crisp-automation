@@ -93,9 +93,13 @@ def test_run_button_belongs_to_editor_run_and_lists(win):
 
 def test_advanced_is_collapsed_and_opens_with_the_keyboard(win):
     c, st = win.campaign, win.settings
-    assert not c.advanced.is_open() and not st.advanced.is_open()
+    assert not c.advanced.is_open()
     assert not c.delay.isVisibleTo(c) and c.subject.isVisibleTo(c)       # common visible, rest folded
-    assert st.runner_name.isVisibleTo(st) and not st.claim_batch.isVisibleTo(st)
+    # Settings: grouped rows all visible; only the long Crisp API and AI forms fold out
+    assert st.runner_name.isVisibleTo(st) and st.claim_batch.isVisibleTo(st)
+    assert not st.api_key.isVisibleTo(st) and not st.ai_key.isVisibleTo(st)
+    st.ai_row.toggle.click()
+    assert st.ai_key.isVisibleTo(st) and st.ai_row.toggle.text() == "Done"
     c.advanced.head.setFocus()
     QTest.keyClick(c.advanced.head, Qt.Key_Space)
     assert c.advanced.is_open() and c.delay.isVisibleTo(c)

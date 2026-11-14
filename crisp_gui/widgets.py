@@ -546,3 +546,89 @@ class Collapsible(QWidget):
         self.head.blockSignals(False)
         self.head.setText(("▾ " if on else "▸ ") + self._title)
         self.body.setVisible(on)
+
+
+class SettingsGroup(QWidget):
+    """A titled group of setting rows in one card, rows split by thin lines (Settings page)."""
+
+    def __init__(self, title: str):
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        lay.addWidget(label(title.upper(), "groupTitle"))
+        self.card = QFrame()
+        self.card.setObjectName("card")
+        self.rows = QVBoxLayout(self.card)
+        self.rows.setContentsMargins(0, 0, 0, 0)
+        self.rows.setSpacing(0)
+        lay.addWidget(self.card)
+
+    def add(self, row):
+        if self.rows.count():
+            self.rows.addWidget(divider())
+        self.rows.addWidget(row)
+        return row
+
+
+class SettingRow(QWidget):
+    """Name and a short explanation on the left, controls on the right. Optional details
+    (a longer form) fold out below with an Edit / Done button."""
+
+    def __init__(self, title: str, help_text: str = ""):
+        super().__init__()
+        self.box = QVBoxLayout(self)
+        self.box.setContentsMargins(18, 14, 18, 14)
+        self.box.setSpacing(12)
+        top = QHBoxLayout()
+        top.setSpacing(16)
+        texts = QVBoxLayout()
+        texts.setSpacing(3)
+        self.title = label(title, "rowTitle")
+        texts.addWidget(self.title)
+        self.help = label(help_text, "cardHint", wrap=True)
+        self.help.setVisible(bool(help_text))
+        texts.addWidget(self.help)
+        top.addLayout(texts, 1)
+        self.controls = QHBoxLayout()
+        self.controls.setSpacing(8)
+        top.addLayout(self.controls)
+        self.box.addLayout(top)
+        self.details = None
+        self.toggle = None
+
+    def add_control(self, *widgets):
+        for w in widgets:
+            self.controls.addWidget(w, 0, Qt.AlignVCenter)
+        return self
+
+    def add_below(self, widget):
+        """A status label added here shows only while it has text (no blank gap)."""
+        self.box.addWidget(widget)
+        if isinstance(widget, QLabel):
+            plain_set = widget.setText
+
+            def set_text(text, _set=plain_set, _w=widget):
+                _set(text)
+                _w.setVisible(bool(text))
+            widget.setText = set_text
+            widget.setVisible(bool(widget.text()))
+        return widget
+
+    def set_details(self, widget, open_: bool = False):
+        """Fold-out form; an Edit / Done button on the right shows or hides it."""
+        self.details = self.add_below(widget)
+        self.toggle = button("Edit")
+        self.toggle.setCheckable(True)
+        self.toggle.toggled.connect(self.show_details)
+        self.add_control(self.toggle)
+        self.show_details(open_)
+
+    def show_details(self, on: bool):
+        if self.details is None:
+            return
+        self.toggle.blockSignals(True)
+        self.toggle.setChecked(on)
+        self.toggle.blockSignals(False)
+        self.toggle.setText("Done" if on else "Edit")
+        self.details.setVisible(on)

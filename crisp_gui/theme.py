@@ -118,6 +118,8 @@ QLabel#metricValue {{ font-size: 26px; font-weight: 600; }}
 QLabel#metricCaption {{ color: {p.text_faint}; font-size: 12px; }}
 QLabel#kvKey {{ color: {p.text_muted}; }}
 QLabel#kvValue {{ font-weight: 500; }}
+QLabel#groupTitle {{ font-size: 11px; font-weight: 600; color: {p.text_muted}; padding: 0 4px; }}
+QLabel#rowTitle {{ font-weight: 600; }}
 QFrame#divider {{ background: {p.border}; border: none; max-height: 1px; min-height: 1px; }}
 QLabel#bigStep {{ font-size: 14px; font-weight: 600; }}
 

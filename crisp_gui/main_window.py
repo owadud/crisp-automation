@@ -364,6 +364,11 @@ class MainWindow(QMainWindow):
         self._ai_signal.done.connect(self._ai_generated)
         self._ai_busy = False
         s = self.settings
+        for pid, (pname, *_rest) in ai_openers.PROVIDERS.items():
+            s.ai_provider.addItem(pname, pid)
+        s.ai_provider.currentIndexChanged.connect(lambda _i: self._ai_provider_changed())
+        s.ai_load_models.clicked.connect(self.load_ai_models)
+        s.ai_models.textActivated.connect(s.ai_model.edit.setText)
         s.ai_save.clicked.connect(self.save_ai_key)
         s.ai_remove.clicked.connect(self.remove_ai_key)
         self._ai_key_signal = _SheetSignal(self)
@@ -436,8 +441,7 @@ class MainWindow(QMainWindow):
         self.campaign.api_message.setPlainText(values.get("api_message", ""))
         self.campaign.ai_enabled.setChecked(values.get("ai_opener") == "true")
         self._apply_send_mode(values.get("send_mode", "browser"))
-        self.settings.ai_key.edit.setText(ai_openers.load_key())
-        self.settings.ai_key_status.setText("Key saved." if ai_openers.load_key() else "")
+        self._show_ai_settings()
         self.campaign.dry.setChecked(True)   # always start safe
         self.campaign.skip_failed.setChecked(False)   # opt-in every launch
         self.campaign.random_delay.setChecked(self.prefs.random_delay())
@@ -719,11 +723,9 @@ class MainWindow(QMainWindow):
         if not on:
             c.ai_status.setText("")
             return
-        if not ai_openers.available():
-            c.ai_status.setText("The AI package is not installed (needs Python 3.10+). Update the app or run setup again.")
-            return
-        if not ai_openers.load_key():
-            c.ai_status.setText("Save your Anthropic API key first: Settings > AI (Claude).")
+        problem = ai_openers.not_ready()
+        if problem:
+            c.ai_status.setText(problem)
             return
         emails = [e for e, _n in self._ai_recipients()]
         ready, look, missing = self._ai_store().counts(emails)
@@ -740,8 +742,9 @@ class MainWindow(QMainWindow):
         if not people:
             W.inform(self, "Nothing to write", "No recipients would be sent right now (check the list).")
             return
-        if not ai_openers.load_key():
-            W.inform(self, "Anthropic API key needed", "Save it in Settings > AI (Claude).")
+        problem = ai_openers.not_ready()
+        if problem:
+            W.inform(self, "AI provider not set up", problem)
             return
         store = self._ai_store()
         todo = [(e, n) for e, n in people if not store.get(e)]
@@ -753,12 +756,17 @@ class MainWindow(QMainWindow):
                 return
             todo = people
         v = self.campaign_values()
-        cost = max(0.01, len(todo) * ai_openers.COST_PER_RECIPIENT)
-        if not W.ask(self, f"Write {len(todo)} opening line(s) with Claude?",
-                     "Claude receives your subject and message, and per person only a first name and the company "
+        ai = ai_openers.load_settings()
+        pname = ai_openers.provider_name(ai)
+        if ai["provider"] == "anthropic":
+            cost = f"about US${max(0.01, len(todo) * ai_openers.COST_PER_RECIPIENT):.2f} on your Anthropic account"
+        else:
+            cost = f"set by {pname} (free tiers have rate limits)"
+        if not W.ask(self, f"Write {len(todo)} opening line(s) with {pname}?",
+                     "The AI receives your subject and message, and per person only a first name and the company "
                      "from the email domain (not the email address). You review the lines in Lists before sending.",
-                     details=[("Model", ai_openers.MODEL), ("Recipients", str(len(todo))),
-                              ("Estimated cost", f"about US${cost:.2f} on your Anthropic account")],
+                     details=[("Provider", pname), ("Model", ai_openers.current_model(ai)),
+                              ("Recipients", str(len(todo))), ("Cost", cost)],
                      confirm="Write lines"):
             return
         self._ai_busy = True
@@ -804,42 +812,92 @@ class MainWindow(QMainWindow):
         self.refresh_lists()
         self._ai_refresh_status()
 
-    def save_ai_key(self):
+    def _ai_form(self) -> dict:
         s = self.settings
-        key = s.ai_key.text()
-        if not key:
-            s.ai_key_status.setText("Paste your Anthropic API key first.")
-            return
-        if not ai_openers.available():
-            s.ai_key_status.setText("The AI package is not installed (needs Python 3.10+). Update the app first.")
-            return
-        ai_openers.save_key(key)
-        s.ai_save.setEnabled(False)
-        s.ai_key_status.setText("Testing the key with Anthropic…")
+        pid = s.ai_provider.currentData() or "anthropic"
+        return {"provider": pid, "api_key": s.ai_key.text(), "model": s.ai_model.text(),
+                "base_url": s.ai_base_url.text().rstrip("/") if pid == "custom" else ""}
+
+    def _show_ai_settings(self):
+        s, ai = self.settings, ai_openers.load_settings()
+        s.ai_provider.blockSignals(True)
+        s.ai_provider.setCurrentIndex(max(0, s.ai_provider.findData(ai["provider"])))
+        s.ai_provider.blockSignals(False)
+        s.ai_key.edit.setText(ai["api_key"])
+        s.ai_model.edit.setText(ai_openers.current_model(ai))
+        s.ai_base_url.edit.setText(ai["base_url"])
+        self._ai_provider_changed(keep=True)
+        s.ai_key_status.setText(f"Saved: {ai_openers.provider_name(ai)}." if not ai_openers.not_ready(ai) else "")
+
+    def _ai_provider_changed(self, keep: bool = False):
+        s = self.settings
+        pid = s.ai_provider.currentData() or "anthropic"
+        _name, _url, needs_key, where = ai_openers.PROVIDERS[pid]
+        s.ai_provider_help.setText(f"Key: {where}." if needs_key else f"No key needed: {where}.")
+        s.ai_key.title.setText("API key" if needs_key else "API key (optional)")
+        s.ai_base_url.setVisible(pid == "custom")
+        s.ai_models.setVisible(False)
+        if not keep:   # a new provider: its own model list, not the old provider's model
+            s.ai_model.edit.setText(ai_openers.MODEL if pid == "anthropic" else "")
+            s.ai_key_status.setText("")
+
+    def load_ai_models(self):
+        s, form = self.settings, self._ai_form()
+        s.ai_load_models.setEnabled(False)
+        s.ai_key_status.setText(f"Loading models from {ai_openers.provider_name(form)}…")
 
         def work():
             try:
-                ai_openers.client(key).models.retrieve(ai_openers.MODEL)
-                self._ai_key_signal.done.emit("ai", True, None)
+                self._ai_key_signal.done.emit("models", ai_openers.list_models(form), None)
+            except Exception as exc:  # noqa: BLE001
+                self._ai_key_signal.done.emit("models", None, f"{type(exc).__name__}: {exc}"[:200])
+        threading.Thread(target=work, daemon=True).start()
+
+    def save_ai_key(self):
+        s, form = self.settings, self._ai_form()
+        problem = ai_openers.not_ready(form)
+        if problem and "Settings > AI >" not in problem:
+            s.ai_key_status.setText(problem.replace(": Settings > AI.", "."))
+            return
+        ai_openers.save_settings(**form)
+        s.ai_save.setEnabled(False)
+        s.ai_key_status.setText(f"Testing with {ai_openers.provider_name(form)}…")
+
+        def work():
+            try:
+                self._ai_key_signal.done.emit("ai", ai_openers.test_connection(form), None)
             except Exception as exc:  # noqa: BLE001
                 self._ai_key_signal.done.emit("ai", None, f"{type(exc).__name__}: {exc}"[:200])
         threading.Thread(target=work, daemon=True).start()
 
-    def _ai_key_tested(self, _kind, ok, error):
+    def _ai_key_tested(self, kind, result, error):
         s = self.settings
+        if kind == "models":
+            s.ai_load_models.setEnabled(True)
+            if error:
+                s.ai_key_status.setText(f"Could not load models: {error}")
+                return
+            s.ai_models.clear()
+            s.ai_models.addItems(result or [])
+            s.ai_models.setVisible(bool(result))
+            if s.ai_model.text() in (result or []):
+                s.ai_models.setCurrentText(s.ai_model.text())
+            s.ai_key_status.setText(f"{len(result or [])} models. Pick one, then Save and test.")
+            return
         s.ai_save.setEnabled(True)
-        s.ai_key_status.setText(f"Saved, but the test failed: {error}" if error
-                                else f"Connected: {ai_openers.MODEL} is ready for opening lines.")
+        s.ai_key_status.setText(f"Saved, but the test failed: {error}" if error else str(result))
         self._ai_refresh_status()
 
     def remove_ai_key(self):
-        if not W.ask(self, "Remove the Anthropic API key from this computer?",
-                     "Generated lines stay. Revoke the key at console.anthropic.com if you no longer need it.",
+        name = ai_openers.provider_name()
+        if not W.ask(self, f"Remove the {name} settings from this computer?",
+                     "Generated lines stay. Revoke the key at the provider if you no longer need it.",
                      confirm="Remove"):
             return
         ai_openers.config_path().unlink(missing_ok=True)
         self.settings.ai_key.edit.clear()
-        self.settings.ai_key_status.setText("Key removed.")
+        self._show_ai_settings()
+        self.settings.ai_key_status.setText("Removed.")
         self._ai_refresh_status()
 
     def _send_mode_changed(self, mode):
