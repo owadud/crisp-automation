@@ -183,3 +183,10 @@ def test_history_records_link_shortcut_and_version(tmp_path):
                       Version="v2", Link=link("a"))
     row = sc.read_history(h)[0]
     assert (row["Shortcut"], row["Version"], row["Link"]) == ("vip", "v2", link("a"))
+
+
+def test_version_comparison_shows_shortcut_and_subject():
+    rows = [{"version": "v1", "shortcut": "!a", "subject": "Free plugin", "status": "sent"},
+            {"version": "v2", "shortcut": "!a", "subject": "Offer", "status": "sent"}]
+    g = {x["version"]: x for x in cr.compare(rows, "version")}
+    assert (g["v1"]["shortcuts"], g["v1"]["subjects"]) == ("!a", "Free plugin") and g["v2"]["subjects"] == "Offer"

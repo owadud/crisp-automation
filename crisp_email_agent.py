@@ -2936,7 +2936,9 @@ def _main():
                 result = sc.UNCONFIRMED if (SEND_CLICKED or "MAY already have been sent" in reason) else sc.FAILED
                 failure_screenshot(page, position, email)
                 record(rows, fieldnames, row_index, result, reason)
-                log_result(row_index, row, result, reason)
+                # Unconfirmed: keep the conversation's address so it can be checked with one click.
+                link = current_conversation_link(page) if result == sc.UNCONFIRMED else ""
+                log_result(row_index, row, result, reason, link=link)
                 claim_result(email, result, reason)
                 emit("failed", email=email, error=reason, unconfirmed=result == sc.UNCONFIRMED)
 

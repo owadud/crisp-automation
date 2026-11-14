@@ -14,7 +14,10 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import claims as cl  # noqa: E402
+import send_control as sc  # noqa: E402
 import sheet_source as ss  # noqa: E402
+import types  # noqa: E402
+from crisp_gui import main_window as mw  # noqa: E402
 from crisp_gui import campaign_store as cs  # noqa: E402
 from crisp_gui import run_state as rs  # noqa: E402
 from fake_sheets import FakeClient, FakeSpreadsheet  # noqa: E402
@@ -187,3 +190,41 @@ def test_emailed_recently_switch_saves_days_or_zero(win):
     assert c.recent_days.text() == "5"                                   # the old number comes back
     c.recent_days.edit.setText("0")                                      # a saved campaign with 0 loads as allow
     assert rule.mode.value() == "allow"
+
+
+def test_schedule_banner_on_every_page_and_cancel(win, dialogs):
+    store = win.campaign_store
+    a = store.add("Night", {"subject": "s", "shortcut": "x", "segment": "g", "csv": str(win._csv)})
+    today = sc.now_dhaka().strftime("%Y-%m-%d")
+    store.schedule(a.id, f"{today} 23:59", live=True)
+    win.refresh_campaigns()
+    assert win.schedule_wrap.isVisibleTo(win)
+    text = win.schedule_banner.text.text()
+    assert "'Night' today at 23:59" in text and "REAL SENDING" in text
+    win.cancel_next_schedule()
+    assert dialogs["seen"][-1].startswith("Cancel the schedule of 'Night'")
+    assert not store.scheduled() and not win.schedule_wrap.isVisibleTo(win)
+
+
+WID = "5b6a1eda-1111-2222-3333-444455556666"
+
+
+def test_open_in_crisp_uses_the_saved_link_or_the_inbox(win, monkeypatch, tmp_path):
+    opened = []
+    monkeypatch.setattr(mw.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
+    sc.append_history(win.history_file, Email="x@y.com", Result=sc.UNCONFIRMED, Mode="live",
+                      Link=f"https://app.crisp.chat/website/{WID}/inbox/session_{WID}/")
+    claim = types.SimpleNamespace(email="X@y.com", state="unconfirmed", runner="me", campaign="c", updated_at="")
+    monkeypatch.setattr(win, "_selected_check", lambda: claim)
+    win.open_check_in_crisp()
+    assert opened[-1].endswith(f"session_{WID}/")
+    claim.email = "new@y.com"                                            # no saved link: inbox + email copied
+    win.open_check_in_crisp()
+    assert opened[-1] == f"https://app.crisp.chat/website/{WID}/inbox/"
+    assert "new@y.com" in win.team_page.status.text()
+
+
+def test_lists_has_an_emailed_recently_filter(win):
+    assert "recent" in win.lists_page.filter.buttons
+    win.show_recent_skips()
+    assert win.lists_page.filter.value() == "recent"

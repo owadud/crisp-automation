@@ -238,13 +238,17 @@ class ResultsStore:
                 rec = self.recipients[key] = {
                     "campaign": campaign, "email": email, "name": r.get("Name", ""),
                     "shortcut": r.get("Shortcut", ""), "version": r.get("Version", ""),
+                    "subject": r.get("Subject", ""),
                     "sent_at": str(r.get("Time", ""))[:16], "link": r.get("Link", ""),
                     "status": r["Result"], "delivered_at": "", "delivered_seen": False,
                     "read_at": "", "read_seen": False, "reply_at": "", "reply_seen": False,
                     "reason": "", "open": None, "last_checked": "", "note": ""}
                 added += 1
-            elif not rec.get("link") and r.get("Link"):
-                rec["link"] = r["Link"]
+            else:
+                if not rec.get("link") and r.get("Link"):
+                    rec["link"] = r["Link"]
+                if not rec.get("subject") and r.get("Subject"):      # records made before subjects were kept
+                    rec["subject"] = r["Subject"]
         return added
 
     # -------------------------------------------------------------- updates
@@ -334,7 +338,11 @@ def compare(rows, by: str) -> list[dict]:
     groups: dict = {}
     for r in rows:
         groups.setdefault(r.get(by) or "(none)", []).append(r)
-    return [{by: k, **summary(v)} for k, v in sorted(groups.items())]
+
+    def used(v, key):   # what this group sent with (shortcut / subject), in first-seen order
+        return " / ".join(dict.fromkeys(x.get(key, "") for x in v if x.get(key)))
+    return [{by: k, "shortcuts": used(v, "shortcut"), "subjects": used(v, "subject"), **summary(v)}
+            for k, v in sorted(groups.items())]
 
 
 def recheck_suggestions(rows, last_checked: str, now: datetime | None = None) -> list[str]:

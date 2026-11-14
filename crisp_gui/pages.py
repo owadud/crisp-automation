@@ -1101,9 +1101,9 @@ class ResultsPage(Page):
         self.compare_campaigns = _table(["Campaign", "Sent", "Delivered %", "Read % (approx.)", "Reply %",
                                          "Failed"], 160)
         v.addWidget(self.compare_campaigns)
-        v.addWidget(label("Shortcut versions in the selected campaign", "fieldLabel"))
-        self.compare_versions = _table(["Shortcut version", "Sent", "Delivered %", "Read % (approx.)",
-                                        "Reply %", "Failed"], 120)
+        v.addWidget(label("Versions in the selected campaign", "fieldLabel"))
+        self.compare_versions = _table(["Version", "Shortcut", "Subject", "Sent", "Delivered %",
+                                        "Read % (approx.)", "Reply %", "Failed"], 120)
         v.addWidget(self.compare_versions)
         self.tabs.addTab(tab, "Compare")
 
@@ -1154,7 +1154,7 @@ class ListsPage(Page):
         row.setSpacing(8)
         row.addWidget(label("Show", "fieldLabel"))
         self.filter = SegmentedControl([("all", "All", None), ("send", "Will send", None),
-                                        ("skip", "Skipped", None)], tm)
+                                        ("skip", "Skipped", None), ("recent", "Emailed recently", None)], tm)
         self.filter.set_value("all")
         row.addWidget(self.filter)
         row.addStretch()
@@ -1187,6 +1187,8 @@ class TeamPage(Page):
         self.checks = _view(140)
         card.body.addWidget(self.checks)
         row = QHBoxLayout()
+        self.open_check = button("Open in Crisp", None, "send", tm, "text_muted")
+        row.addWidget(self.open_check)
         self.mark_sent = button("It was sent", None, "check", tm, "text_muted")
         self.mark_not_sent = button("It was not sent", "dangerOutline")
         row.addWidget(self.mark_sent)

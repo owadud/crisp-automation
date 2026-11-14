@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import recipient_rules as rules  # noqa: E402
 import send_control as sc  # noqa: E402
 import sheet_source as ss  # noqa: E402  (gspread is imported only when used)
 import campaign_results as cr  # noqa: E402
@@ -228,6 +229,17 @@ class MainWindow(QMainWindow):
         self.run_button.setMinimumWidth(132)
         t.addWidget(self.run_button)
         v.addWidget(self.top)
+        # Next scheduled campaign: shown on every page, so a timed real send is never a surprise.
+        self.schedule_wrap = QWidget()
+        sw = QHBoxLayout(self.schedule_wrap)
+        sw.setContentsMargins(28, 12, 28, 0)
+        self.schedule_banner = W.Banner(self.tm, "info")
+        self.schedule_cancel = W.button("Cancel schedule")
+        self.schedule_banner.layout().addWidget(self.schedule_cancel, 0, Qt.AlignVCenter)
+        self.schedule_cancel.clicked.connect(self.cancel_next_schedule)
+        sw.addWidget(self.schedule_banner)
+        self.schedule_wrap.hide()
+        v.addWidget(self.schedule_wrap)
 
         self.stack = QStackedWidget()
         self.campaign = CampaignPage(self.tm)
@@ -286,6 +298,7 @@ class MainWindow(QMainWindow):
         lp.refresh.clicked.connect(lambda: (self.refresh_csv(), self.refresh_lists()))
         tp = self.team_page
         tp.refresh.clicked.connect(self.refresh_team)
+        tp.open_check.clicked.connect(self.open_check_in_crisp)
         tp.mark_sent.clicked.connect(lambda: self.resolve_check(True))
         tp.mark_not_sent.clicked.connect(lambda: self.resolve_check(False))
         self._team_signal = _SheetSignal(self)
@@ -327,7 +340,7 @@ class MainWindow(QMainWindow):
         c.sheet_tab.currentTextChanged.connect(self._sheet_tab_changed)
         c.retry_failed.clicked.connect(lambda: self.start_run(retry_only=True))
         c.preview.clicked.connect(lambda: self.navigate(LISTS))
-        c.recent_rule.see_who.clicked.connect(self.show_row_preview)   # each skipped row with who / when
+        c.recent_rule.see_who.clicked.connect(self.show_recent_skips)   # each skipped row with who / when
         c.random_delay.toggled.connect(lambda on: None if self._loading else self.prefs.set_random_delay(on))
 
         h = self.history
@@ -1832,7 +1845,8 @@ class MainWindow(QMainWindow):
             return [name, s_["sent"], s_["delivered_pct"], s_["read_pct"], s_["replied_pct"], s_["failed"]]
         self._set_rows(r.compare_campaigns, [pct_row(g["campaign"], g)
                                              for g in cr.compare(self.results.rows(), "campaign")])
-        self._set_rows(r.compare_versions, [pct_row(g["version"], g) for g in cr.compare(rows, "version")])
+        self._set_rows(r.compare_versions, [[g["version"], g["shortcuts"], g["subjects"]] + pct_row("", g)[1:]
+                                            for g in cr.compare(rows, "version")])
         self._set_rows(r.checks, [[h["at"], h["campaign"], h["sent"], h["delivered"], h["read"], h["replied"],
                                    h["failed"]] for h in reversed(self.results.history(campaign))])
 
@@ -2224,6 +2238,34 @@ class MainWindow(QMainWindow):
         self.settings.parallel.edit.setText(str(self.prefs.parallel()))
         self.refresh_campaigns()
 
+    def _next_scheduled(self):
+        items = self.campaign_store.scheduled()
+        return items[0] if items else None
+
+    def _refresh_schedule_banner(self):
+        c = self._next_scheduled()
+        self.schedule_wrap.setVisible(c is not None)
+        if c is None:
+            return
+        at = c.schedule.get("at", "")
+        today = sc.now_dhaka().strftime("%Y-%m-%d")
+        when = f"today at {at[11:16]}" if at.startswith(today) else f"{at} (Dhaka)"
+        mode = "REAL SENDING" if c.schedule.get("live") else "dry run, nothing is sent"
+        more = len(self.campaign_store.scheduled()) - 1
+        self.schedule_banner.set_text(
+            f"Next scheduled: '{c.name}' {when} · {mode}. Keep this app open and the computer awake."
+            + (f" (+{more} more scheduled)" if more > 0 else ""))
+
+    def cancel_next_schedule(self):
+        c = self._next_scheduled()
+        if c is None:
+            return
+        if not W.ask(self, f"Cancel the schedule of '{c.name}'?", "Nothing is sent. You can schedule it again "
+                     "from Campaigns.", confirm="Cancel schedule"):
+            return
+        self.campaign_store.unschedule(c.id, "Schedule cancelled.")
+        self.refresh_campaigns(select=c.id)
+
     def _campaign_action(self, fn):
         cid = self.campaigns_page.selected_id()
         if not cid:
@@ -2593,6 +2635,7 @@ class MainWindow(QMainWindow):
                          "then click I checked Crisp.")
         cp.banner.set_text(" ".join(dict.fromkeys(notes)))
         cp.banner.setVisible(bool(notes))
+        self._refresh_schedule_banner()
         running = [c.name for c in store.running()]
         queued = sum(1 for c in items if c.status == cs.QUEUED)
         cp.queue_status.setText(
@@ -2685,6 +2728,8 @@ class MainWindow(QMainWindow):
             rows = [r for r in rows if r[7] == "Send"]
         elif mode == "skip":
             rows = [r for r in rows if r[7] != "Send"]
+        elif mode == "recent":                     # who another campaign emailed lately, and which one
+            rows = [r for r in rows if r[7].startswith(rules.ACTIONS[rules.RECENT])]
         self.list_rows.set_rows(rows)
         lp.empty.setVisible(not rows)
         lp.empty.setText("No rows to show." if st.plan else "The list has no rows.")
@@ -2747,13 +2792,37 @@ class MainWindow(QMainWindow):
         for b in (tp.mark_sent, tp.mark_not_sent):
             b.setEnabled(bool(self._team_claims))
 
-    def resolve_check(self, was_sent: bool):
+    def _selected_check(self):
         tp = self.team_page
         rows = tp.checks.selectionModel().selectedRows() if tp.checks.selectionModel() else []
         if not rows or rows[0].row() >= len(self._team_claims):
             W.inform(self, "Choose a recipient", "Select a row in Needs a check in Crisp first.")
+            return None
+        return self._team_claims[rows[0].row()]
+
+    def open_check_in_crisp(self):
+        """The conversation of an unconfirmed send; without a saved link, the inbox + the email copied."""
+        claim = self._selected_check()
+        if claim is None:
             return
-        claim = self._team_claims[rows[0].row()]
+        email = claim.email.strip().lower()
+        links = [r.get("Link", "") for r in sc.read_history(self.history_file)
+                 if r.get("Email", "").strip().lower() == email and r.get("Link")]
+        if links:
+            QDesktopServices.openUrl(QUrl(links[-1]))
+            return
+        website = self._api_config().get("website_id") or self._website_from_history()
+        QGuiApplication.clipboard().setText(claim.email)
+        QDesktopServices.openUrl(QUrl(f"https://app.crisp.chat/website/{website}/inbox/" if website
+                                      else "https://app.crisp.chat/"))
+        self.team_page.status.setText(f"No saved link for {claim.email}: opened the Crisp inbox and copied the "
+                                      "email. Paste it into Crisp's search.")
+
+    def resolve_check(self, was_sent: bool):
+        tp = self.team_page
+        claim = self._selected_check()
+        if claim is None:
+            return
         what = "WAS sent" if was_sent else "was NOT sent"
         if not W.ask(self, f"Record that {claim.email} {what}?",
                      ("It then counts as sent for every runner." if was_sent else
@@ -2776,6 +2845,11 @@ class MainWindow(QMainWindow):
     def campaign_name(self, v: dict | None = None) -> str:
         v = v or self.campaign_values()
         return (v.get("campaign") or "").strip() or (v.get("subject") or "").strip()
+
+    def show_recent_skips(self):
+        self.lists_page.filter.set_value("recent")
+        self.navigate(LISTS)
+        self.refresh_lists()
 
     def show_row_preview(self):
         """Per-row table of what a run would do. Sends nothing, writes nothing."""
