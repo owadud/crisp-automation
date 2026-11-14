@@ -23,24 +23,26 @@ def preview_rows(plan, campaign: dict) -> list[tuple]:
     import send_control as sc
     try:
         if campaign.get("send_mode") == "api":
-            variants = sc.api_variants(campaign.get("api_message", ""), campaign.get("shortcut_version", ""))
+            n = max(1, len(sc.split_messages(campaign.get("api_message", ""))))
+            names = ", ".join(f"api-{i + 1}" for i in range(n))
         else:
-            variants = sc.parse_variants(campaign.get("shortcut", ""), campaign.get("shortcut_version", ""))
+            names = campaign.get("shortcut", "")
+        variants, subjects = sc.ab_plan(names, campaign.get("shortcut_version", ""), campaign.get("subject", ""))
     except ValueError:
-        variants = [(campaign.get("shortcut", ""), "")]
+        variants, subjects = [(campaign.get("shortcut", ""), "")], [campaign.get("subject", "")]
     counts = [0] * len(variants)
     out = []
     for p in plan:
-        shortcut = variants[0][0]
+        shortcut, subject = variants[0][0], subjects[0]
         if len(variants) > 1 and p["send"]:
             i = sc.pick_variant(counts)
             counts[i] += 1
-            shortcut = f"{variants[i][0]} ({variants[i][1]})"
+            shortcut, subject = f"{variants[i][0]} ({variants[i][1]})", subjects[i]
         elif len(variants) > 1:
             shortcut = ""
         name = p["name"] + (" (from email)" if p.get("fallback") else "") if p["email"] else ""
         action = p["action"] + (f" ({p['detail']})" if p.get("detail") and not p["send"] else "")
-        out.append((str(p["row"]), p["email"], name, campaign.get("subject", ""), shortcut,
+        out.append((str(p["row"]), p["email"], name, subject, shortcut,
                     campaign.get("segment", ""), p.get("reference", ""), action))
     return out
 

@@ -88,7 +88,7 @@ def test_restart_restores_queue_and_never_resumes_a_mid_send_campaign(tmp_path):
 
 def test_queue_summary_counts_overlaps_once_and_estimates_time(tmp_path):
     st = store(tmp_path)
-    a, b = st.add("A", BASE), st.add("B", BASE)
+    a, b = st.add("A", dict(BASE, recent_days="7")), st.add("B", dict(BASE, recent_days="7"))
     plans = {a.id: (["x@x.com", "y@x.com"], 1, ""), b.id: (["Y@x.com", "z@x.com"], 0, "")}
     s = cs.queue_summary([a, b], plans, delay=40, daily_cap=10, sent_today=7)
     assert s["total"] == 3 and s["capped"] == 3 and list(s["overlaps"]) == ["y@x.com"]

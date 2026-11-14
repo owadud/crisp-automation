@@ -870,11 +870,14 @@ class MainWindow(QMainWindow):
                 return f"{head} · A/B test, {len(texts)} message versions: {labels}"
             return f"{head} · message: “{first[:80]}{'…' if len(first) > 80 else ''}”"
         try:
-            variants = sc.parse_variants(v.get("shortcut", ""), v.get("shortcut_version", ""))
+            variants, subjects = sc.ab_plan(v.get("shortcut", ""), v.get("shortcut_version", ""), v.get("subject", ""))
         except ValueError:
             return f"Shortcut: {v.get('shortcut', '')}"
         if len(variants) == 1:
             return f"Shortcut: {variants[0][0]}"
+        if len(set(subjects)) > 1:
+            return "A/B test, split evenly: " + " / ".join(f"{n} + “{s}” ({lab})"
+                                                           for (n, lab), s in zip(variants, subjects))
         return "A/B test, split evenly: " + " / ".join(f"{n} ({lab})" for n, lab in variants)
 
     def _shared_values(self) -> dict:
@@ -1162,13 +1165,17 @@ class MainWindow(QMainWindow):
             ok = ok and not problem
         elif c.shortcut.text():
             try:
-                variants = sc.parse_variants(c.shortcut.text(), c.shortcut_version.text())
+                variants, subjects = sc.ab_plan(c.shortcut.text(), c.shortcut_version.text(), c.subject.text())
                 c.shortcut_version.set_state("help")
-                if len(variants) > 1:
+                if len(set(subjects)) > 1:
+                    c.subject.set_state("ok", f"A/B test: {len(subjects)} subjects, split evenly: "
+                                        + " · ".join(f"{s} ({lab})" for (_n, lab), s in zip(variants, subjects)))
+                elif len(variants) > 1:
                     c.shortcut.set_state("ok", f"A/B test: {len(variants)} shortcuts, split evenly: "
                                          + " · ".join(f"{n} ({lab})" for n, lab in variants))
             except ValueError as exc:
-                target = c.shortcut_version if "label" in str(exc) else c.shortcut
+                target = (c.shortcut_version if "label" in str(exc)
+                          else c.subject if "subject" in str(exc) else c.shortcut)
                 target.set_state("error", str(exc))
                 ok = False
         if not c.reference.text():
@@ -1847,7 +1854,7 @@ class MainWindow(QMainWindow):
         s.api_auto.setChecked(self.prefs.auto_check())
         s.api_auto.blockSignals(False)
         if not s.api_test_subject.text():
-            s.api_test_subject.edit.setText(self.campaign.subject.text())
+            s.api_test_subject.edit.setText((sc.split_subjects(self.campaign.subject.text()) or [""])[0])
         s.api_status.setText("Token saved. Refresh statuses reads from the Crisp API." if crisp_api.configured(cfg)
                              else "No token yet: Refresh statuses opens conversations in Chromium instead.")
 
@@ -2363,10 +2370,7 @@ class MainWindow(QMainWindow):
             if not (fresh and self._sheet_preview_path().exists()):
                 return [], 0, "Google Sheet: counted when it starts", ""
             path = str(self._sheet_preview_path())
-        try:
-            recent = max(1, int(s.get("recent_days") or 7))
-        except ValueError:
-            recent = 7
+        recent = sc.recent_days_value(s.get("recent_days"))
         shared = str(self._sheet_shared_path()) if s.get("source") == "sheet" else ""
         st = read_stats(path, s.get("reference", ""), s.get("row_from", ""), s.get("row_to", ""), s.get("dnc", ""),
                         history_file=str(self.history_file), campaign=c.name, recent_days=recent,
@@ -2453,10 +2457,7 @@ class MainWindow(QMainWindow):
         v["api_config"] = str(self.api_config_path)
         v["ai_openers_file"] = (str(ai_openers.OpenerStore(self.data_dir / "ai_openers", c.name).path)
                                 if v.get("send_mode") == "api" and v.get("ai_opener") == "true" else "")
-        try:
-            v["recent_days"] = str(max(1, int(v.get("recent_days") or 7)))   # never twice in a day across campaigns
-        except ValueError:
-            v["recent_days"] = "7"
+        v["recent_days"] = str(sc.recent_days_value(v.get("recent_days")))   # 0 = other campaigns may email them
         if slot == 0:
             return self._start_agent(v, dry, label=f"campaign '{c.name}'")
         v["history_file"] = str(self.history_file)

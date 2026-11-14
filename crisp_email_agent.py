@@ -178,28 +178,32 @@ API_TEXT = ""         # message text for the current recipient
 API_SESSION = ""      # conversation created for the current recipient
 API_LINK = ""
 
+# Several subjects ("A | B") pair with the shortcuts / messages in order (A/B test).
+SUBJECT_TEXT = SUBJECT
 try:
     if API_MODE:
-        VARIANTS = sc.parse_variants(", ".join(f"api-{i + 1}" for i in range(max(1, len(API_TEXTS)))),
-                                     SHORTCUT_VERSION)
+        VARIANTS, SUBJECTS = sc.ab_plan(", ".join(f"api-{i + 1}" for i in range(max(1, len(API_TEXTS)))),
+                                        SHORTCUT_VERSION, SUBJECT_TEXT)
     else:
-        VARIANTS = sc.parse_variants(SHORTCUT, SHORTCUT_VERSION)
+        VARIANTS, SUBJECTS = sc.ab_plan(SHORTCUT, SHORTCUT_VERSION, SUBJECT_TEXT)
 except ValueError:
-    VARIANTS = [(SHORTCUT, SHORTCUT_VERSION)]
+    VARIANTS, SUBJECTS = [(SHORTCUT, SHORTCUT_VERSION)], [SUBJECT_TEXT]
+SUBJECT = SUBJECTS[0] or SUBJECT_TEXT
 VARIANT_COUNTS = None
 
 
 def choose_variant():
-    """Set SHORTCUT / SHORTCUT_VERSION for the next recipient. Returns its index."""
-    global SHORTCUT, SHORTCUT_VERSION, VARIANT_COUNTS
+    """Set SHORTCUT / SHORTCUT_VERSION / SUBJECT for the next recipient. Returns its index."""
+    global SHORTCUT, SHORTCUT_VERSION, SUBJECT, VARIANT_COUNTS
     if VARIANT_COUNTS is None:
         VARIANT_COUNTS = ([0] * len(VARIANTS) if DRY_RUN
-                          else sc.variant_counts(HISTORY_FILE, CAMPAIGN, VARIANTS))
+                          else sc.variant_counts(HISTORY_FILE, CAMPAIGN, VARIANTS, SUBJECTS))
     index = sc.pick_variant(VARIANT_COUNTS)
     SHORTCUT, SHORTCUT_VERSION = VARIANTS[index]
+    SUBJECT = SUBJECTS[index] or SUBJECT_TEXT
     if API_MODE:
         global API_TEXT
-        API_TEXT = API_TEXTS[index] if index < len(API_TEXTS) else ""
+        API_TEXT = API_TEXTS[index % len(API_TEXTS)] if API_TEXTS else ""
     return index
 
 
@@ -2539,22 +2543,25 @@ def _main():
     if API_MODE:
         print(f"Send with: Crisp API ({len(API_TEXTS)} message text(s)); no browser.")
     if len(VARIANTS) > 1:
-        print("A/B test, split evenly: " + " · ".join(f"{n} ({lab})" for n, lab in VARIANTS))
+        print("A/B test, split evenly: " + " · ".join(
+            f"{n} ({lab})" + (f" / subject: {s}" if len(set(SUBJECTS)) > 1 else "")
+            for (n, lab), s in zip(VARIANTS, SUBJECTS)))
     elif not API_MODE:
         print(
             f"Shortcut: {SHORTCUT}"
         )
     try:
         if API_MODE:
-            sc.parse_variants(", ".join(f"api-{i + 1}" for i in range(max(1, len(API_TEXTS)))),
-                              os.environ.get("CRISP_SHORTCUT_VERSION", ""))
+            sc.ab_plan(", ".join(f"api-{i + 1}" for i in range(max(1, len(API_TEXTS)))),
+                       os.environ.get("CRISP_SHORTCUT_VERSION", ""), SUBJECT_TEXT)
         else:
-            sc.parse_variants(os.environ.get("CRISP_SHORTCUT", SHORTCUT), os.environ.get("CRISP_SHORTCUT_VERSION", ""))
+            sc.ab_plan(os.environ.get("CRISP_SHORTCUT", SHORTCUT), os.environ.get("CRISP_SHORTCUT_VERSION", ""),
+                       SUBJECT_TEXT)
     except ValueError as exc:
-        raise RuntimeError(f"Message / shortcut settings: {exc}")
+        raise RuntimeError(f"Message / shortcut / subject settings: {exc}")
 
     print(
-        f"Subject: {SUBJECT}"
+        f"Subject: {SUBJECT_TEXT}"
     )
 
     print(
@@ -2568,7 +2575,7 @@ def _main():
     print(
         f"Dry run: {DRY_RUN}"
     )
-    emit("run_start", dry_run=DRY_RUN, csv=CSV_FILE.name, subject=SUBJECT, campaign=CAMPAIGN,
+    emit("run_start", dry_run=DRY_RUN, csv=CSV_FILE.name, subject=SUBJECT_TEXT, campaign=CAMPAIGN,
          delay=40.0 if RANDOM_DELAY else (float(DELAY_ENV) if DELAY_ENV else BETWEEN_EMAILS))
 
     if SOURCE == "sheet":
@@ -2755,6 +2762,8 @@ def _main():
             variant = choose_variant()
             if len(VARIANTS) > 1:
                 print(f"  Shortcut: {SHORTCUT} ({SHORTCUT_VERSION})")
+                if len(set(SUBJECTS)) > 1:
+                    print(f"  Subject: {SUBJECT}")
                 emit("variant", email=email, shortcut=SHORTCUT, version=SHORTCUT_VERSION)
 
             try:

@@ -97,3 +97,25 @@ def test_preview_table_shows_the_expected_shortcut_per_row():
              "action": "Send" if i != 2 else "Skip: duplicate", "detail": "", "send": i != 2} for i in range(1, 5)]
     rows = preview_rows(plan, {"subject": "S", "shortcut": "!a, !b", "shortcut_version": "v1, v2", "segment": ""})
     assert [r[4] for r in rows] == ["!a (v1)", "", "!b (v2)", "!a (v1)"]
+
+
+def test_several_subjects_pair_with_shortcuts_or_split_one_shortcut():
+    # one subject: unchanged
+    assert sc.ab_plan("!a, !b", "v1, v2", "Hi") == ([("!a", "v1"), ("!b", "v2")], ["Hi", "Hi"])
+    # one shortcut, several subjects (commas inside a subject are fine)
+    assert sc.ab_plan("!a", "", "Free plugin, Shahriar | Your offer") == (
+        [("!a", "S1"), ("!a", "S2")], ["Free plugin, Shahriar", "Your offer"])
+    # paired in order
+    assert sc.ab_plan("!a, !b", "", "A\nB") == ([("!a", "!a"), ("!b", "!b")], ["A", "B"])
+    for shortcuts, subjects in (("!a, !b, !c", "A | B"), ("!a", "A | a")):
+        with pytest.raises(ValueError):
+            sc.ab_plan(shortcuts, "", subjects)
+
+
+def test_subject_variants_are_counted_separately(tmp_path):
+    h = tmp_path / "history.csv"
+    for subject in ("A", "A", "B"):
+        sc.append_history(h, Email="x@x.com", Result=sc.SENT, Campaign="vip", Mode="live",
+                          Shortcut="!a", Subject=subject)
+    variants, subjects = sc.ab_plan("!a", "", "A | B | C")
+    assert sc.variant_counts(h, "vip", variants, subjects) == [2, 1, 0]

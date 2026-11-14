@@ -201,13 +201,25 @@ def test_two_campaigns_at_once_never_email_the_same_person_twice():
     both = EMAILS[:6]
     book = book_with(EMAILS)
     a = runner(book, "Ana", campaign="Spring")
-    b = runner(book, "Bo", campaign="Upsell", recent_days=0)      # even with the recent rule off
+    b = runner(book, "Bo", campaign="Upsell", recent_days=1)
     log = []
     for _ in range(4):
         send_all(a, both + EMAILS[6:9], log, stop_after=2)
         send_all(b, both + EMAILS[9:], log, stop_after=2)
     emails = [e for _r, e in log]
     assert len(emails) == len(set(emails)) and set(emails) == set(EMAILS)
+
+
+def test_recent_rule_off_lets_another_campaign_email_them_but_never_the_same_one():
+    book = book_with(EMAILS[:3])
+    a = runner(book, "Ana", campaign="Spring")
+    log = []
+    send_all(a, EMAILS[:3], log)
+    b = runner(book, "Bo", campaign="Upsell", recent_days=0)
+    send_all(b, EMAILS[:3], log)                                 # a different campaign: allowed
+    again = runner(book, "Cy", campaign="Spring", recent_days=0)
+    send_all(again, EMAILS[:3], log)                             # the same campaign: never twice
+    assert sorted(e for r, e in log) == sorted(EMAILS[:3] * 2)
 
 
 def test_shared_history_feeds_the_recent_and_campaign_rules(tmp_path):

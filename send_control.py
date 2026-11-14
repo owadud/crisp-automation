@@ -116,6 +116,14 @@ def optional_int(text, name: str) -> int | None:
 
 
 # ------------------------------------------------------------------ history
+def recent_days_value(text, default: int = 7) -> int:
+    """'Skip anyone emailed in the last N days': blank -> default, 0 = off."""
+    try:
+        return max(0, int(str(text if text is not None else "").strip() or default))
+    except ValueError:
+        return default
+
+
 def _upgrade_history(path: Path) -> None:
     """Rewrite an older history.csv (fewer columns) with the current header."""
     try:
@@ -263,6 +271,47 @@ def parse_variants(shortcuts: str, versions: str = "") -> list[tuple[str, str]]:
     return list(zip(names, labels))
 
 
+def split_subjects(text: str) -> list[str]:
+    """'Subject A | Subject B' -> ['Subject A', 'Subject B']. | or new lines separate
+    (not commas: subjects often contain them)."""
+    return [s.strip() for s in re.split(r"[|\n]", str(text or "")) if s.strip()]
+
+
+def ab_plan(shortcuts: str, versions: str = "", subjects: str = "") -> tuple[list[tuple[str, str]], list[str]]:
+    """A/B variants [(shortcut, label)] and the subject for each, same order.
+
+    One subject = every variant uses it (the old behaviour). Several subjects pair
+    with the shortcuts in order; with one shortcut, each subject becomes a variant
+    (blank labels -> S1, S2, ...). Raises ValueError with a message the user can act on."""
+    subs = split_subjects(subjects)
+    if len(subs) <= 1:
+        variants = parse_variants(shortcuts, versions)
+        return variants, [subs[0] if subs else ""] * len(variants)
+    names = [s.strip() for s in re.split(r"[,\n]", str(shortcuts or "")) if s.strip()]
+    labels = [s.strip() for s in re.split(r"[,\n]", str(versions or "")) if s.strip()]
+    if not names:
+        raise ValueError("Enter a Crisp shortcut.")
+    if len({s.lower() for s in subs}) != len(subs):
+        raise ValueError("The same subject is listed twice.")
+    if len(names) == 1:
+        names = names * len(subs)
+        defaults = [f"S{i + 1}" for i in range(len(subs))]
+    elif len(names) == len(subs):
+        if len({n.lower() for n in names}) != len(names):
+            raise ValueError("The same shortcut is listed twice.")
+        defaults = names
+    else:
+        raise ValueError(f"{len(subs)} subjects for {len(names)} shortcuts. Give one subject, "
+                         "or one subject per shortcut in the same order.")
+    if len(labels) > len(subs):
+        raise ValueError(f"{len(labels)} version labels for {len(subs)} subject(s). "
+                         "Give one label per subject, in the same order.")
+    labels += defaults[len(labels):]
+    if len({lab.lower() for lab in labels}) != len(labels):
+        raise ValueError("Each version needs a different label.")
+    return list(zip(names, labels)), subs
+
+
 def split_messages(text: str) -> list[str]:
     """API message box -> message texts. A line with only --- separates A/B versions."""
     parts, cur = [], []
@@ -298,16 +347,20 @@ def api_variants(text: str, versions: str = "") -> list[tuple[str, str]]:
     return parse_variants(", ".join(f"api-{i + 1}" for i in range(n)), versions)
 
 
-def variant_counts(path: Path, campaign: str, variants) -> list[int]:
-    """Live sends so far in this campaign per variant (history.csv), to keep the split even."""
+def variant_counts(path: Path, campaign: str, variants, subjects=None) -> list[int]:
+    """Live sends so far in this campaign per variant (history.csv), to keep the split even.
+    With several subjects a send counts for a variant only when its subject matches too."""
     counts = [0] * len(variants)
     campaign = str(campaign or "").strip().lower()
+    by_subject = subjects is not None and len(set(subjects)) > 1
     for r in read_history(path):
         if r.get("Mode") != "live" or r.get("Result") not in (SENT, UNCONFIRMED):
             continue
         if str(r.get("Campaign", "")).strip().lower() != campaign:
             continue
         for i, (name, _label) in enumerate(variants):
+            if by_subject and str(r.get("Subject", "")).strip() != subjects[i]:
+                continue
             if str(r.get("Shortcut", "")).strip() == name:
                 counts[i] += 1
     return counts

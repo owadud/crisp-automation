@@ -145,14 +145,17 @@ def owner(claims: list[Claim]) -> Claim | None:
 
 def sent_blocks(claim: Claim, campaign: str, recent_days: int, now: datetime) -> str:
     """A finished send in the shared log blocks a new send when it is in the same
-    campaign, or within the recently-contacted window (at least 1 day, so two
-    runners never email one person twice on the same day)."""
+    campaign, or within the recently-contacted window (0 days = off: another
+    campaign may email them). In-progress claims are blocked elsewhere."""
     if claim.state != SENT:
         return ""
     if campaign and claim.campaign.strip().lower() == campaign.strip().lower():
         return f"already sent {claim.updated_at} in '{claim.campaign}' by {claim.runner}"
+    days = int(recent_days or 0)
+    if days <= 0:
+        return ""
     at = parse_stamp(claim.updated_at)
-    if at is None or now - at < timedelta(days=max(1, int(recent_days or 0))):
+    if at is None or now - at < timedelta(days=days):
         return f"sent {claim.updated_at} in '{claim.campaign}' by {claim.runner}"
     return ""
 

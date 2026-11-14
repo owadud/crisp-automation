@@ -184,7 +184,10 @@ class CampaignPage(Page):
         self.campaign_name = Field("Campaign name", "Saved in history: one person is never emailed twice in "
                                    "the same campaign. Blank = the subject.", placeholder="Same as the subject")
         card.body.addWidget(self.campaign_name)
-        self.subject = Field("Email subject", "Must exactly match a saved subject in Crisp's subject dropdown.")
+        self.subject = Field("Email subject(s)", "Must exactly match a saved subject in Crisp's subject dropdown. "
+                             "For an A/B test, enter several separated by | (one per shortcut, or several "
+                             "with one shortcut): recipients are split evenly between them.",
+                             placeholder="e.g. Subject A | Subject B")
         self.shortcut = Field("Crisp shortcut(s)", "The saved Crisp shortcut inserted as the message body. "
                               "For an A/B test, enter several separated by commas: recipients are split "
                               "evenly between them.", placeholder="e.g. !subs-small, !subs-big")
@@ -277,7 +280,8 @@ class CampaignPage(Page):
         self.max_skips = Field("Max skipped per run", "Stop after this many skips.")
         self.max_fails_in_row = Field("Stop after failures in a row", "Auto-stop when this many fail back to back.")
         self.recent_days = Field("Skip anyone emailed in the last N days",
-                                 "All campaigns and files. 0 = off. Only real sends count.")
+                                 "All campaigns and files. Only real sends count. 0 = off: people "
+                                 "can get different campaigns (never the same campaign twice).")
         self.recent_days.edit.setValidator(QIntValidator(0, 3650, self.recent_days.edit))
         limits.add(self.recent_days)
         for f in (self.max_skips, self.max_fails_in_row):

@@ -277,3 +277,18 @@ def test_eta_uses_real_pace_and_ignores_pause():
     p.handle_line('@@EVENT {"event": "success", "email": "b", "result": "Dry run"}')
     # 2 done in 60 s of active time -> 30 s each -> 8 left = 240 s
     assert rs.eta_seconds(st, now[0]) == pytest.approx(240)
+
+
+def test_recent_days_zero_really_means_off():
+    assert sc.recent_days_value("0") == 0
+    assert sc.recent_days_value("") == 7 and sc.recent_days_value(None) == 7
+    assert sc.recent_days_value("3") == 3 and sc.recent_days_value("x") == 7
+
+
+def test_queue_counts_overlap_only_when_the_recent_rule_is_on():
+    from crisp_gui import campaign_store as cs
+    a, b, c = (cs.Campaign(id=i, name=i, settings={"recent_days": d}) for i, d in
+               (("A", "7"), ("B", "0"), ("C", "7")))
+    plans = {k: (["x@x.com"], 0, "") for k in "ABC"}
+    rows = {r["id"]: r["to_send"] for r in cs.queue_summary([a, b, c], plans, 0)["rows"]}
+    assert rows == {"A": 1, "B": 1, "C": 0}

@@ -329,16 +329,17 @@ def queue_summary(campaigns: list[Campaign], plans: dict, delay: float, daily_ca
 
     plans: {campaign id: (emails to send in file order, duplicates skipped, note)}.
     A person in several campaigns is counted (and sent) once: the first campaign
-    in queue order gets them; the others skip them (the queue keeps the
-    "emailed recently" rule at 1 day or more)."""
+    in queue order gets them; the others skip them, unless a campaign has the
+    "emailed recently" rule off (0 days)."""
     seen: dict[str, str] = {}
     rows, total, overlaps = [], 0, {}
     for c in campaigns:
         emails, dups, note = plans.get(c.id, ([], 0, "not counted"))
         mine = 0
+        others_ok = str(c.settings.get("recent_days", "")).strip() == "0"
         for e in emails:
             key = str(e or "").strip().lower()
-            if key in seen:
+            if key in seen and not others_ok:
                 overlaps.setdefault(key, [seen[key]]).append(c.name)
                 continue
             seen[key] = c.name
