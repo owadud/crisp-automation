@@ -24,6 +24,7 @@ def fake_app(tmp_path, windows):
 
 def test_linux_launcher_opens_without_a_terminal(tmp_path, monkeypatch):
     monkeypatch.setattr(ds.sys, "platform", "linux")
+    monkeypatch.setattr(ds, "desktop_folder", lambda home: None)   # never touch the real Desktop
     root, home = fake_app(tmp_path, windows=False), tmp_path / "home"
     made = ds.linux_launcher(root, home)
     text = made[0].read_text(encoding="utf-8")
