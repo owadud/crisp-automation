@@ -69,6 +69,9 @@ class _SheetSignal(QObject):
 
 # Stack order (navigate() takes these numbers).
 CAMPAIGNS, EDITOR, RUN, RESULTS, LISTS, TEAM, SETTINGS, RUNS = range(8)
+CHIP_TONE = {cs.RUNNING: "accent", cs.QUEUED: "neutral", cs.FINISHED: "success", cs.SCHEDULED: "warning",
+             cs.PAUSED: "warning", cs.FAILED: "danger", cs.UNCONFIRMED: "danger", cs.STOPPED: "muted",
+             cs.READY: "muted", cs.DRAFT: "muted"}
 TITLES = ("Campaigns", "Campaign", "Run", "Results", "Lists", "Team", "Settings", "Runs and diagnostics")
 # Sidebar: (key, title, icon, stack page). The editor belongs to Campaigns, run history to Results.
 PAGES = (
@@ -2272,6 +2275,21 @@ class MainWindow(QMainWindow):
         self.settings.parallel.edit.setText(str(self.prefs.parallel()))
         self.refresh_campaigns()
 
+    def _refresh_campaign_stats(self, items):
+        cp = self.campaigns_page
+        cap = str(self.campaign_values().get("daily_cap") or "").strip()
+        sent = sc.sent_today(self.history_file)
+        cp.m_sent_today.set(sent, f"of {cap} daily cap" if cap else "no daily cap")
+        queued = sum(1 for c in items if c.status == cs.QUEUED)
+        cp.m_queued.set(queued, "run next with Run queue" if queued else "nothing queued")
+        scheduled = self.campaign_store.scheduled()
+        cp.m_scheduled.set(len(scheduled), f"next {scheduled[0].schedule.get('at', '')[11:16]}" if scheduled
+                           else "none")
+        checks = len(getattr(self, "_team_claims", []) or [])
+        unconfirmed = sum(1 for c in items if c.status == cs.UNCONFIRMED)
+        cp.m_checks.set(checks + unconfirmed, "see Team" if checks else
+                        ("campaign stopped unconfirmed" if unconfirmed else "all clear"))
+
     def _next_scheduled(self):
         items = self.campaign_store.scheduled()
         return items[0] if items else None
@@ -2633,7 +2651,7 @@ class MainWindow(QMainWindow):
             runner = self.queue_ctl.runner_of(c.id)
             st = runner.state if runner is not None else None
             if c.status == cs.SCHEDULED and c.schedule:
-                status += f" · {c.schedule.get('at')} · {'LIVE' if c.schedule.get('live') else 'dry run'}"
+                status += f" {c.schedule.get('at', '')[11:16]} · {'LIVE' if c.schedule.get('live') else 'dry run'}"
             if st is not None and runner.is_running():
                 status += f" · {st.processed}/{st.eligible or '?'}"
                 if self.queue_ctl.slot_of(c.id):
@@ -2646,23 +2664,26 @@ class MainWindow(QMainWindow):
                              + (f", {last.get('elsewhere')} by others" if last.get("elsewhere") else ""))
             source = (f"Sheet · {s.get('sheet_tab', '')}" if s.get("source") == "sheet"
                       else Path(s.get("csv", "")).name)
-            values = (pos, c.name, status, source, s.get("subject", ""), s.get("shortcut", ""), last_text, c.note)
+            subjects = sc.split_subjects(s.get("subject", ""))
+            subject = f"{len(subjects)} subjects (A/B)" if len(subjects) > 1 else s.get("subject", "")
+            values = (pos, c.name, status, source, subject, s.get("shortcut", ""), last_text, c.note)
             for col, text in enumerate(values):
                 item = QTableWidgetItem(text)
                 if col == 1:
                     item.setData(Qt.UserRole, c.id)
-                if col == 2 and c.status in (cs.UNCONFIRMED, cs.FAILED):
-                    item.setText("⚠ " + text)
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                if col == 2:
+                    item.setData(W.ChipDelegate.TONE, CHIP_TONE.get(c.status, "neutral"))
+                if col == 4 and len(subjects) > 1:
+                    item.setToolTip("\n".join(subjects))
                 cp.table.setItem(r, col, item)
             if c.id == select:
                 cp.table.selectRow(r)
         cp.table.resizeColumnsToContents()
         cp.empty.setVisible(not items)
-        notes = list(getattr(self, "_restore_notes", []))
-        for c in store.scheduled():
-            notes.append(f"Scheduled: '{c.name}' at {c.schedule.get('at')} (Dhaka), "
-                         f"{'REAL SENDING' if c.schedule.get('live') else 'dry run'}. Keep the app open and the "
-                         "computer awake then.")
+        notes = list(getattr(self, "_restore_notes", []))      # scheduled ones: the banner under the top bar
         unconfirmed = [c.name for c in items if c.status == cs.UNCONFIRMED]
         if unconfirmed:
             notes.append("Unconfirmed: " + ", ".join(unconfirmed) + ". Check the last conversation in Crisp, "
@@ -2670,6 +2691,7 @@ class MainWindow(QMainWindow):
         cp.banner.set_text(" ".join(dict.fromkeys(notes)))
         cp.banner.setVisible(bool(notes))
         self._refresh_schedule_banner()
+        self._refresh_campaign_stats(items)
         running = [c.name for c in store.running()]
         queued = sum(1 for c in items if c.status == cs.QUEUED)
         cp.queue_status.setText(
@@ -2822,6 +2844,7 @@ class MainWindow(QMainWindow):
         tp.status.setText(f"{active} running now · {len(team)} run(s) on this Sheet · "
                           f"updated {datetime.now():%H:%M:%S} (every 30 s while this page is open)")
         self._team_claims = snap.needs_check()
+        self._refresh_campaign_stats(self.campaign_store.list())
         self.check_rows.set_rows([(c.email, c.state, c.runner, c.campaign, c.updated_at) for c in self._team_claims])
         for b in (tp.mark_sent, tp.mark_not_sent):
             b.setEnabled(bool(self._team_claims))

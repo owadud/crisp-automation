@@ -6,7 +6,7 @@ from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, QRectF, Q
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QSyntaxHighlighter, QTextCharFormat
 from PySide6.QtWidgets import (
     QAbstractButton, QApplication, QButtonGroup, QDialog, QFrame, QGridLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
+    QLabel, QLineEdit, QPushButton, QSizePolicy, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget,
 )
 
 from .icons import icon
@@ -551,6 +551,103 @@ class Collapsible(QWidget):
         self.head.blockSignals(False)
         self.head.setText(("▾ " if on else "▸ ") + self._title)
         self.body.setVisible(on)
+
+
+class ChipDelegate(QStyledItemDelegate):
+    """Paints a table cell as a small rounded status chip. The item's Qt.UserRole + 1
+    holds the tone: accent | neutral | success | warning | danger | muted."""
+
+    TONE = Qt.UserRole + 1
+
+    def __init__(self, tm: ThemeManager, parent=None):
+        super().__init__(parent)
+        self.tm = tm
+
+    def paint(self, painter, option, index):
+        text = str(index.data() or "")
+        tone = index.data(self.TONE) or "neutral"
+        p = self.tm.palette
+        fg, bg = {"accent": (p.accent, p.accent_soft), "success": (p.success, p.success_soft),
+                  "warning": (p.warning, p.warning_soft), "danger": (p.danger, p.danger_soft),
+                  "muted": (p.text_muted, p.surface_alt)}.get(tone, (p.text, p.selected))
+        painter.save()
+        if option.state & QStyle.State_Selected:          # same highlight as the rest of the row
+            painter.fillRect(option.rect, option.palette.highlight())
+        font = QFont(option.font)
+        font.setPixelSize(12)
+        font.setWeight(QFont.DemiBold)
+        painter.setFont(font)
+        fm = QFontMetrics(font)
+        room = option.rect.width() - 12
+        full = fm.horizontalAdvance(text) + 20
+        shown = text if full <= room else fm.elidedText(text, Qt.ElideRight, max(10, room - 20))
+        chip = QRectF(option.rect.x() + 6, option.rect.center().y() - 10, min(full, room), 20)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(bg))
+        painter.drawRoundedRect(chip, 10, 10)
+        painter.setPen(QColor(fg))
+        painter.drawText(chip.adjusted(10, 0, 0, 0), Qt.AlignVCenter | Qt.AlignLeft, shown)
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        font = QFont(option.font)
+        font.setPixelSize(12)
+        font.setWeight(QFont.DemiBold)
+        return QSize(QFontMetrics(font).horizontalAdvance(str(index.data() or "")) + 40, max(size.height(), 32))
+
+
+class FlowRow(QWidget):
+    """Buttons at their natural width, left to right, wrapping to a new line when the row is full."""
+
+    def __init__(self, spacing: int = 8):
+        super().__init__()
+        self.spacing = spacing
+        self.items = []
+
+    def add(self, widget):
+        widget.setParent(self)
+        self.items.append(widget)
+        return widget
+
+    def _layout(self, width: int, apply: bool) -> int:
+        x = y = line = 0
+        for w in self.items:
+            if w.isHidden():
+                continue
+            hint = w.sizeHint()
+            if x and x + hint.width() > width:
+                x, y, line = 0, y + line + self.spacing, 0
+            if apply:
+                w.setGeometry(x, y, hint.width(), hint.height())
+            x += hint.width() + self.spacing
+            line = max(line, hint.height())
+        return y + line
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._layout(width, False)
+
+    def sizeHint(self):
+        return QSize(200, self._layout(max(200, self.width()), False))
+
+    def minimumSizeHint(self):
+        return QSize(0, self._layout(max(200, self.width()), False))
+
+    def resizeEvent(self, event):
+        self._layout(event.size().width(), True)
+        super().resizeEvent(event)
+
+    def relayout(self):
+        """Call after showing / hiding buttons."""
+        self._layout(self.width(), True)
+        self.updateGeometry()
+
+    def _relayout(self, force: bool = False):     # same call as ResponsiveRow
+        self.relayout()
 
 
 class SettingsGroup(QWidget):

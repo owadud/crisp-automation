@@ -18,7 +18,7 @@ from .config import APP_VERSION
 from .message_editor import MessageEditor
 from .theme import ThemeManager
 from .widgets import (
-    Banner, Card, Collapsible, Field, KeyValueList, MetricCard, ResponsiveRow,
+    Banner, Card, ChipDelegate, Collapsible, Field, FlowRow, KeyValueList, MetricCard, ResponsiveRow,
     SegmentedControl, SettingRow, SettingsGroup, ToggleSwitch, button, label,
 )
 
@@ -971,31 +971,26 @@ class CampaignsPage(Page):
         self.banner = self.add(Banner(tm, "warning", ""))
         self.banner.hide()
 
-        head = QHBoxLayout()
-        head.setSpacing(8)
+        stats = ResponsiveRow(min_item_width=170, spacing=12)
+        self.m_sent_today = MetricCard("Sent today")
+        self.m_queued = MetricCard("Queued")
+        self.m_scheduled = MetricCard("Scheduled")
+        self.m_checks = MetricCard("Need a check in Crisp")
+        for m in (self.m_sent_today, self.m_queued, self.m_scheduled, self.m_checks):
+            stats.add(m)
+        self.add(stats)
+
+        card = Card("Campaigns")
         self.new = button("New campaign", None, "campaign", tm, "text_muted")
         self.stop_queue = button("Stop queue", None, "stop", tm, "text_muted")
         self.run_queue = button("Run queue", "primary", "play", tm)
-        head.addWidget(self.new)
-        head.addStretch()
-        head.addWidget(self.stop_queue)
-        head.addWidget(self.run_queue)
-        holder = QWidget()
-        holder.setLayout(head)
-        self.add(holder)
-        self.queue_status = self.add(label("", "muted", wrap=True))
+        for b in (self.new, self.stop_queue, self.run_queue):
+            card.head_actions.addWidget(b)
+        self.queue_status = label("", "muted", wrap=True)
+        card.body.addWidget(self.queue_status)
 
-        card = Card("Campaigns")
-        self.table = _table(self.COLUMNS, min_height=280)
-        self.table.setSortingEnabled(False)
-        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.table.setMinimumWidth(200)
-        card.body.addWidget(self.table)
-        self.empty = label("No campaigns yet. Click New campaign, fill it in, then Save campaign.", "faint", wrap=True)
-        card.body.addWidget(self.empty)
-
-        # actions for the selected campaign (only the ones that apply are shown)
-        self.actions = ResponsiveRow(min_item_width=140, spacing=8)
+        # actions for the selected campaign (only the ones that apply are shown), above the table
+        self.actions = FlowRow(spacing=8)
         self.open_sel = button("Open", None, "campaign", tm, "text_muted")
         self.enqueue = button("Add to queue", None, "play", tm, "text_muted")
         self.dequeue = button("Remove from queue", None, "stop", tm, "text_muted")
@@ -1015,6 +1010,17 @@ class CampaignsPage(Page):
         for b in self.action_buttons:
             self.actions.add(b)
         card.body.addWidget(self.actions)
+
+        self.table = _table(self.COLUMNS, min_height=280)
+        self.table.setSortingEnabled(False)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setMinimumWidth(200)
+        self.table.setShowGrid(False)
+        self.table.verticalHeader().setDefaultSectionSize(36)
+        self.table.setItemDelegateForColumn(2, ChipDelegate(tm, self.table))
+        card.body.addWidget(self.table)
+        self.empty = label("No campaigns yet. Click New campaign, fill it in, then Save campaign.", "faint", wrap=True)
+        card.body.addWidget(self.empty)
         self.add(card)
         self.finish()
 
