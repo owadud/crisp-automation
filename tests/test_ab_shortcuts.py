@@ -119,3 +119,21 @@ def test_subject_variants_are_counted_separately(tmp_path):
                           Shortcut="!a", Subject=subject)
     variants, subjects = sc.ab_plan("!a", "", "A | B | C")
     assert sc.variant_counts(h, "vip", variants, subjects) == [2, 1, 0]
+
+
+def test_version_table_round_trips_through_the_saved_texts():
+    cases = [
+        [("!a", "Hi", "")],                                                 # old single campaign
+        [("!a", "Hi", "v1"), ("!b", "Hi", "v2")],                           # shortcuts A/B
+        [("!a", "Free plugin, Shahriar", ""), ("!a", "Offer", "")],         # subjects A/B, comma inside
+        [("!a", "A", "x"), ("!b", "B", "y")],                               # paired
+    ]
+    saved = [sc.versions_to_text(rows) for rows in cases]
+    assert saved == [("!a", "Hi", ""), ("!a, !b", "Hi", "v1, v2"),
+                     ("!a", "Free plugin, Shahriar | Offer", ""), ("!a, !b", "A | B", "x, y")]
+    for rows, (s, sub, lab) in zip(cases, saved):
+        sc.ab_plan(s, lab, sub)                                             # always a valid plan
+        assert sc.versions_from_text(s, sub, lab) == rows
+    assert sc.versions_to_text([("", "", ""), ("!a", "Hi", "")]) == ("!a", "Hi", "")   # blank rows dropped
+    assert sc.versions_to_text([("!a", "A", "x"), ("!b", "B", "")])[2] == "x, v2"      # labels stay in order
+    assert sc.versions_from_text("!a, !b, !c", "A | B", "") == [("!a", "A", ""), ("!b", "B", ""), ("!c", "", "")]

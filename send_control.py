@@ -312,6 +312,41 @@ def ab_plan(shortcuts: str, versions: str = "", subjects: str = "") -> tuple[lis
     return list(zip(names, labels)), subs
 
 
+def versions_to_text(rows) -> tuple[str, str, str]:
+    """Version table rows [(shortcut, subject, label)] -> (shortcuts, subjects, labels) as saved:
+    one subject for all -> 'A'; one shortcut for all -> '!a'; otherwise both listed in order.
+    Blank rows are dropped; a blank label becomes v1, v2 ... so labels stay in order."""
+    rows = [tuple(str(x or "").strip() for x in r) for r in rows]
+    rows = [r for r in rows if any(r)]
+    if not rows:
+        return "", "", ""
+    shortcuts = [r[0].replace(",", " ") for r in rows]
+    subjects = [r[1].replace("|", " ") for r in rows]
+    labels = [r[2].replace(",", " ") for r in rows]
+    if len(rows) == 1:
+        return shortcuts[0], subjects[0], labels[0]
+    same_sub, same_sc = len(set(subjects)) == 1, len(set(shortcuts)) == 1
+    shortcut_text = shortcuts[0] if same_sc and not same_sub else ", ".join(shortcuts)
+    subject_text = subjects[0] if same_sub else " | ".join(subjects)
+    label_text = ", ".join(lab or f"v{i + 1}" for i, lab in enumerate(labels)) if any(labels) else ""
+    return shortcut_text, subject_text, label_text
+
+
+def versions_from_text(shortcuts: str, subjects: str, labels: str) -> list[tuple[str, str, str]]:
+    """The saved texts -> version table rows [(shortcut, subject, label)]."""
+    try:
+        variants, subs = ab_plan(shortcuts, labels, subjects)
+        given = [s.strip() for s in re.split(r"[,\n]", str(labels or "")) if s.strip()]
+        return [(n, s, lab if given else "") for (n, lab), s in zip(variants, subs)]
+    except ValueError:
+        names = [s.strip() for s in re.split(r"[,\n]", str(shortcuts or "")) if s.strip()]
+        subs = split_subjects(subjects)
+        labs = [s.strip() for s in re.split(r"[,\n]", str(labels or "")) if s.strip()]
+        n = max(len(names), len(subs), len(labs), 1)
+        pick = lambda xs, i: xs[i] if i < len(xs) else (xs[0] if len(xs) == 1 else "")  # noqa: E731
+        return [(pick(names, i), pick(subs, i), labs[i] if i < len(labs) else "") for i in range(n)]
+
+
 def split_messages(text: str) -> list[str]:
     """API message box -> message texts. A line with only --- separates A/B versions."""
     parts, cur = [], []

@@ -911,7 +911,7 @@ class MainWindow(QMainWindow):
         c = self.campaign
         api = mode == "api"
         c.send_mode.set_value("api" if api else "browser")
-        c.shortcut.setVisible(not api)
+        c.versions.set_api(api)
         for w in (c.api_message_label, c.api_message, c.api_message_help, c.ai_box):
             w.setVisible(api)
         self._ai_refresh_status()
@@ -1240,6 +1240,7 @@ class MainWindow(QMainWindow):
             c.reference.set_state("help", "Empty: only rows with an empty Reference column are sent.")
         else:
             c.reference.set_state("help")
+        c.versions.mirror()
         return ok
 
     def reset_campaign(self):

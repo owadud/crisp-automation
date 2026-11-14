@@ -8,8 +8,11 @@ from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
     QComboBox,
     QAbstractItemView, QFrame, QHBoxLayout, QHeaderView, QPlainTextEdit, QProgressBar, QScrollArea,
-    QCheckBox, QLineEdit, QSizePolicy, QTabWidget, QTableView, QTableWidget, QVBoxLayout, QWidget,
+    QCheckBox, QLineEdit, QSizePolicy, QTabWidget, QTableView, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QWidget,
 )
+
+import send_control as sc
 
 from .config import APP_VERSION
 from .message_editor import MessageEditor
@@ -65,6 +68,158 @@ class MiniStat(QWidget):
 
 
 # =====================================================================
+class VersionTable(QWidget):
+    """A/B versions as rows (label, Crisp shortcut, subject) instead of comma / | text.
+
+    The campaign still saves the three texts it always did (subject, shortcut, version
+    labels): this table only reads them and writes them back, so saved campaigns and
+    sending are unchanged. Messages from the hidden fields (Required, A/B summary,
+    errors) are shown under the table by mirror()."""
+
+    LABEL, SHORTCUT, SUBJECT = range(3)
+
+    def __init__(self, shortcut: "Field", subject: "Field", labels: "Field", tm: ThemeManager):
+        super().__init__()
+        self.fields = (shortcut, subject, labels)
+        self.api = False
+        self._syncing = False
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        lay.addWidget(label("Versions", "fieldLabel"))
+        self.hint = label("", "fieldHelp", wrap=True)
+        lay.addWidget(self.hint)
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Label", "Crisp shortcut", "Subject"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.AllEditTriggers)
+        head = self.table.horizontalHeader()
+        head.setSectionResizeMode(self.LABEL, QHeaderView.Interactive)
+        head.setSectionResizeMode(self.SHORTCUT, QHeaderView.Interactive)
+        head.setSectionResizeMode(self.SUBJECT, QHeaderView.Stretch)
+        self.table.setColumnWidth(self.LABEL, 90)
+        self.table.setColumnWidth(self.SHORTCUT, 200)
+        self.table.itemChanged.connect(lambda _item: self._write())
+        lay.addWidget(self.table)
+        row = QHBoxLayout()
+        self.add_row = button("+ Add version")
+        self.remove_row = button("Remove selected", "ghost")
+        self.add_row.clicked.connect(self.add_version)
+        self.remove_row.clicked.connect(self.remove_selected)
+        row.addWidget(self.add_row)
+        row.addWidget(self.remove_row)
+        row.addStretch()
+        lay.addLayout(row)
+        self.status = label("", "fieldHelp", wrap=True)
+        self.status.hide()
+        lay.addWidget(self.status)
+        for f in self.fields:
+            f.edit.textChanged.connect(self._fields_changed)
+        self.set_api(False)
+        self.load()
+
+    # -------------------------------------------------------------- fields -> table
+    def _fields_changed(self, _text=""):
+        if not self._syncing:
+            self.load()
+
+    def load(self):
+        shortcut, subject, labels = (f.text() for f in self.fields)
+        rows = sc.versions_from_text(shortcut, subject, labels)
+        self.table.blockSignals(True)
+        self.table.setRowCount(0)
+        for r in rows:
+            self._append(r)
+        self.table.blockSignals(False)
+        self._fit()
+
+    def _append(self, r):
+        i = self.table.rowCount()
+        self.table.insertRow(i)
+        shortcut, subject, lab = r
+        for col, text in ((self.LABEL, lab), (self.SHORTCUT, shortcut), (self.SUBJECT, subject)):
+            self.table.setItem(i, col, QTableWidgetItem(text))
+
+    def _fit(self):
+        body = self.table.verticalHeader().length() or 32
+        self.table.setFixedHeight(self.table.horizontalHeader().sizeHint().height() + body
+                                  + 2 * self.table.frameWidth())
+        self.remove_row.setEnabled(self.table.rowCount() > 1)
+
+    # -------------------------------------------------------------- table -> fields
+    def rows(self):
+        def cell(i, c):
+            item = self.table.item(i, c)
+            return item.text().strip() if item else ""
+        return [(cell(i, self.SHORTCUT), cell(i, self.SUBJECT), cell(i, self.LABEL))
+                for i in range(self.table.rowCount())]
+
+    def _write(self):
+        shortcut, subject, labels = sc.versions_to_text(self.rows())
+        self._syncing = True
+        try:
+            if not self.api:              # API mode: the message texts are the versions, not shortcuts
+                self.fields[0].edit.setText(shortcut)
+            self.fields[1].edit.setText(subject)
+            self.fields[2].edit.setText(labels)
+        finally:
+            self._syncing = False
+
+    def add_version(self):
+        rows = self.rows()
+        last = rows[-1] if rows else ("", "", "")
+        self.table.blockSignals(True)
+        if len(rows) == 1 and not rows[0][2]:
+            self.table.item(0, self.LABEL).setText("v1")
+        self._append(("", last[1], f"v{len(rows) + 1}"))   # same subject by default: change what differs
+        self.table.blockSignals(False)
+        self._fit()
+        self._write()
+        col = self.SUBJECT if self.api else self.SHORTCUT
+        self.table.setCurrentCell(self.table.rowCount() - 1, col)
+        self.table.editItem(self.table.item(self.table.rowCount() - 1, col))
+
+    def remove_selected(self):
+        picked = sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True)
+        if not picked and self.table.currentRow() >= 0:
+            picked = [self.table.currentRow()]
+        for i in picked:
+            if self.table.rowCount() > 1:
+                self.table.removeRow(i)
+        self._fit()
+        self._write()
+
+    # -------------------------------------------------------------- mode and messages
+    def set_api(self, api: bool):
+        self.api = api
+        self.table.setColumnHidden(self.SHORTCUT, api)
+        self.hint.setText("One row per subject. The message versions are the texts below (--- between them)."
+                          if api else "One row per version. Recipients are split evenly between the rows. The "
+                          "subject must exactly match a saved subject in Crisp's subject dropdown.")
+
+    def mirror(self):
+        """Show the hidden fields' check result under the table: an error first, else the A/B summary."""
+        names = {"fieldError": "error", "fieldOk": "ok"}
+        found = {}
+        for f, what in zip(self.fields, ("Shortcut", "Subject", "Labels")):
+            if self.api and f is self.fields[0]:
+                continue
+            kind = names.get(f.message.objectName())
+            text = f.message.text()
+            if kind and text and kind not in found:
+                found[kind] = f"{what}: {text}" if text == "Required." else text
+        kind = "error" if "error" in found else "ok" if "ok" in found else ""
+        if kind == "ok" and found["ok"].startswith("A/B test"):   # the rows already show each version
+            n = self.table.rowCount()
+            found["ok"] = f"A/B test: {n} versions, recipients split evenly."
+        self.status.setObjectName({"error": "fieldError", "ok": "fieldOk"}.get(kind, "fieldHelp"))
+        self.status.setText(found.get(kind, ""))
+        self.status.setVisible(bool(kind))
+        self.status.style().unpolish(self.status)
+        self.status.style().polish(self.status)
+
+
 class CampaignPage(Page):
     def __init__(self, tm: ThemeManager):
         super().__init__()
@@ -203,8 +358,11 @@ class CampaignPage(Page):
         mrow.addWidget(self.send_mode)
         mrow.addStretch()
         card.body.addLayout(mrow)
-        card.body.addWidget(self.subject)
-        card.body.addWidget(self.shortcut)
+        for f in (self.subject, self.shortcut, self.shortcut_version):   # saved texts; edited in the table
+            card.body.addWidget(f)
+            f.hide()
+        self.versions = VersionTable(self.shortcut, self.subject, self.shortcut_version, tm)
+        card.body.addWidget(self.versions)
         self.api_message_label = label("Message text", "fieldLabel")
         self.api_message = MessageEditor(tm)
         self.api_message.setPlaceholderText("Hi {first_name},\n\nYour message…")
@@ -230,7 +388,6 @@ class CampaignPage(Page):
         for w in (self.api_message_label, self.api_message, self.api_message_help, self.ai_box):
             card.body.addWidget(w)
             w.hide()
-        card.body.addWidget(self.shortcut_version)
         self.add(card)
 
         # targeting ----------------------------------------------------------

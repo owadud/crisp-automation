@@ -94,7 +94,7 @@ def test_run_button_belongs_to_editor_run_and_lists(win):
 def test_advanced_is_collapsed_and_opens_with_the_keyboard(win):
     c, st = win.campaign, win.settings
     assert not c.advanced.is_open()
-    assert not c.delay.isVisibleTo(c) and c.subject.isVisibleTo(c)       # common visible, rest folded
+    assert not c.delay.isVisibleTo(c) and c.versions.isVisibleTo(c)      # common visible, rest folded
     # Settings: grouped rows all visible; only the long Crisp API and AI forms fold out
     assert st.runner_name.isVisibleTo(st) and st.claim_batch.isVisibleTo(st)
     assert not st.api_key.isVisibleTo(st) and not st.ai_key.isVisibleTo(st)
@@ -149,3 +149,27 @@ def test_team_page_shows_runners_and_records_a_check(win, dialogs, monkeypatch):
     win.navigate(0)
     assert not win.team_timer.isActive()                               # refresh only while visible
     c.source.set_value("csv")
+
+
+def test_version_table_edits_the_saved_subject_shortcut_and_labels(win):
+    c = win.campaign
+    vt = c.versions
+    c.shortcut.edit.setText("!a")
+    c.subject.edit.setText("Free plugin, Shahriar")
+    c.shortcut_version.edit.setText("")
+    assert vt.rows() == [("!a", "Free plugin, Shahriar", "")]          # fields -> table
+    vt.add_version()                                                    # same subject, new row
+    vt.table.item(1, vt.SUBJECT).setText("Your offer")                  # A/B on the subject only
+    vt.table.item(1, vt.SHORTCUT).setText("!a")
+    assert (c.shortcut.text(), c.subject.text(), c.shortcut_version.text()) == \
+        ("!a", "Free plugin, Shahriar | Your offer", "v1, v2")
+    win.refresh_csv()
+    assert vt.status.objectName() == "fieldOk" and "2 versions" in vt.status.text()
+    vt.table.item(1, vt.SUBJECT).setText("Free plugin, Shahriar")       # same subject twice + same shortcut
+    win.refresh_csv()
+    assert vt.status.objectName() == "fieldError"
+    vt.table.selectRow(1)
+    vt.remove_selected()
+    assert vt.table.rowCount() == 1 and c.subject.text() == "Free plugin, Shahriar"
+    win._send_mode_changed("api")
+    assert vt.table.isColumnHidden(vt.SHORTCUT)
