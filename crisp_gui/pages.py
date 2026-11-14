@@ -220,6 +220,83 @@ class VersionTable(QWidget):
         self.status.style().polish(self.status)
 
 
+class RecentRule(QWidget):
+    """People another campaign emailed recently: skip them for N days, or send this campaign too.
+
+    Saved exactly as before in recent_days: N days, or 0 = send this campaign to them too.
+    Nobody ever gets the same campaign twice either way."""
+
+    def __init__(self, tm: ThemeManager):
+        super().__init__()
+        self._last_days = "7"
+        self._syncing = False
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        lay.addWidget(label("People another campaign emailed recently", "fieldLabel"))
+        lay.addWidget(label("Nobody ever gets the same campaign twice. This only decides about people a "
+                            "DIFFERENT campaign emailed lately.", "fieldHelp", wrap=True))
+        self.mode = SegmentedControl([("skip", "Skip them for a while", None),
+                                      ("allow", "Send this campaign to them too", None)], tm)
+        self.mode.changed.connect(self._mode_changed)
+        lay.addWidget(self.mode)
+        self.days_row = QWidget()
+        row = QHBoxLayout(self.days_row)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        row.addWidget(label("Skip if emailed in the last"))
+        self.days = Field("Skip anyone emailed in the last N days", placeholder="7")
+        self.days.title.hide()
+        self.days.setFixedWidth(80)
+        self.days.edit.setValidator(QIntValidator(0, 3650, self.days.edit))
+        row.addWidget(self.days)
+        row.addWidget(label("days"))
+        row.addSpacing(12)
+        self.count = label("", "fieldHelp")
+        row.addWidget(self.count)
+        self.see_who = button("See who", "ghost")
+        row.addWidget(self.see_who)
+        row.addStretch()
+        lay.addWidget(self.days_row)
+        self.allow_note = label("", "fieldHelp", wrap=True)
+        lay.addWidget(self.allow_note)
+        self.days.edit.textChanged.connect(self._days_changed)
+        self._days_changed(self.days.text())
+
+    def _days_changed(self, text):
+        """Loaded or typed value -> the switch (0 = send them this campaign too)."""
+        if self._syncing:
+            return
+        allow = text.strip() == "0"
+        if not allow and text.strip():
+            self._last_days = text.strip()
+        self.mode.set_value("allow" if allow else "skip")
+        self.days_row.setVisible(not allow)
+        self.allow_note.setVisible(allow)
+
+    def _mode_changed(self, key):
+        self._syncing = True
+        try:
+            if key == "allow":
+                if self.days.text() not in ("", "0"):
+                    self._last_days = self.days.text()
+                self.days.edit.setText("0")
+            elif self.days.text() == "0":
+                self.days.edit.setText(self._last_days or "7")
+        finally:
+            self._syncing = False
+        self.days_row.setVisible(key != "allow")
+        self.allow_note.setVisible(key == "allow")
+
+    def set_count(self, skipped: int, days: int):
+        """How many people the rule skips right now (from the list check)."""
+        self.count.setText(f"{skipped} {'person' if skipped == 1 else 'people'} skipped now" if skipped
+                           else "Nobody skipped by this now")
+        self.see_who.setVisible(bool(skipped))
+        self.allow_note.setText("They get this campaign too. People already sent THIS campaign are still "
+                                "skipped.")
+
+
 class CampaignPage(Page):
     def __init__(self, tm: ThemeManager):
         super().__init__()
@@ -398,6 +475,9 @@ class CampaignPage(Page):
         grid.add(self.reference)
         grid.add(self.segment)
         card.body.addWidget(grid)
+        self.recent_rule = RecentRule(tm)
+        self.recent_days = self.recent_rule.days        # saved as before: N days, 0 = send them too
+        card.body.addWidget(self.recent_rule)
         self.add(card)
 
         # advanced (collapsed) ------------------------------------------------------
@@ -436,11 +516,6 @@ class CampaignPage(Page):
         limits = ResponsiveRow(min_item_width=200, spacing=16)
         self.max_skips = Field("Max skipped per run", "Stop after this many skips.")
         self.max_fails_in_row = Field("Stop after failures in a row", "Auto-stop when this many fail back to back.")
-        self.recent_days = Field("Skip anyone emailed in the last N days",
-                                 "All campaigns and files. Only real sends count. 0 = off: people "
-                                 "can get different campaigns (never the same campaign twice).")
-        self.recent_days.edit.setValidator(QIntValidator(0, 3650, self.recent_days.edit))
-        limits.add(self.recent_days)
         for f in (self.max_skips, self.max_fails_in_row):
             f.edit.setValidator(QIntValidator(1, 1000, f.edit))
             limits.add(f)

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QSyntaxHighlighter, QTextCharFormat
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QSyntaxHighlighter, QTextCharFormat
 from PySide6.QtWidgets import (
-    QAbstractButton, QButtonGroup, QDialog, QFrame, QGridLayout, QHBoxLayout,
+    QAbstractButton, QApplication, QButtonGroup, QDialog, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
 )
 
@@ -220,6 +220,11 @@ class SegmentedControl(QFrame):
             self.buttons[key] = b
             lay.addWidget(b)
             b.clicked.connect(lambda _=False, k=key: self.changed.emit(k))
+            bold = QFont(QApplication.font())
+            bold.setPixelSize(13)
+            bold.setWeight(QFont.Bold)  # the checked option is bold: leave room so its text is never cut
+            extra = 36 + (22 if icon_name else 0)       # 14 px padding each side + border + icon
+            b.setMinimumWidth(QFontMetrics(bold).horizontalAdvance(text) + extra)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
     def set_value(self, key):

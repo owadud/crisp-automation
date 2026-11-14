@@ -327,6 +327,7 @@ class MainWindow(QMainWindow):
         c.sheet_tab.currentTextChanged.connect(self._sheet_tab_changed)
         c.retry_failed.clicked.connect(lambda: self.start_run(retry_only=True))
         c.preview.clicked.connect(lambda: self.navigate(LISTS))
+        c.recent_rule.see_who.clicked.connect(self.show_row_preview)   # each skipped row with who / when
         c.random_delay.toggled.connect(lambda on: None if self._loading else self.prefs.set_random_delay(on))
 
         h = self.history
@@ -1123,7 +1124,7 @@ class MainWindow(QMainWindow):
         shared = str(self._sheet_shared_path()) if self.source() == "sheet" and path else ""
         self.stats = read_stats(path, v["reference"], v["row_from"], v["row_to"], v["dnc"],
                                 history_file=str(self.history_file), campaign=self.campaign_name(v),
-                                recent_days=v.get("recent_days") or 0, shared_file=shared,
+                                recent_days=sc.recent_days_value(v.get("recent_days")), shared_file=shared,
                                 claim_expiry=v.get("claim_expiry") or 5)
         if self.source() == "sheet" and not path:
             self.stats.error = "Click Test connection to read the Sheet."
@@ -1240,6 +1241,7 @@ class MainWindow(QMainWindow):
             c.reference.set_state("help", "Empty: only rows with an empty Reference column are sent.")
         else:
             c.reference.set_state("help")
+        c.recent_rule.set_count(st.recent if st.ok else 0, st.recent_days)
         c.versions.mirror()
         return ok
 
@@ -1996,6 +1998,7 @@ class MainWindow(QMainWindow):
     def _api_test_sent(self, _kind, report, error):
         s = self.settings
         s.api_test_send.setEnabled(True)
+        s.api_row.show_details(True)        # the result and Open in Crisp are in the Crisp API form
         if error or not report:
             s.api_test_result.setText(f"Test failed: {error}")
             return

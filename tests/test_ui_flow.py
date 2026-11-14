@@ -173,3 +173,17 @@ def test_version_table_edits_the_saved_subject_shortcut_and_labels(win):
     assert vt.table.rowCount() == 1 and c.subject.text() == "Free plugin, Shahriar"
     win._send_mode_changed("api")
     assert vt.table.isColumnHidden(vt.SHORTCUT)
+
+
+def test_emailed_recently_switch_saves_days_or_zero(win):
+    c = win.campaign
+    rule = c.recent_rule
+    c.recent_days.edit.setText("5")
+    assert rule.mode.value() == "skip" and rule.days_row.isVisibleTo(rule)
+    rule.mode.buttons["allow"].click()
+    assert c.recent_days.text() == "0" and not rule.days_row.isVisibleTo(rule)
+    assert win.campaign_values()["recent_days"] == "0"
+    rule.mode.buttons["skip"].click()
+    assert c.recent_days.text() == "5"                                   # the old number comes back
+    c.recent_days.edit.setText("0")                                      # a saved campaign with 0 loads as allow
+    assert rule.mode.value() == "allow"
