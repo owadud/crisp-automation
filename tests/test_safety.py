@@ -189,3 +189,24 @@ def test_max_skips_limit(load_agent, monkeypatch, capsys):
     mod, _ = load_agent(ROWS5, CRISP_SKIP_FAILED="true", CRISP_MAX_SKIPS="1")
     out, st = run_main(mod, monkeypatch, capsys, {"a@x.com": "before", "c@x.com": "before"})
     assert (st.skipped, st.completed, st.failed) == (1, 1, 1)
+
+
+def test_unexpanded_shortcut_is_never_sent(load_agent, monkeypatch):
+    """The composer still showing the shortcut NAME must not count as inserted,
+    and Send must refuse before clicking (2026-11-14 bf-offer-3 incident)."""
+    agent, _ = load_agent([("A", "a@x.com", "R", "")], CRISP_SHORTCUT="bf-offer-3", CRISP_DRY_RUN="false")
+    clicked = []
+    button = SimpleNamespace(click=lambda **k: clicked.append(1))
+    monkeypatch.setattr(agent, "find_composer", lambda page: object())
+    monkeypatch.setattr(agent, "find_send_button", lambda page: button)
+    monkeypatch.setattr(agent, "box", lambda loc: None)
+    monkeypatch.setattr(agent, "enabled", lambda loc: True)
+
+    monkeypatch.setattr(agent, "get_composer_text", lambda c: "bf-offer-3")
+    assert agent.shortcut_content_present(None) is False
+    with pytest.raises(RuntimeError, match="nothing was sent"):
+        agent.send_message(None)
+    assert clicked == [] and agent.SEND_CLICKED is False
+
+    monkeypatch.setattr(agent, "get_composer_text", lambda c: "Hi there, here is your Black Friday offer...")
+    assert agent.shortcut_content_present(None) is True

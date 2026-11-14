@@ -1593,59 +1593,39 @@ def open_shortcut_picker(page):
 
 
 def shortcut_content_present(page):
+    """True only when the COMPOSER holds the expanded shortcut text.
 
-    composer = find_composer(
-        page
-    )
+    The typed keyword (e.g. 'bf-offer-3') must be gone from the composer.
+    The page body is not checked: the open Shortcuts list and other chats
+    can contain words like 'Best regards', which gave false positives.
+    """
 
-    if composer:
+    text = get_composer_text(find_composer(page))
+    if not text or SHORTCUT in text:
+        return False
+    return len(text) > 20
 
-        text = get_composer_text(
-            composer
-        )
 
-        if (
-            len(text) > 20
-            and SHORTCUT not in text
-        ):
-            return True
-
-        if (
-            "Your Early Bird Price"
-            in text
-        ):
-            return True
-
-        if (
-            "Here's the part I wanted to share"
-            in text
-        ):
-            return True
-
-        if "Best regards" in text:
-            return True
-
+def _shortcut_row(page):
+    """The visible '!<shortcut>' row in Crisp's Shortcuts list, or None."""
+    pattern = re.compile(r"^\s*!" + re.escape(SHORTCUT) + r"\s*$", re.I)
     try:
-
-        body = page.locator(
-            "body"
-        ).inner_text()
-
-        markers = [
-            "Your Early Bird Price",
-            "Here's the part I wanted to share",
-            "Best regards",
-        ]
-
-        if any(
-            marker in body
-            for marker in markers
-        ):
-            return True
-
+        rows = page.get_by_text(pattern)
+        for i in range(rows.count()):
+            row = rows.nth(i)
+            if visible(row):
+                return row
     except Exception:
         pass
+    return None
 
+
+def _wait_shortcut_inserted(page, seconds):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if shortcut_content_present(page):
+            return True
+        time.sleep(0.25)
     return False
 
 
@@ -1689,117 +1669,54 @@ def insert_shortcut(page):
     )
 
     # --------------------------------------------------------
-    # This is the original working selection method.
+    # Wait until Crisp's list shows '!<shortcut>' before pressing
+    # Enter. On a slow connection Enter used to arrive before the list
+    # was ready and the shortcut was never expanded.
     # --------------------------------------------------------
+
+    deadline = time.time() + 10
+    while time.time() < deadline and _shortcut_row(page) is None:
+        time.sleep(0.25)
 
     page.keyboard.press(
         "Enter"
     )
 
-    time.sleep(1)
-
-    if shortcut_content_present(
-        page
-    ):
-
+    if _wait_shortcut_inserted(page, 6):
         print(
             "  Shortcut inserted successfully."
         )
-
         return
 
     # --------------------------------------------------------
-    # Fallback
+    # Fallback: click the exact '!<shortcut>' row. (No ArrowDown:
+    # that could pick the NEXT shortcut, i.e. the wrong email.)
     # --------------------------------------------------------
 
-    page.keyboard.press(
-        "ArrowDown"
-    )
-
-    time.sleep(0.2)
-
-    page.keyboard.press(
-        "Enter"
-    )
-
-    deadline = (
-        time.time()
-        + 8
-    )
-
-    while time.time() < deadline:
-
-        if shortcut_content_present(
-            page
-        ):
-
+    for _ in range(2):
+        row = _shortcut_row(page)
+        if row is None:
+            break
+        print("  Shortcut not expanded yet; clicking its row in the list...", flush=True)
+        try:
+            row.click(timeout=3000)
+        except Exception:
+            row_box = box(row)
+            if row_box:
+                page.mouse.click(
+                    row_box["x"] + row_box["width"] / 2,
+                    row_box["y"] + row_box["height"] / 2,
+                )
+        if _wait_shortcut_inserted(page, 6):
             print(
                 "  Shortcut inserted successfully."
             )
-
             return
 
-        time.sleep(0.25)
-
-    # --------------------------------------------------------
-    # Mouse fallback
-    # --------------------------------------------------------
-
-    try:
-
-        exact = page.get_by_text(
-            SHORTCUT,
-            exact=True
-        )
-
-        for i in range(
-            exact.count()
-        ):
-
-            item = exact.nth(i)
-
-            if not visible(item):
-                continue
-
-            item_box = box(
-                item
-            )
-
-            if not item_box:
-                continue
-
-            x = (
-                item_box["x"]
-                + item_box["width"] / 2
-            )
-
-            y = (
-                item_box["y"]
-                + item_box["height"] / 2
-            )
-
-            page.mouse.click(
-                x,
-                y
-            )
-
-            time.sleep(1)
-
-            if shortcut_content_present(
-                page
-            ):
-
-                print(
-                    "  Shortcut inserted successfully."
-                )
-
-                return
-
-    except Exception:
-        pass
-
+    _debug_dump(page, "shortcut_not_inserted")
     raise RuntimeError(
-        "Shortcut could not be inserted."
+        f"Shortcut '{SHORTCUT}' could not be inserted: the message box still "
+        "shows the shortcut name instead of the email text. Nothing was sent."
     )
 
 
@@ -2011,6 +1928,13 @@ def send_message(page):
         raise RuntimeError(
             "Composer appears empty. "
             "Refusing to send."
+        )
+
+    if SHORTCUT and SHORTCUT in before:
+
+        raise RuntimeError(
+            f"Composer still shows the shortcut name '{SHORTCUT}' instead of "
+            "the email text. Refusing to send (nothing was sent)."
         )
 
     before_send_click()   # shared Sheet: record "Sending" and re-check the claim
