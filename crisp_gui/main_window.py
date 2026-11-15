@@ -77,6 +77,10 @@ CHIP_TONE = {cs.RUNNING: "accent", cs.QUEUED: "neutral", cs.FINISHED: "success",
              cs.PAUSED: "warning", cs.FAILED: "danger", cs.UNCONFIRMED: "danger", cs.STOPPED: "muted",
              cs.READY: "muted", cs.DRAFT: "muted"}
 TITLES = ("Campaigns", "Campaign", "Run", "Results", "Lists", "Team", "Settings", "Runs and diagnostics")
+SUBTITLES = ("All campaigns, the queue and schedules", "Edit the campaign, then Start",
+             "Live progress of the current run", "Delivered, read and replied, from Crisp",
+             "Every row of the recipient list", "Who is sending from the shared Sheet",
+             "Accounts, connections and app options", "Every run gets its own folder")
 # Sidebar: (key, title, icon, stack page). The editor belongs to Campaigns, run history to Results.
 PAGES = (
     ("campaigns", "Campaigns", "campaign", CAMPAIGNS),
@@ -212,10 +216,23 @@ class MainWindow(QMainWindow):
         t = QHBoxLayout(self.top)
         t.setContentsMargins(28, 0, 20, 0)
         t.setSpacing(12)
+        titles = QVBoxLayout()
+        titles.setSpacing(1)
         self.page_title = W.label("", "pageTitle")
         self.page_title.setMinimumWidth(80)
         self.page_title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        t.addWidget(self.page_title, 1)
+        self.page_sub = W.label("", "pageSubtitle")
+        self.page_sub.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        titles.addStretch()
+        titles.addWidget(self.page_title)
+        titles.addWidget(self.page_sub)
+        titles.addStretch()
+        t.addLayout(titles, 1)
+        # Dry run / Real sending: the segmented switch drives the (hidden) Dry Run checkbox
+        self.mode_switch = W.SegmentedControl([("dry", "Dry run", None), ("live", "Real sending", None)], self.tm)
+        self.mode_switch.setToolTip("Dry run checks everything but sends nothing. Real sending asks you to "
+                                    "confirm before the first email.")
+        t.addWidget(self.mode_switch)
         # Live vs Dry Run: always visible, never colour alone (icon + words).
         self.mode_box = QFrame()
         self.mode_box.setObjectName("modeBox")
@@ -228,6 +245,7 @@ class MainWindow(QMainWindow):
         mb.addWidget(self.mode_icon)
         mb.addWidget(self.mode_label)
         t.addWidget(self.mode_box)
+        self.mode_box.hide()                       # still holds the checkbox and its words, for safety checks
         self._mode_layout = mb
         self.status = W.StatusPill(self.tm)
         t.addWidget(self.status)
@@ -251,6 +269,7 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.campaign = CampaignPage(self.tm)
         self.mode_label.setBuddy(self.campaign.dry)
+        self.mode_switch.changed.connect(lambda key: self.campaign.dry.setChecked(key == "dry"))
         self._mode_layout.addWidget(self.campaign.dry)
         self.activity = ActivityPage(self.tm)
         self.settings = SettingsPage(self.tm)
@@ -279,6 +298,7 @@ class MainWindow(QMainWindow):
         self.check_rows = RowsModel(("Email", "State", "Who", "Campaign", "Since"), self)
         self.team_page.checks.setModel(self.check_rows)
         self._team_claims = []
+        W.tidy_tables(self.stack)
         self.team_timer = QTimer(self)
         self.team_timer.setInterval(30_000)
         self.team_timer.timeout.connect(lambda: self.refresh_team(auto=True))
@@ -527,7 +547,7 @@ class MainWindow(QMainWindow):
             return
         self.stack.setCurrentIndex(index)
         self.nav_buttons[NAV_FOR[index]].setChecked(True)
-        self.page_title.setText(self._title_for(index))
+        self._set_title(index)
         if index == SETTINGS:
             from . import desktop_shortcut as ds
             self.settings.shortcut_status.setText("Shortcut already created." if ds.installed() else "")
@@ -650,6 +670,10 @@ class MainWindow(QMainWindow):
     def _remove_sync(self, sid):
         self.sync_sources.remove(sid)
         self._render_sync_info()
+
+    def _set_title(self, index: int) -> None:
+        self.page_title.setText(self._title_for(index))
+        self.page_sub.setText(SUBTITLES[index])
 
     def _title_for(self, index: int) -> str:
         if index == EDITOR:
@@ -1291,6 +1315,9 @@ class MainWindow(QMainWindow):
         c = self.campaign
         dry = self.dry_run()
         p = self.tm.palette
+        self.mode_switch.set_value("dry" if dry else "live")
+        live_seg = self.mode_switch.buttons["live"]
+        live_seg.setStyleSheet("" if dry else f"color: {p.danger}; font-weight: 600;")
         if dry:
             self.mode_label.setText("Dry Run")
             self.mode_label.setStyleSheet(f"color: {p.text};")
@@ -1407,7 +1434,7 @@ class MainWindow(QMainWindow):
         else:
             self.activity.last_run.setText("No runs yet. Open a campaign and start a dry run.")
         if self.stack.currentIndex() == EDITOR:
-            self.page_title.setText(self._title_for(EDITOR))
+            self._set_title(EDITOR)
         if self.stack.currentIndex() == LISTS:
             self.refresh_lists()
 
@@ -2377,7 +2404,7 @@ class MainWindow(QMainWindow):
             return
         self._gui_line(f"Campaign '{self.campaign_store.get(cid).name}' saved.")
         self.flash(self.campaign.save, "Saved")
-        self.page_title.setText(self._title_for(EDITOR))
+        self._set_title(EDITOR)
         self.refresh_campaigns(select=cid)
 
     def save_and_queue(self):
@@ -2400,7 +2427,7 @@ class MainWindow(QMainWindow):
         if not self.campaign.campaign_name.text():
             self.campaign.campaign_name.edit.setText(c.name)
         self.flash(self.campaign.save, "Saved")
-        self.page_title.setText(self._title_for(EDITOR))
+        self._set_title(EDITOR)
         self.refresh_campaigns(select=c.id)
 
     def update_campaign(self):
@@ -2743,10 +2770,9 @@ class MainWindow(QMainWindow):
             cp.schedule: has and not running and c.status not in (cs.UNCONFIRMED, cs.SCHEDULED, cs.PAUSED),
             cp.unschedule: has and c.status == cs.SCHEDULED,
         }
-        for b, on in show.items():
-            b.setVisible(on)
+        for b, on in show.items():                     # like the prototype: all shown, greyed out when n/a
             b.setEnabled(on)
-        cp.actions.setVisible(has)
+            b.setVisible(on or b not in (cp.checked, cp.unschedule))   # these two only when they apply
         cp.actions._relayout(force=True)
         cp.pause.setText("Resume" if has and c.status == cs.PAUSED else "Pause")
         queued = any(x.status == cs.QUEUED for x in self.campaign_store.campaigns.values())

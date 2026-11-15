@@ -6,7 +6,7 @@ from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, QRectF, Q
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QSyntaxHighlighter, QTextCharFormat
 from PySide6.QtWidgets import (
     QAbstractButton, QApplication, QButtonGroup, QDialog, QFrame, QGridLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QSizePolicy, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget,
+    QLabel, QLineEdit, QPushButton, QSizePolicy, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QVBoxLayout, QWidget,
 )
 
 from .icons import icon
@@ -58,6 +58,18 @@ class AutoHideLabel(QLabel):
         self.setVisible(bool(text))
 
 
+def tidy_tables(root: QWidget) -> None:
+    """Every table under root: left-aligned light header, no grid lines, comfortable rows."""
+    from PySide6.QtWidgets import QTableView
+    for table in root.findChildren(QTableView):
+        table.setShowGrid(False)
+        head = table.horizontalHeader()
+        head.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        head.setHighlightSections(False)
+        rows = table.verticalHeader()
+        rows.setDefaultSectionSize(max(rows.defaultSectionSize(), 34))
+
+
 def divider() -> QFrame:
     f = QFrame()
     f.setObjectName("divider")
@@ -66,14 +78,19 @@ def divider() -> QFrame:
 
 
 class Card(QFrame):
+    """White card. A title makes a header strip (title, hint, head_actions) with a line under it."""
+
     def __init__(self, title: str = "", hint: str = "", parent=None):
         super().__init__(parent)
         self.setObjectName("card")
-        self.body = QVBoxLayout(self)
-        self.body.setContentsMargins(20, 18, 20, 20)
-        self.body.setSpacing(14)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
         if title or hint:
-            head = QHBoxLayout()
+            self.head = QFrame()
+            self.head.setObjectName("cardHead")
+            head = QHBoxLayout(self.head)
+            head.setContentsMargins(18, 12, 18, 12)
             head.setSpacing(8)
             texts = QVBoxLayout()
             texts.setSpacing(2)
@@ -87,18 +104,22 @@ class Card(QFrame):
             self.head_actions = QHBoxLayout()
             self.head_actions.setSpacing(6)
             head.addLayout(self.head_actions)
-            self.body.addLayout(head)
+            outer.addWidget(self.head)
+        self.body = QVBoxLayout()
+        self.body.setContentsMargins(18, 16, 18, 18)
+        self.body.setSpacing(14)
+        outer.addLayout(self.body, 1)
 
 
 class MetricCard(QFrame):
     def __init__(self, title: str, caption: str = ""):
         super().__init__()
         self.setObjectName("card")
-        self.setMinimumHeight(104)
+        self.setMinimumHeight(84)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(18, 16, 18, 16)
-        lay.setSpacing(6)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(2)
         self.title = label(title, "metricLabel")
         self.value = label("—", "metricValue")
         self.caption = label(caption, "metricCaption")
@@ -268,6 +289,7 @@ class StatusPill(QWidget):
 
     def set(self, text: str, tone: str):
         self.text, self.tone = text, tone
+        self.setVisible(text != "Ready")
         self.updateGeometry()
         self.update()
 
@@ -615,8 +637,11 @@ class ChipDelegate(QStyledItemDelegate):
         p = self.tm.palette
         fg, bg = tone_colors(p, tone)
         painter.save()
-        if option.state & QStyle.State_Selected:          # same highlight as the rest of the row
-            painter.fillRect(option.rect, option.palette.highlight())
+        opt = QStyleOptionViewItem(option)                 # row background, selection and row line
+        self.initStyleOption(opt, index)
+        opt.text = ""
+        (opt.widget.style() if opt.widget else QApplication.style()).drawControl(
+            QStyle.CE_ItemViewItem, opt, painter, opt.widget)
         font = QFont(option.font)
         font.setPixelSize(12)
         font.setWeight(QFont.DemiBold)

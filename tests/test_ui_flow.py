@@ -115,13 +115,13 @@ def test_campaign_actions_follow_the_selected_status(win):
     win.navigate(0)
     win.refresh_campaigns(select=a.id)
     cp = win.campaigns_page
-    assert cp.dequeue.isVisibleTo(cp) and not cp.enqueue.isVisibleTo(cp) and not cp.stop.isVisibleTo(cp)
+    assert cp.dequeue.isEnabled() and not cp.enqueue.isEnabled() and not cp.stop.isEnabled()
     assert cp.run_queue.isEnabled() and cp.run_queue.text() == "Run queue (dry run)"
     win.campaign.dry.setChecked(False)
     assert cp.run_queue.text() == "Run queue: LIVE" and cp.run_queue.objectName() == "danger"
     store.set_status(a.id, cs.UNCONFIRMED, "check")
     win.refresh_campaigns(select=a.id)
-    assert cp.checked.isVisibleTo(cp) and not cp.enqueue.isVisibleTo(cp)
+    assert cp.checked.isVisibleTo(cp) and not cp.enqueue.isEnabled()
     assert cp.banner.isVisibleTo(cp) and "I checked Crisp" in cp.banner.text.text()
 
 

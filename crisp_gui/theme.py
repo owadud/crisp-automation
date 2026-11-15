@@ -110,11 +110,12 @@ QLabel#pageSubtitle {{ color: {p.text_muted}; }}
 
 /* cards -------------------------------------------------------------- */
 QFrame#card {{ background: {p.surface}; border: 1px solid {p.border}; border-radius: 10px; }}
+QFrame#cardHead {{ background: transparent; border: none; border-bottom: 1px solid {p.border}; }}
 QLabel#cardTitle {{ font-size: 13px; font-weight: 600; }}
 QLabel#cardHint, QLabel#muted {{ color: {p.text_muted}; }}
 QLabel#faint {{ color: {p.text_faint}; font-size: 12px; }}
 QLabel#metricLabel {{ color: {p.text_muted}; font-size: 12px; font-weight: 500; }}
-QLabel#metricValue {{ font-size: 26px; font-weight: 600; }}
+QLabel#metricValue {{ font-size: 24px; font-weight: 600; }}
 QLabel#metricCaption {{ color: {p.text_faint}; font-size: 12px; }}
 QLabel#kvKey {{ color: {p.text_muted}; }}
 QLabel#kvValue {{ font-weight: 500; }}
@@ -170,6 +171,20 @@ QFrame#bannerWarning {{ background: {p.warning_soft}; border: 1px solid {p.warni
 QFrame#bannerDanger {{ background: {p.danger_soft}; border: 1px solid {p.danger}; border-radius: 8px; }}
 QFrame#bannerInfo {{ background: {p.accent_soft}; border: 1px solid {p.border}; border-radius: 8px; }}
 QLabel#bannerText {{ color: {p.text}; }}
+
+/* tables: light header, no grid, a thin line between rows ------------ */
+QTableView {{
+    background: {p.surface}; border: 1px solid {p.border}; border-radius: 8px; outline: 0;
+    gridline-color: {p.border}; selection-background-color: {p.selected}; selection-color: {p.text};
+}}
+QTableView::item {{ padding: 0 10px; border: none; border-bottom: 1px solid {p.hover}; }}
+QTableView::item:selected {{ background: {p.selected}; color: {p.text}; }}
+QHeaderView {{ background: {p.surface_alt}; border: none; border-top-left-radius: 8px; border-top-right-radius: 8px; }}
+QHeaderView::section {{
+    background: {p.surface_alt}; color: {p.text_muted}; font-size: 12px; font-weight: 500;
+    padding: 7px 10px; border: none; border-bottom: 1px solid {p.border};
+}}
+QTableCornerButton::section {{ background: {p.surface_alt}; border: none; }}
 
 /* progress ------------------------------------------------------------- */
 QProgressBar {{ background: {p.surface_alt}; border: 1px solid {p.border}; border-radius: 4px; min-height: 8px; max-height: 8px; }}
