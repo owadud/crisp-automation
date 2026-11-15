@@ -71,6 +71,8 @@ class _SheetSignal(QObject):
 CAMPAIGNS, EDITOR, RUN, RESULTS, LISTS, TEAM, SETTINGS, RUNS = range(8)
 RUN_TONE = {"Sent": "success", "Dry run passed": "success", "Skipped (before Send)": "warning",
             "Failed": "danger", "Taken by another runner": "muted"}
+RESULT_TONE = {cr.REPLIED: "success", cr.READ: "accent", cr.DELIVERED: "neutral", cr.SENT: "muted",
+               cr.FAILED: "danger", cr.UNCONFIRMED: "warning"}
 CHIP_TONE = {cs.RUNNING: "accent", cs.QUEUED: "neutral", cs.FINISHED: "success", cs.SCHEDULED: "warning",
              cs.PAUSED: "warning", cs.FAILED: "danger", cs.UNCONFIRMED: "danger", cs.STOPPED: "muted",
              cs.READY: "muted", cs.DRAFT: "muted"}
@@ -1869,28 +1871,31 @@ class MainWindow(QMainWindow):
         return rows
 
     @staticmethod
-    def _set_rows(table, rows):
+    def _set_rows(table, rows, chip_col=None):
         table.setSortingEnabled(False)
         table.setRowCount(len(rows))
         for i, values in enumerate(rows):
             for j, value in enumerate(values):
-                table.setItem(i, j, QTableWidgetItem(str(value)))
+                item = QTableWidgetItem(str(value))
+                if j == chip_col:
+                    item.setData(W.ChipDelegate.TONE, RESULT_TONE.get(str(value).split(":")[0], "neutral"))
+                table.setItem(i, j, item)
         table.setSortingEnabled(True)
         table.resizeColumnsToContents()
 
     def _fill_results_table(self):
-        self._set_rows(self.results_page.table, [cr.table_row(x) for x in self._filtered_results()])
+        self._set_rows(self.results_page.table, [cr.table_row(x) for x in self._filtered_results()], chip_col=2)
 
     def _fill_side_tables(self, rows, campaign):
         r = self.results_page
         follow = [x for x in rows if x["status"] == cr.REPLIED and x.get("open") is not False]
         self._set_rows(r.followup, [[x["email"], x.get("name", ""), x.get("reply_at", ""), x["campaign"],
                                      x.get("version", ""), x.get("link", "")] for x in follow])
-        r.tabs.setTabText(1, f"Needs follow-up ({len(follow)})")
+        r.followup_card.title.setText(f"Replied, conversation still open ({len(follow)})")
         failed = [x for x in rows if x["status"] == cr.FAILED]
         self._set_rows(r.problems, [[x["email"], x.get("name", ""), x.get("reason", ""), x.get("sent_at", ""),
                                      x["campaign"], x.get("link", "")] for x in failed])
-        r.tabs.setTabText(2, f"Delivery problems ({len(failed)})")
+        r.problems_card.title.setText(f"Delivery problems ({len(failed)})")
         r.add_dnc.setEnabled(bool(failed))
 
         def pct_row(name, s_):

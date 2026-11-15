@@ -43,6 +43,21 @@ def button(text: str, name: str | None = None, icon_name: str | None = None,
     return b
 
 
+class AutoHideLabel(QLabel):
+    """A label that takes no space while it has no text."""
+
+    def __init__(self, name: str | None = None):
+        super().__init__("")
+        if name:
+            self.setObjectName(name)
+        self.setWordWrap(True)
+        self.hide()
+
+    def setText(self, text: str):
+        super().setText(text)
+        self.setVisible(bool(text))
+
+
 def divider() -> QFrame:
     f = QFrame()
     f.setObjectName("divider")
