@@ -116,7 +116,7 @@ def parse_range(from_text, to_text, total: int):
 
 def read_stats(path_text: str, reference_filter: str, row_from: str = "", row_to: str = "",
                dnc_path: str = "", history_file: str = "", campaign: str = "", recent_days=0,
-               shared_file: str = "", claim_expiry=5) -> CsvStats:
+               shared_file: str = "", claim_expiry=5, allow_resend: bool = False) -> CsvStats:
     stats = CsvStats()
     if not path_text or not path_text.strip():
         stats.error = "Choose a recipient CSV file."
@@ -183,6 +183,8 @@ def read_stats(path_text: str, reference_filter: str, row_from: str = "", row_to
         try:
             raw = json.loads(Path(shared_file).read_text(encoding="utf-8"))
             snap = claims.snapshot_from_raw(raw, campaign, int(_clean(claim_expiry) or 5), stats.recent_days)
+            if allow_resend:
+                snap.resend_before = sc.now_dhaka()
             for email, at, camp, result in snap.history():
                 history.add(email, at, camp, result)
             history.blocker = lambda email: snap.blocker(email)
@@ -194,7 +196,8 @@ def read_stats(path_text: str, reference_filter: str, row_from: str = "", row_to
                 rules.NO_EMAIL: "missing_email", rules.DUPLICATE: "duplicates",
                 rules.INVALID: "invalid", rules.DO_NOT_CONTACT: "do_not_contact",
                 rules.CAMPAIGN_SENT: "campaign_sent", rules.RECENT: "recent", rules.CLAIMED: "claimed"}
-    for index, row, outcome, detail in rules.classify(rows, reference_filter, start, end, dnc, history=history):
+    for index, row, outcome, detail in rules.classify(rows, reference_filter, start, end, dnc, history=history,
+                                                      allow_resend=allow_resend):
         if outcome == rules.OUT_OF_RANGE:
             continue
         email = _clean(row.get("Contact Email"))
@@ -215,7 +218,7 @@ def read_stats(path_text: str, reference_filter: str, row_from: str = "", row_to
                            "send": outcome == rules.ELIGIBLE})
     stats.retry_candidates = sum(1 for _i, _r, outcome, _d in
                                  rules.classify(rows, reference_filter, start, end, dnc, retry_only=True,
-                                                history=history)
+                                                history=history, allow_resend=allow_resend)
                                  if outcome == rules.ELIGIBLE)
     stats.ok = True
     return stats

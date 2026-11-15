@@ -97,6 +97,7 @@ class AgentRunner(QObject):
             "CRISP_DATA_DIR": settings.get("data_dir", ""),
             "CRISP_CAMPAIGN": settings.get("campaign", ""),
             "CRISP_RECENT_DAYS": settings.get("recent_days", "7"),
+            "CRISP_ALLOW_RESEND": settings.get("allow_resend", "false"),
             "CRISP_PAUSE_FILE": str(self.pause_file),
             "CRISP_SHORTCUT_VERSION": settings.get("shortcut_version", ""),
             "CRISP_RUNNER_NAME": settings.get("runner_name", ""),

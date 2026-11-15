@@ -113,6 +113,13 @@ class Preferences:
         if key in SHARED_DEFAULTS:
             self._s.setValue(f"shared/{key}", value)
 
+    # Settings > Sending: send again to people already emailed (off by default) -----
+    def allow_resend(self) -> bool:
+        return str(self._s.value("sending/allow_resend", "false")) == "true"
+
+    def set_allow_resend(self, on: bool) -> None:
+        self._s.setValue("sending/allow_resend", "true" if on else "false")
+
     # Campaign Results: background checks through the Crisp API ------------------
     def auto_check(self) -> bool:
         return str(self._s.value("results/auto_check", "true")) == "true"

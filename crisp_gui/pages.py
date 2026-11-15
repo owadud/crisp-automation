@@ -848,6 +848,12 @@ class SettingsPage(Page):
         group.add(SettingRow("Shared Sheet: claim expiry (minutes)",
                              "Unsent claims of a runner that stopped responding are freed after this.")
                   .add_control(self.claim_expiry))
+        self.allow_resend = QCheckBox("Allow")
+        group.add(SettingRow("Send again to people already emailed",
+                             "For follow-ups and new campaigns. On: people with Mail Sent ticked, already sent in this "
+                             "campaign or emailed recently get the email again. Each person still gets at most one "
+                             "email per run; invalid and do-not-contact emails are still skipped. Off is the safe "
+                             "default.").add_control(self.allow_resend))
 
         # ------------------------------------------------------------ This computer
         group = self.add(SettingsGroup("This computer"))

@@ -151,7 +151,13 @@ try:
     RECENT_DAYS = max(0, int(os.environ.get("CRISP_RECENT_DAYS", "7").strip() or 0))
 except ValueError:
     RECENT_DAYS = 7
-_HISTORY_INDEX = None
+_HISTORY_INDEX = None  # history rules index (built on first use)
+# Settings > "Allow sending again to people already emailed": follow-ups and new
+# campaigns may email them again. Each person still gets at most one email per run,
+# and another runner's send made during this run still blocks (shared Sheet).
+ALLOW_RESEND = os.environ.get("CRISP_ALLOW_RESEND", "false").strip().lower() in {"1", "true", "yes", "on"}
+RUN_STARTED = sc.now_dhaka()
+RESEND_BEFORE = RUN_STARTED if ALLOW_RESEND else None
 
 # Label for the shortcut text in use (Crisp shortcuts have no versions), e.g. "v2".
 SHORTCUT_VERSION = os.environ.get("CRISP_SHORTCUT_VERSION", "").strip()
@@ -427,13 +433,13 @@ def load_shared_state():
     runner = claims.runner_label(RUNNER_NAME)
     if DRY_RUN:
         try:
-            SHARED = claims.read_snapshot(SHEET, CAMPAIGN, CLAIM_EXPIRY, RECENT_DAYS)
+            SHARED = claims.read_snapshot(SHEET, CAMPAIGN, CLAIM_EXPIRY, RECENT_DAYS, resend_before=RESEND_BEFORE)
         except Exception as exc:  # noqa: BLE001  (a dry run still works without it)
             print(f"WARNING: could not read who else is sending from this Sheet: {exc}")
             return
     else:
         CLAIMS = claims.Claims(SHEET, CAMPAIGN, runner=runner, batch=CLAIM_BATCH, expiry_min=CLAIM_EXPIRY,
-                               recent_days=RECENT_DAYS)
+                               recent_days=RECENT_DAYS, resend_before=RESEND_BEFORE)
         SHARED = CLAIMS.snapshot()
     _HISTORY_INDEX = None
     active = [t for t in SHARED.team() if t["state"] in ("Running", "Paused")]
@@ -549,7 +555,7 @@ def end_claims(note, state):
 def classify_rows(rows):
     start, end = row_range(len(rows))
     return rules.classify(rows, REFERENCE_FILTER, start, end, load_dnc(), retry_only=RETRY_ONLY,
-                          history=history_index())
+                          history=history_index(), allow_resend=ALLOW_RESEND)
 
 
 def get_eligible(rows):
@@ -558,6 +564,9 @@ def get_eligible(rows):
 
 def print_precheck(rows):
     """Report rows skipped before any browser work (never stops the run)."""
+    if ALLOW_RESEND:
+        print("SEND AGAIN is ON (Settings): people already emailed get this email again "
+              "(at most once in this run).")
     counts = {}
     for index, row, outcome, detail in classify_rows(rows):
         counts[outcome] = counts.get(outcome, 0) + 1

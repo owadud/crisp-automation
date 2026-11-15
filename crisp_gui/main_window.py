@@ -366,6 +366,8 @@ class MainWindow(QMainWindow):
         self._api_checking = False
         self._api_quiet = False
         self.settings.api_auto.toggled.connect(lambda on: self.prefs.set_auto_check(on))
+        self.settings.allow_resend.setChecked(self.prefs.allow_resend())
+        self.settings.allow_resend.toggled.connect(self._allow_resend_changed)
         self.auto_check_timer = QTimer(self)
         self.auto_check_timer.setInterval(AUTO_CHECK_MINUTES * 60_000)
         self.auto_check_timer.timeout.connect(self.auto_check_statuses)
@@ -998,9 +1000,14 @@ class MainWindow(QMainWindow):
                                                            for (n, lab), s in zip(variants, subjects))
         return "A/B test, split evenly: " + " / ".join(f"{n} ({lab})" for n, lab in variants)
 
+    def _allow_resend_changed(self, on: bool):
+        self.prefs.set_allow_resend(on)
+        self.refresh_csv()
+
     def _shared_values(self) -> dict:
         s = self.settings
-        out = {"runner_name": s.runner_name.text()}
+        out = {"runner_name": s.runner_name.text(),
+               "allow_resend": "true" if s.allow_resend.isChecked() else "false"}
         for key, field, default, low, high in (("claim_batch", s.claim_batch, 10, 1, 100),
                                                ("claim_expiry", s.claim_expiry, 5, 2, 120)):
             try:
@@ -1184,7 +1191,8 @@ class MainWindow(QMainWindow):
         self.stats = read_stats(path, v["reference"], v["row_from"], v["row_to"], v["dnc"],
                                 history_file=str(self.history_file), campaign=self.campaign_name(v),
                                 recent_days=sc.recent_days_value(v.get("recent_days")), shared_file=shared,
-                                claim_expiry=v.get("claim_expiry") or 5)
+                                claim_expiry=v.get("claim_expiry") or 5,
+                                allow_resend=self.settings.allow_resend.isChecked())
         if self.source() == "sheet" and not path:
             self.stats.error = "Click Test connection to read the Sheet."
         self._validate_fields()
@@ -1491,7 +1499,9 @@ class MainWindow(QMainWindow):
                        f"{self._shortcut_text(v)}\n" + self._ai_text(v) +
                        f"Rows {self.stats.range_from}–{self.stats.range_to} "
                        f"of {self.stats.total} · {source} · {self._limits_text(v)}"
-                       + (" · retry failed only" if retry_only else ""))
+                       + (" · retry failed only" if retry_only else "")
+                       + ("\nSEND AGAIN is ON (Settings): people already emailed get this email again."
+                          if self.settings.allow_resend.isChecked() else ""))
             ok = show_preview(self, f"Send {n} real email{'s' if n != 1 else ''}?", summary,
                               preview_rows(self.stats.plan, v),
                               confirm=f"Send {n} email{'s' if n != 1 else ''}", danger=True)
@@ -2588,7 +2598,8 @@ class MainWindow(QMainWindow):
         shared = str(self._sheet_shared_path()) if s.get("source") == "sheet" else ""
         st = read_stats(path, s.get("reference", ""), s.get("row_from", ""), s.get("row_to", ""), s.get("dnc", ""),
                         history_file=str(self.history_file), campaign=c.name, recent_days=recent,
-                        shared_file=shared, claim_expiry=self._shared_values()["claim_expiry"])
+                        shared_file=shared, claim_expiry=self._shared_values()["claim_expiry"],
+                        allow_resend=self.settings.allow_resend.isChecked())
         if not st.ok:
             return [], 0, "", st.error or "The recipient list could not be read."
         if st.range_error or st.dnc_error:

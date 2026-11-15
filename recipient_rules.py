@@ -194,7 +194,7 @@ ACTIONS = {
 
 
 def classify(rows, reference_filter: str, start: int, end: int, do_not_contact=frozenset(),
-             retry_only: bool = False, history=None):
+             retry_only: bool = False, history=None, allow_resend: bool = False):
     """[(index, row, outcome, detail)] for every row, in file order.
 
     start/end are 1-based serials (inclusive). A duplicate is an email that
@@ -203,9 +203,15 @@ def classify(rows, reference_filter: str, start: int, end: int, do_not_contact=f
     to whoever sends it. `history` (send_control.HistoryIndex) adds "already
     sent in this campaign" and "emailed in the last N days". Only ELIGIBLE
     rows are sent.
+
+    allow_resend (Settings > "Allow sending again"): people already emailed (Mail
+    Sent ticked, sent in this campaign, emailed recently) are sent again. Still
+    skipped: the same email twice in this run, invalid, do-not-contact, and
+    anyone another runner holds right now.
     """
     ref = clean(reference_filter).lower()
-    already = {normalize_email(r.get("Contact Email")) for r in rows if is_checked(r.get("Mail Sent"))}
+    already = {normalize_email(r.get("Contact Email")) for r in rows
+               if is_checked(r.get("Mail Sent"))} if not allow_resend else set()
     already.discard("")
     seen = set()
     out = []
@@ -219,7 +225,7 @@ def classify(rows, reference_filter: str, start: int, end: int, do_not_contact=f
             out.append((index, row, OTHER_REFERENCE, ""))
         elif not email:
             out.append((index, row, NO_EMAIL, ""))
-        elif is_checked(row.get("Mail Sent")):
+        elif is_checked(row.get("Mail Sent")) and not allow_resend:
             out.append((index, row, ALREADY_SENT, ""))
         elif email in do_not_contact:
             out.append((index, row, DO_NOT_CONTACT, ""))
@@ -227,10 +233,10 @@ def classify(rows, reference_filter: str, start: int, end: int, do_not_contact=f
             out.append((index, row, INVALID, email_problem(email)))
         elif email in already or email in seen:
             out.append((index, row, DUPLICATE, ""))
-        elif history is not None and history.campaign_sent(email):
+        elif history is not None and not allow_resend and history.campaign_sent(email):
             t, campaign, result = history.campaign_sent(email)
             out.append((index, row, CAMPAIGN_SENT, f"{result} {t} in '{campaign}'"))
-        elif history is not None and history.recent(email):
+        elif history is not None and not allow_resend and history.recent(email):
             t, campaign, result = history.recent(email)
             note = "possibly sent (unconfirmed)" if result.lower() == "unconfirmed" else "sent"
             out.append((index, row, RECENT, f"{note} {t} in '{campaign or '?'}'"))

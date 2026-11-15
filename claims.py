@@ -144,12 +144,18 @@ def owner(claims: list[Claim]) -> Claim | None:
     return min(active, key=lambda c: c.order) if active else None
 
 
-def sent_blocks(claim: Claim, campaign: str, recent_days: int, now: datetime) -> str:
+def sent_blocks(claim: Claim, campaign: str, recent_days: int, now: datetime, resend_before=None) -> str:
     """A finished send in the shared log blocks a new send when it is in the same
     campaign, or within the recently-contacted window (0 days = off: another
-    campaign may email them). In-progress claims are blocked elsewhere."""
+    campaign may email them). In-progress claims are blocked elsewhere.
+    resend_before (Settings > "Allow sending again"): sends before this time never
+    block; sends after it (another runner, during this run) still do."""
     if claim.state != SENT:
         return ""
+    if resend_before is not None:
+        at = parse_stamp(claim.updated_at)
+        if at is not None and at < resend_before:
+            return ""
     if campaign and claim.campaign.strip().lower() == campaign.strip().lower():
         return f"already sent {claim.updated_at} in '{claim.campaign}' by {claim.runner}"
     days = int(recent_days or 0)
@@ -171,6 +177,7 @@ class Snapshot:
     expiry_min: int = DEFAULT_EXPIRY_MIN
     campaign: str = ""
     recent_days: int = 0
+    resend_before: datetime | None = None
 
     def last_seen(self, run: str):
         row = self.runners.get(run)
@@ -199,7 +206,7 @@ class Snapshot:
         if top is not None and top.run != run:
             return f"claimed by {top.runner} in '{top.campaign}'"
         for c in claims:
-            why = sent_blocks(c, self.campaign, self.recent_days, self.now or sc.now_dhaka())
+            why = sent_blocks(c, self.campaign, self.recent_days, self.now or sc.now_dhaka(), self.resend_before)
             if why and c.run != run:
                 return why
         return ""
@@ -259,8 +266,9 @@ class Claims:
 
     def __init__(self, source, campaign: str, runner: str = "", run_id: str = "",
                  batch: int = DEFAULT_BATCH, expiry_min: int = DEFAULT_EXPIRY_MIN, clock=None,
-                 recent_days: int = 0):
+                 recent_days: int = 0, resend_before=None):
         self.src = source
+        self.resend_before = resend_before
         self.campaign = campaign
         self.runner = runner or runner_label()
         self.run = run_id or new_run_id()
@@ -324,7 +332,7 @@ class Claims:
 
     def snapshot(self, create: bool = False) -> Snapshot:
         snap = Snapshot(now=self.clock(), expiry_min=self.expiry_min, campaign=self.campaign,
-                        recent_days=self.recent_days)
+                        recent_days=self.recent_days, resend_before=self.resend_before)
         ws = self._tab(CLAIMS_TAB, CLAIM_HEADER, create)
         if ws is not None:
             snap.claims = replay(self.src.pacer.call(ws.get_all_values))
@@ -394,7 +402,7 @@ class Claims:
                     c.state = RELEASED
             if any(c.state in ACTIVE and c.run != self.run for c in claims):
                 continue                   # someone holds it, or it needs a check in Crisp
-            if any(sent_blocks(c, self.campaign, self.recent_days, snap.now) for c in claims):
+            if any(sent_blocks(c, self.campaign, self.recent_days, snap.now, self.resend_before) for c in claims):
                 continue                   # sent by another runner meanwhile
             wanted.append(e)
             if len(wanted) >= self.batch:
@@ -426,7 +434,7 @@ class Claims:
         if top is None or top.run != self.run:
             return f"claimed by {top.runner} in '{top.campaign}'" if top else "claim not found"
         for c in claims:
-            why = sent_blocks(c, self.campaign, self.recent_days, snap.now)
+            why = sent_blocks(c, self.campaign, self.recent_days, snap.now, self.resend_before)
             if why and c.run != self.run:
                 return why
         return ""
@@ -553,6 +561,7 @@ def snapshot_from_raw(raw: dict, campaign: str = "", expiry_min: int = DEFAULT_E
 
 
 def read_snapshot(source, campaign: str = "", expiry_min: int = DEFAULT_EXPIRY_MIN,
-                  recent_days: int = 0) -> Snapshot:
+                  recent_days: int = 0, resend_before=None) -> Snapshot:
     """Read-only (dry runs, GUI preview, Team panel). Creates nothing."""
-    return Claims(source, campaign, expiry_min=expiry_min, recent_days=recent_days).snapshot(create=False)
+    return Claims(source, campaign, expiry_min=expiry_min, recent_days=recent_days,
+                  resend_before=resend_before).snapshot(create=False)
