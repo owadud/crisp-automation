@@ -99,7 +99,8 @@ def test_schedule_live_then_start_at_the_time(win, dialogs, monkeypatch, tmp_pat
     assert dialogs["seen"][-1] == "Schedule REAL sending of 'Planned' at 2099-01-01 10:00?"
     c = store.get(a.id)
     assert c.status == cs.SCHEDULED and c.schedule == {"at": "2099-01-01 10:00", "live": True}
-    assert "'Planned' 2099-01-01 10:00 (Dhaka) · REAL SENDING" in win.schedule_banner.text.text()   # every page
+    banner = win.schedule_banner.text.text()                              # every page
+    assert "'Planned' 2099-01-01 10:00 (Dhaka) · " in banner and "REAL SENDING</b>" in banner
     win.check_schedules("2099-01-01 09:59")
     assert store.get(a.id).status == cs.SCHEDULED                          # not yet
     win.check_schedules("2099-01-01 10:01")

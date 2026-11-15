@@ -117,6 +117,8 @@ QLabel#faint {{ color: {p.text_faint}; font-size: 12px; }}
 QLabel#metricLabel {{ color: {p.text_muted}; font-size: 12px; font-weight: 500; }}
 QLabel#metricValue {{ font-size: 24px; font-weight: 600; }}
 QLabel#metricCaption {{ color: {p.text_faint}; font-size: 12px; }}
+QLabel#metricInline {{ color: {p.text_muted}; font-size: 13px; font-weight: 500; padding-bottom: 4px; }}
+QLabel#navBadge {{ color: {p.text_muted}; font-size: 11px; background: transparent; }}
 QLabel#kvKey {{ color: {p.text_muted}; }}
 QLabel#kvValue {{ font-weight: 500; }}
 QLabel#groupTitle {{ font-size: 11px; font-weight: 600; color: {p.text_muted}; padding: 0 4px; }}

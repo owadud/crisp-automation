@@ -112,7 +112,7 @@ class Card(QFrame):
 
 
 class MetricCard(QFrame):
-    def __init__(self, title: str, caption: str = ""):
+    def __init__(self, title: str, caption: str = "", inline: bool = False):
         super().__init__()
         self.setObjectName("card")
         self.setMinimumHeight(84)
@@ -125,8 +125,17 @@ class MetricCard(QFrame):
         self.caption = label(caption, "metricCaption")
         self.caption.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         lay.addWidget(self.title)
-        lay.addWidget(self.value)
-        lay.addWidget(self.caption)
+        if inline:                                   # prototype: "57 / 200 daily cap" on one line
+            self.setMinimumHeight(70)
+            self.caption.setObjectName("metricInline")
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            row.addWidget(self.value)
+            row.addWidget(self.caption, 1, Qt.AlignBottom)
+            lay.addLayout(row)
+        else:
+            lay.addWidget(self.value)
+            lay.addWidget(self.caption)
         lay.addStretch()
 
     def set(self, value, caption: str | None = None):
@@ -325,10 +334,11 @@ class StatusPill(QWidget):
 
 
 class Banner(QFrame):
-    def __init__(self, tm: ThemeManager, kind: str = "warning", text: str = ""):
+    def __init__(self, tm: ThemeManager, kind: str = "warning", text: str = "", icon_name: str = "alert"):
         super().__init__()
         self.tm = tm
         self.kind = kind
+        self.icon_name = icon_name
         self.setObjectName({"warning": "bannerWarning", "danger": "bannerDanger"}.get(kind, "bannerInfo"))
         lay = QHBoxLayout(self)
         lay.setContentsMargins(12, 10, 12, 10)
@@ -345,7 +355,7 @@ class Banner(QFrame):
 
     def _paint_icon(self, p: Palette):
         color = {"warning": p.warning, "danger": p.danger}.get(self.kind, p.accent)
-        self.icon.setPixmap(icon("alert", color).pixmap(16, 16))
+        self.icon.setPixmap(icon(self.icon_name, color).pixmap(16, 16))
 
     def set_text(self, text: str):
         self.text.setText(text)

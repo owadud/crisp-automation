@@ -40,7 +40,7 @@ def test_main_flow_choose_check_dry_run_then_send(win, dialogs, monkeypatch):
     win.navigate(0)
     cp = win.campaigns_page
     assert cp.empty.isVisibleTo(cp) and not cp.run_queue.isEnabled()
-    assert not win.run_button.isVisible()                              # one primary action: Run queue
+    assert win.run_button.isVisible()                                  # on every page, like the prototype
 
     # choose: new campaign, fill it in, save
     QTest.keyClick(win, Qt.Key_N, Qt.ControlModifier)
@@ -87,8 +87,8 @@ def test_main_flow_choose_check_dry_run_then_send(win, dialogs, monkeypatch):
     assert not win.runner.is_running()                                  # cancelled: nothing sent
 
 
-def test_run_button_belongs_to_editor_run_and_lists(win):
-    for page, visible in ((0, False), (1, True), (2, True), (3, False), (4, True), (5, False), (6, False)):
+def test_run_button_is_on_every_page(win):
+    for page, visible in ((0, True), (1, True), (2, True), (3, True), (4, True), (5, True), (6, True)):
         win.navigate(page)
         QApplication.processEvents()
         assert win.run_button.isVisible() is visible, page

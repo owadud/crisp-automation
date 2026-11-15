@@ -24,9 +24,9 @@ from .widgets import (
 
 
 class Page(QScrollArea):
-    """Scrollable page with a centred, width-capped column."""
+    """Scrollable page with a left-aligned, width-capped column."""
 
-    MAX_WIDTH = 1080
+    MAX_WIDTH = 1120
 
     def __init__(self):
         super().__init__()
@@ -44,6 +44,7 @@ class Page(QScrollArea):
         self.layout_.setContentsMargins(0, 0, 0, 0)
         self.layout_.setSpacing(16)
         outer.addWidget(self.column, 1)
+        outer.addStretch(0)                     # wider than MAX_WIDTH: the spare room goes right, like the prototype
         self.setWidget(host)
 
     def add(self, widget, stretch=0):
@@ -967,10 +968,10 @@ class CampaignsPage(Page):
         self.banner.hide()
 
         stats = ResponsiveRow(min_item_width=170, spacing=12)
-        self.m_sent_today = MetricCard("Sent today")
-        self.m_queued = MetricCard("Queued")
-        self.m_scheduled = MetricCard("Scheduled")
-        self.m_checks = MetricCard("Need a check in Crisp")
+        self.m_sent_today = MetricCard("Sent today", inline=True)
+        self.m_queued = MetricCard("Queued", inline=True)
+        self.m_scheduled = MetricCard("Scheduled", inline=True)
+        self.m_checks = MetricCard("Need a check in Crisp", inline=True)
         for m in (self.m_sent_today, self.m_queued, self.m_scheduled, self.m_checks):
             stats.add(m)
         self.add(stats)

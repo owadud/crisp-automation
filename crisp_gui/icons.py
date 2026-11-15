@@ -24,6 +24,22 @@ def _draw(name: str, p: QPainter, c: str) -> None:
     if name == "dashboard":
         for x, y, w, h in ((2.5, 2.5, 4.5, 6), (9, 2.5, 4.5, 3.5), (2.5, 10.5, 4.5, 3), (9, 8, 4.5, 5.5)):
             p.drawRoundedRect(QRectF(x, y, w, h), 1.2, 1.2)
+    elif name == "clock":
+        p.drawEllipse(QPointF(8, 8), 5.8, 5.8)
+        path = QPainterPath(QPointF(8, 4.8))
+        path.lineTo(8, 8)
+        path.lineTo(10.4, 9.6)
+        p.drawPath(path)
+    elif name == "list":
+        for y, w in ((4, 12), (8, 12), (12, 8)):
+            p.drawLine(QPointF(2, y), QPointF(2 + w, y))
+    elif name == "people":
+        p.drawEllipse(QPointF(6, 5.5), 2.3, 2.3)
+        path = QPainterPath(QPointF(1.8, 13.5))
+        path.cubicTo(QPointF(1.8, 10), QPointF(10.2, 10), QPointF(10.2, 13.5))
+        p.drawPath(path)
+        p.drawArc(QRectF(9.2, 3.2, 4.6, 4.6), 90 * 16, -180 * 16)
+        p.drawLine(QPointF(12, 10.2), QPointF(14.2, 13))
     elif name == "campaign":
         p.drawRoundedRect(QRectF(2, 3.5, 12, 9), 1.6, 1.6)
         path = QPainterPath(QPointF(2.6, 4.5))

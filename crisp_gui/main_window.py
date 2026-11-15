@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import html
 import os
 import shutil
 import sys
@@ -83,16 +84,17 @@ SUBTITLES = ("All campaigns, the queue and schedules", "Edit the campaign, then 
              "Accounts, connections and app options", "Every run gets its own folder")
 # Sidebar: (key, title, icon, stack page). The editor belongs to Campaigns, run history to Results.
 PAGES = (
-    ("campaigns", "Campaigns", "campaign", CAMPAIGNS),
+    ("campaigns", "Campaigns", "list", CAMPAIGNS),
     ("run", "Run", "play", RUN),
     ("results", "Results", "send", RESULTS),
     ("lists", "Lists", "file", LISTS),
-    ("team", "Team", "dashboard", TEAM),
+    ("team", "Team", "people", TEAM),
     ("settings", "Settings", "settings", SETTINGS),
 )
+TEAM_NAV = 4
 NAV_FOR = {CAMPAIGNS: 0, EDITOR: 0, RUN: 1, RESULTS: 2, LISTS: 3, TEAM: 4, SETTINGS: 5, RUNS: 2}
-# The top-bar Start/Stop button belongs to these pages (and shows everywhere while running).
-RUN_BUTTON_PAGES = (EDITOR, RUN, LISTS)
+# The top-bar Start/Stop button: on every page, like the prototype. It starts the campaign open in the editor.
+RUN_BUTTON_PAGES = (CAMPAIGNS, EDITOR, RUN, RESULTS, LISTS, TEAM, SETTINGS, RUNS)
 
 STATUS = {
     rs.IDLE: ("Ready", "neutral"),
@@ -193,6 +195,11 @@ class MainWindow(QMainWindow):
             self.nav_group.addButton(b, i)
             self.nav_buttons.append(b)
             side.addWidget(b)
+        badge_box = QHBoxLayout(self.nav_buttons[TEAM_NAV])     # "3" on the right of Team: checks waiting
+        badge_box.setContentsMargins(0, 0, 10, 0)
+        badge_box.addStretch()
+        self.team_badge = W.label("", "navBadge")
+        badge_box.addWidget(self.team_badge)
         side.addStretch()
 
         self.theme_toggle = W.button("", "navItem")
@@ -258,7 +265,7 @@ class MainWindow(QMainWindow):
         self.schedule_wrap = QWidget()
         sw = QHBoxLayout(self.schedule_wrap)
         sw.setContentsMargins(28, 12, 28, 0)
-        self.schedule_banner = W.Banner(self.tm, "info")
+        self.schedule_banner = W.Banner(self.tm, "info", icon_name="clock")
         self.schedule_cancel = W.button("Cancel schedule")
         self.schedule_banner.layout().addWidget(self.schedule_cancel, 0, Qt.AlignVCenter)
         self.schedule_cancel.clicked.connect(self.cancel_next_schedule)
@@ -1358,6 +1365,9 @@ class MainWindow(QMainWindow):
         b.style().unpolish(b)
         b.style().polish(b)
         b.setVisible(running or self.stack.currentIndex() in RUN_BUTTON_PAGES)
+        editing = self.campaign_store.get(self.prefs.editing_campaign())
+        b.setToolTip("" if running else f"Starts the campaign open in the editor"
+                     + (f": '{editing.name}'" if editing else "") + ".")
         c = self.campaign.start
         c.setText(b.text() if not running else "Running…")
         c.setEnabled(not running)
@@ -2326,16 +2336,16 @@ class MainWindow(QMainWindow):
         cp = self.campaigns_page
         cap = str(self.campaign_values().get("daily_cap") or "").strip()
         sent = sc.sent_today(self.history_file)
-        cp.m_sent_today.set(sent, f"of {cap} daily cap" if cap else "no daily cap")
-        queued = sum(1 for c in items if c.status == cs.QUEUED)
-        cp.m_queued.set(queued, "run next with Run queue" if queued else "nothing queued")
+        cp.m_sent_today.set(sent, f"/ {cap} daily cap" if cap else "")
+        cp.m_queued.set(sum(1 for c in items if c.status == cs.QUEUED), "")
         scheduled = self.campaign_store.scheduled()
-        cp.m_scheduled.set(len(scheduled), f"next {scheduled[0].schedule.get('at', '')[11:16]}" if scheduled
-                           else "none")
+        cp.m_scheduled.set(len(scheduled), f"next {scheduled[0].schedule.get('at', '')[11:16]}" if scheduled else "")
         checks = len(getattr(self, "_team_claims", []) or [])
         unconfirmed = sum(1 for c in items if c.status == cs.UNCONFIRMED)
-        cp.m_checks.set(checks + unconfirmed, "see Team" if checks else
-                        ("campaign stopped unconfirmed" if unconfirmed else "all clear"))
+        need = checks + unconfirmed
+        cp.m_checks.set(need, "")
+        cp.m_checks.value.setStyleSheet(f"color: {self.tm.palette.danger};" if need else "")
+        self.team_badge.setText(str(checks) if checks else "")
 
     def _next_scheduled(self):
         items = self.campaign_store.scheduled()
@@ -2349,11 +2359,12 @@ class MainWindow(QMainWindow):
         at = c.schedule.get("at", "")
         today = sc.now_dhaka().strftime("%Y-%m-%d")
         when = f"today at {at[11:16]}" if at.startswith(today) else f"{at} (Dhaka)"
-        mode = "REAL SENDING" if c.schedule.get("live") else "dry run, nothing is sent"
+        mode = (f"<b style='color: {self.tm.palette.danger}'>REAL SENDING</b>" if c.schedule.get("live")
+                else "dry run, nothing is sent")
         more = len(self.campaign_store.scheduled()) - 1
         self.schedule_banner.set_text(
-            f"Next scheduled: '{c.name}' {when} · {mode}. Keep this app open and the computer awake."
-            + (f" (+{more} more scheduled)" if more > 0 else ""))
+            f"<b>Next scheduled:</b> '{html.escape(c.name)}' {when} · {mode} · keep the app open and the "
+            "computer awake." + (f" (+{more} more scheduled)" if more > 0 else ""))
 
     def cancel_next_schedule(self):
         c = self._next_scheduled()
