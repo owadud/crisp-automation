@@ -7,11 +7,29 @@ textChanged / setPlaceholderText.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QKeySequence, QShortcut, QTextCursor
-from PySide6.QtWidgets import QInputDialog, QPlainTextEdit, QTextBrowser, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QInputDialog, QMenu, QPlainTextEdit, QTextBrowser, QVBoxLayout, QWidget
 
 from .widgets import ResponsiveRow, button, label
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import personal as pz  # noqa: E402  (same field filling as the agent)
+
+# Fields menu: (label, text inserted).
+FIELDS = (
+    ("Amount spent  {spent}", "{spent}"),
+    ("Number of orders  {orders}", "{orders}"),
+    ("Plugins they use  {plugins}", "{plugins}"),
+    ("Bundle plugins they don't have  {missing_plugins}", "{missing_plugins}"),
+    ("Bundle list (set once)  {bundle: ...}", "{bundle: PostX, WowStore, WowAddons, WholesaleX, WowRevenue}"),
+    ("Any column  {Country|there}", "{Country|there}"),
+    ("Only if spent 599 or more  {if ...}", "{if spent >= 599}You've already spent {spent} with us.{endif}"),
+    ("If / otherwise  {if ...}{else}", "{if tags contains WooCommerce}Text for store owners.{else}Text for everyone else.{endif}"),
+)
 
 # Tests answer the link / image prompts through this: hook(title) -> text or None.
 PROMPT_HOOK = None
@@ -42,6 +60,7 @@ class MessageEditor(QWidget):
                 ("first_name", "{first_name}", "The recipient's first name"),
                 ("name", "{name}", "The recipient's full name"),
                 ("ai_opener", "{ai_opener}", "Where the AI opening line goes (optional)"),
+                ("fields", "{…} Fields", "Fill in data from each person's row: amount spent, plugins, any column"),
                 ("divider", "A/B ---", "Start another version for an A/B test"),
                 ("preview", "Preview", "Show how the email will look")):
             b = button(text, "ghost")
@@ -140,6 +159,11 @@ class MessageEditor(QWidget):
                 self._insert(f"![image]({url})")
         elif action in ("first_name", "name", "ai_opener"):
             self._insert("{" + action + "}")
+        elif action == "fields":
+            menu = QMenu(self)
+            for text, value in FIELDS:
+                menu.addAction(text, lambda v=value: self._insert(v))
+            menu.exec(self.buttons["fields"].mapToGlobal(self.buttons["fields"].rect().bottomLeft()))
         elif action == "divider":
             cur = self.edit.textCursor()
             cur.movePosition(QTextCursor.End)
@@ -149,8 +173,8 @@ class MessageEditor(QWidget):
         elif action == "preview":
             on = self.buttons["preview"].isChecked()
             if on:
-                self.preview.setMarkdown(self.edit.toPlainText().replace("{first_name}", "Ann")
-                                         .replace("{name}", "Ann Lee"))
+                # A sample person: Ann Lee, $820.50 over 5 orders, uses PostX + WowStore + WooCommerce.
+                self.preview.setMarkdown(pz.render(self.edit.toPlainText(), "Ann Lee", pz.SAMPLE)[0])
             self.preview.setVisible(on)
             self.edit.setVisible(not on)
         self.edit.setFocus()

@@ -477,7 +477,8 @@ class CampaignPage(Page):
         self.api_message.setPlaceholderText("Hi {first_name},\n\nYour message…")
         self.api_message.setMinimumHeight(180)
         self.api_message_help = label("Sent as the email body through the Crisp API. {name} and {first_name} "
-                                      "become the recipient's name. For an A/B test, put a line with only --- "
+                                      "become the recipient's name; {…} Fields adds data from their row "
+                                      "(amount spent, plugins, any column). For an A/B test, put a line with only --- "
                                       "between the versions.", "fieldHelp", wrap=True)
         self.ai_box = QWidget()
         ai = QVBoxLayout(self.ai_box)

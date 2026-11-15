@@ -255,6 +255,7 @@ class SheetSource:
         if "Contact Email" not in self.colmap:
             raise SheetError(rules.NO_EMAIL_COLUMN + " (in the Sheet tab)")
         self.data_rows = len(values) - 1
+        self.grid = values            # every cell, for message fields (personal.py)
         rows = []
         for raw in values[1:]:
             raw = list(raw) + [""] * (len(self.header) - len(raw))

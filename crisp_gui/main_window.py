@@ -1284,7 +1284,8 @@ class MainWindow(QMainWindow):
                     ok = False
             c.api_message_help.setObjectName("fieldError" if problem else "fieldHelp")
             c.api_message_help.setText(problem or ("Sent as the email body through the Crisp API. {name} and "
-                                                   "{first_name} become the recipient's name. For an A/B test, "
+                                                   "{first_name} become the recipient's name; {…} Fields adds data "
+                                                   "from their row (amount spent, plugins, any column). For an A/B test, "
                                                    "put a line with only --- between the versions."))
             c.api_message_help.style().unpolish(c.api_message_help)
             c.api_message_help.style().polish(c.api_message_help)

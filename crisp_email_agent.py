@@ -47,6 +47,7 @@ import send_control as sc  # noqa: E402  (limits, Dhaka time, history, run folde
 import claims  # noqa: E402  (per-recipient claims on a shared Google Sheet)
 import pacing  # noqa: E402  (app-wide send pace across campaigns)
 import crisp_api  # noqa: E402  (Crisp REST API: optional sending without a browser)
+import personal as pz  # noqa: E402  (message fields filled from each recipient's row)
 
 
 # ============================================================
@@ -213,10 +214,21 @@ def choose_variant():
     return index
 
 
-def personalize(text, name):
-    """{name} and {first_name} in an API message become the recipient's name."""
-    first = (name or "").split()[0] if (name or "").split() else ""
-    return str(text).replace("{first_name}", first).replace("{name}", name or "")
+# Each recipient's whole row (merged header cells included) for message fields: personal.py.
+PDATA = {}
+PHEADERS = []
+
+
+def personalize(text, name, email=""):
+    """{first_name}, {name}, {Order Value}, {plugins}, {if ...} ... filled for one recipient."""
+    return pz.render(text, name, PDATA.get(rules.normalize_email(email)))[0]
+
+
+def check_message_fields():
+    """API mode: stop before anything is sent if the message uses a field the file does not have."""
+    problems = pz.check(API_TEXTS, PHEADERS or [])
+    if problems:
+        raise RuntimeError("Message fields: " + " ".join(problems))
 
 
 def open_api():
@@ -246,12 +258,18 @@ def api_send(row):
         opener = str((AI_OPENERS.get(email.strip().lower()) or {}).get("opener", ""))
         if not opener:
             print("  No AI opening line for this recipient; sending without one.")
-    text = personalize(sc.insert_opener(API_TEXT, opener), name)
+    text, empty = pz.render(sc.insert_opener(API_TEXT, opener), name, PDATA.get(rules.normalize_email(email)))
     if not text.strip():
         raise RuntimeError("The message text is empty.")
+    if empty:
+        print("  Empty for this person: " + ", ".join(dict.fromkeys(empty)) + " (left out of the message).")
     if DRY_RUN:
         print(f"  [DRY RUN] Crisp API: would create the conversation and send {len(text)} characters. "
               "Nothing was created or sent.")
+        print("  ----- message -----")
+        for line in text.splitlines():
+            print("  | " + line)
+        print("  -------------------")
         return True
     API_SESSION = API.create_conversation()
     API_LINK = API.link(API_SESSION)
@@ -351,6 +369,11 @@ def load_csv():
         fieldnames = list(reader.fieldnames)
 
         rows = list(reader)
+
+    global PDATA, PHEADERS
+    if SOURCE != "sheet":            # a Sheet's rows were indexed when it was downloaded
+        with CSV_FILE.open("r", encoding="utf-8-sig", newline="") as f:
+            PDATA, PHEADERS = pz.build_index(list(csv.reader(f)))
 
     # Only an email column is required (Contact Email / Email / E-mail, any case).
     global COLMAP
@@ -683,6 +706,9 @@ def open_sheet():
     local = ss.SheetSource.write_local(DATA_DIR / "sheet_cache" / f"{src.id[:12]}_{safe_tab}{tag}.csv", rows, header)
     CSV_FILE = local.resolve()
     SHEET, SHEET_QUEUE = src, queue
+    global PDATA, PHEADERS
+    PDATA, PHEADERS = pz.build_index(getattr(src, "grid", None) or [header] + [[r.get(h, "") for h in header]
+                                                                           for r in rows])
     print(f"Google Sheet: tab '{SHEET_TAB}', {len(rows)} rows. Working copy: {local.name}")
     emit("sheet_loaded", tab=SHEET_TAB, rows=len(rows), pending=len(remaining))
     if remaining:
@@ -2640,6 +2666,8 @@ def _main():
 
     acquire_lock()
     print_precheck(rows)
+    if API_MODE:
+        check_message_fields()
     if RETRY_ONLY:
         print("Retry failed only: rows whose Status is Failed or Skipped.")
 
