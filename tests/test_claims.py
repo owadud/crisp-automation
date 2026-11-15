@@ -380,3 +380,34 @@ def run_main(mod, capsys):
     p = rs.RunParser(dry_run=False)
     p.feed(out.encode("utf-8"))
     return out, p.finish(0)
+
+
+# ------------------------------------------------------------------ old tabs with no spare column
+def test_full_width_claims_tab_gets_spare_columns():
+    """Tabs made by v3.8-3.12 had exactly 7 columns; Google then refused appends with
+    "Range ('_crisp_claims'!H1) exceeds grid limits". Columns are added, nothing is lost."""
+    from fake_sheets import FakeAPIError, FakeWorksheet
+
+    class Narrow(FakeWorksheet):
+        col_count = 7
+        widen_ok = False
+
+        def add_cols(self, n):
+            self.added = getattr(self, "added", 0) + n
+            if self.widen_ok:
+                self.col_count += n
+
+        def append_rows(self, values, **kw):
+            if self.col_count <= len(cl.CLAIM_HEADER):
+                raise FakeAPIError(400, "Range ('_crisp_claims'!H1) exceeds grid limits. Max columns: 7")
+            return super().append_rows(values, **kw)
+
+    book = book_with()
+    old = Narrow(cl.CLAIMS_TAB, [cl.CLAIM_HEADER])
+    book.tabs[cl.CLAIMS_TAB] = old
+    a = runner(book, "A")                      # opening the tab widens it ...
+    assert old.added == 3
+    old.col_count = 7                          # ... and if that failed, the append retries once
+    old.widen_ok = True
+    assert a.claim_batch(EMAILS[:2]) == EMAILS[:2]
+    assert [r[1] for r in old.values[1:]] == EMAILS[:2]

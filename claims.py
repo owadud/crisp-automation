@@ -50,6 +50,7 @@ import send_control as sc  # noqa: E402
 
 CLAIMS_TAB = "_crisp_claims"
 RUNNERS_TAB = "_crisp_runners"
+SPARE_COLS = 3          # empty columns kept to the right of the log (Google's append needs room)
 CLAIM_HEADER = ["Time (Dhaka)", "Email", "State", "Runner", "Run", "Campaign", "Note"]
 RUNNER_HEADER = ["Run", "Runner", "Campaign", "Started (Dhaka)", "Last seen (Dhaka)", "State", "Sent", "Claimed"]
 
@@ -286,20 +287,40 @@ class Claims:
         except Exception:  # noqa: BLE001  (not found)
             if not create:
                 return None
-            ws = p.call(sh.add_worksheet, title=title, rows=1000, cols=len(header))
+            ws = p.call(sh.add_worksheet, title=title, rows=1000, cols=len(header) + SPARE_COLS)
             p.call(ws.update, values=[header], range_name="A1", value_input_option="RAW")
             try:
                 p.call(ws.hide)
             except Exception:  # noqa: BLE001
                 pass
         self._ws[title] = ws
+        self._widen(ws, header)
         return ws
+
+    def _widen(self, ws, header: list[str]) -> None:
+        """Google's append refuses a tab whose columns are all used ("H1 exceeds grid
+        limits"). Tabs made by older versions had exactly len(header) columns: add spares."""
+        cols = getattr(ws, "col_count", None)
+        if isinstance(cols, int) and cols < len(header) + SPARE_COLS:
+            try:
+                self.src.pacer.call(ws.add_cols, len(header) + SPARE_COLS - cols)
+            except Exception:  # noqa: BLE001  (retried on the next append)
+                pass
 
     def _append(self, title: str, header: list[str], rows: list[list[str]]) -> None:
         ws = self._tab(title, header, create=True)
         with self._write_lock:
-            self.src.pacer.call(ws.append_rows, rows, value_input_option="RAW",
-                                insert_data_option="INSERT_ROWS", table_range="A1")
+            try:
+                self.src.pacer.call(ws.append_rows, rows, value_input_option="RAW",
+                                    insert_data_option="INSERT_ROWS", table_range="A1")
+            except Exception as exc:  # noqa: BLE001
+                # A 400 "exceeds grid limits" means Google wrote nothing, so adding
+                # columns and trying once more cannot write the rows twice.
+                if "exceeds grid limits" not in str(exc):
+                    raise
+                self.src.pacer.call(ws.add_cols, SPARE_COLS)
+                self.src.pacer.call(ws.append_rows, rows, value_input_option="RAW",
+                                    insert_data_option="INSERT_ROWS", table_range="A1")
 
     def snapshot(self, create: bool = False) -> Snapshot:
         snap = Snapshot(now=self.clock(), expiry_min=self.expiry_min, campaign=self.campaign,
