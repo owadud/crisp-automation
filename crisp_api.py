@@ -39,6 +39,16 @@ class CrispAPIError(RuntimeError):
         self.uncertain = False      # a write may have happened (never repeat it automatically)
 
 
+LIMIT_WAITS = (15, 30, 60, 120, 180)      # seconds between tries while Crisp rate-limits (~6.5 min)
+
+
+def _retry_after(exc) -> int:
+    try:
+        return max(0, int(float((exc.headers or {}).get("Retry-After") or 0)))
+    except (TypeError, ValueError, AttributeError):
+        return 0
+
+
 def _reason(exc) -> str:
     """Crisp's own short reason from an error response, if any."""
     try:
@@ -115,7 +125,10 @@ class CrispAPI:
         data = json.dumps(body).encode("utf-8") if body is not None else None
         headers = dict(self._headers, **({"Content-Type": "application/json"} if data is not None else {}))
         delay = 2.0
-        for attempt in range(1, self.tries + 1):
+        limited = 0          # rate-limit waits so far (they do not use up the normal tries)
+        attempt = 0
+        while attempt < self.tries:
+            attempt += 1
             req = urllib.request.Request(url, data=data, headers=headers, method=method)
             self.requests += 1
             try:
@@ -132,9 +145,22 @@ class CrispAPI:
                 if code == 404:
                     raise CrispAPIError("not found", 404) from exc
                 if code in (420, 429):
-                    if attempt == self.tries:
-                        raise CrispAPIError("Crisp is limiting requests right now (daily quota or rate limit). "
-                                            "Try again later.", code) from exc
+                    # Crisp did nothing. A short burst limit passes within a minute or two,
+                    # so wait longer (Retry-After when Crisp gives it) instead of stopping the run.
+                    # A used-up daily quota does not pass: stop at once with a clear reason.
+                    if "quota" in reason.lower():
+                        raise CrispAPIError("The Crisp API token's daily request quota is used up "
+                                            f"[{reason}]. It resets daily; until then send with the Browser, "
+                                            "or try again tomorrow.", code) from exc
+                    if limited >= len(LIMIT_WAITS):
+                        raise CrispAPIError("Crisp is limiting requests right now (rate limit; waited about "
+                                            f"{sum(LIMIT_WAITS) // 60} minutes)." + (f" [{reason}]" if reason else "")
+                                            + " Try again later.", code) from exc
+                    wait = _retry_after(exc) or LIMIT_WAITS[limited]
+                    limited += 1
+                    attempt -= 1
+                    self.sleep(min(wait, 300))
+                    continue
                 elif code >= 500:
                     if write:
                         err = CrispAPIError(f"Crisp server error {code} while writing: it may or may not have "

@@ -159,3 +159,34 @@ def test_settings_save_test_and_refresh_through_the_api(win, dialogs, monkeypatc
     assert rows["c@x.com"]["status"] == cr.SENT                          # not in Crisp any more: unchanged
     assert "1 no longer in Crisp" in win.results_page.progress_text.text()
     assert not win.runner.is_running()                                   # no browser
+
+
+def _limited(code, reason, times, headers=None):
+    calls = []
+
+    def opener(req):
+        calls.append(req.full_url)
+        if len(calls) <= times:
+            raise urllib.error.HTTPError(req.full_url, code, "x", headers or {},
+                                         io.BytesIO(json.dumps({"reason": reason}).encode()))
+        return io.BytesIO(json.dumps({"data": {"name": "wpxpo"}}).encode())
+    return opener, calls
+
+
+def test_rate_limit_waits_longer_then_goes_on():
+    waits = []
+    opener, calls = _limited(429, "rate_limited", 5, headers={"Retry-After": "40"})
+    api = ca.CrispAPI(WID, "i", "k", opener=opener, sleep=waits.append)
+    assert api.website()["name"] == "wpxpo" and len(calls) == 6 and waits == [40] * 5
+    opener, calls = _limited(429, "", 99)
+    waits = []
+    with pytest.raises(ca.CrispAPIError, match="rate limit"):
+        ca.CrispAPI(WID, "i", "k", opener=opener, sleep=waits.append).website()
+    assert waits == list(ca.LIMIT_WAITS)
+
+
+def test_daily_quota_stops_at_once():
+    opener, calls = _limited(420, "quota_limit_exceeded", 99)
+    with pytest.raises(ca.CrispAPIError, match="daily request quota"):
+        ca.CrispAPI(WID, "i", "k", opener=opener, sleep=lambda s: None).website()
+    assert len(calls) == 1

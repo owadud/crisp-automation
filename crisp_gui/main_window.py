@@ -2144,8 +2144,8 @@ class MainWindow(QMainWindow):
         quietly, so each one gets a 'Read at' time within about 30 minutes."""
         cfg = self._api_config()
         if (not self.prefs.auto_check() or not crisp_api.configured(cfg) or self._api_checking
-                or (self.runner.is_running() and self._results_check)):
-            return
+                or self.runner.is_running() or self.queue_ctl.busy()):
+            return          # never while a campaign sends: it shares the token's request limits
         if self.results.sync_history(sc.read_history(self.history_file)):
             self.results.save()
         since = (datetime.now() - timedelta(days=AUTO_CHECK_DAYS)).strftime("%Y-%m-%d %H:%M")
