@@ -553,6 +553,37 @@ class Collapsible(QWidget):
         self.body.setVisible(on)
 
 
+def tone_colors(p: Palette, tone: str) -> tuple[str, str]:
+    """(text, background) for a chip tone: accent | neutral | success | warning | danger | muted."""
+    return {"accent": (p.accent, p.accent_soft), "success": (p.success, p.success_soft),
+            "warning": (p.warning, p.warning_soft), "danger": (p.danger, p.danger_soft),
+            "muted": (p.text_muted, p.surface_alt)}.get(tone, (p.text, p.selected))
+
+
+class StatChip(QFrame):
+    """A rounded '57 Sent' chip. .value and .title are the two labels."""
+
+    def __init__(self, tm: ThemeManager, title: str, tone: str = "neutral"):
+        super().__init__()
+        self.tone = tone
+        self.setObjectName("statChip")
+        self.setFixedHeight(24)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(10, 0, 10, 0)
+        lay.setSpacing(4)
+        self.value = QLabel("0")
+        self.title = QLabel(title)
+        lay.addWidget(self.value)
+        lay.addWidget(self.title)
+        tm.changed.connect(self._paint)
+        self._paint(tm.palette)
+
+    def _paint(self, p: Palette):
+        fg, bg = tone_colors(p, self.tone)
+        self.setStyleSheet(f"QFrame#statChip {{ background: {bg}; border-radius: 10px; }}"
+                           f"QLabel {{ color: {fg}; font-size: 12px; font-weight: 600; background: transparent; }}")
+
+
 class ChipDelegate(QStyledItemDelegate):
     """Paints a table cell as a small rounded status chip. The item's Qt.UserRole + 1
     holds the tone: accent | neutral | success | warning | danger | muted."""
@@ -567,9 +598,7 @@ class ChipDelegate(QStyledItemDelegate):
         text = str(index.data() or "")
         tone = index.data(self.TONE) or "neutral"
         p = self.tm.palette
-        fg, bg = {"accent": (p.accent, p.accent_soft), "success": (p.success, p.success_soft),
-                  "warning": (p.warning, p.warning_soft), "danger": (p.danger, p.danger_soft),
-                  "muted": (p.text_muted, p.surface_alt)}.get(tone, (p.text, p.selected))
+        fg, bg = tone_colors(p, tone)
         painter.save()
         if option.state & QStyle.State_Selected:          # same highlight as the rest of the row
             painter.fillRect(option.rect, option.palette.highlight())

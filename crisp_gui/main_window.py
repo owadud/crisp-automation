@@ -23,7 +23,7 @@ from PySide6.QtCore import QObject, QProcess, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QTableWidgetItem,
-    QApplication, QButtonGroup, QFileDialog, QFrame, QHBoxLayout, QLabel,
+    QApplication, QButtonGroup, QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
     QMainWindow, QMenu, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 
@@ -69,6 +69,8 @@ class _SheetSignal(QObject):
 
 # Stack order (navigate() takes these numbers).
 CAMPAIGNS, EDITOR, RUN, RESULTS, LISTS, TEAM, SETTINGS, RUNS = range(8)
+RUN_TONE = {"Sent": "success", "Dry run passed": "success", "Skipped (before Send)": "warning",
+            "Failed": "danger", "Taken by another runner": "muted"}
 CHIP_TONE = {cs.RUNNING: "accent", cs.QUEUED: "neutral", cs.FINISHED: "success", cs.SCHEDULED: "warning",
              cs.PAUSED: "warning", cs.FAILED: "danger", cs.UNCONFIRMED: "danger", cs.STOPPED: "muted",
              cs.READY: "muted", cs.DRAFT: "muted"}
@@ -258,8 +260,14 @@ class MainWindow(QMainWindow):
         for page in (self.campaigns_page, self.campaign, self.activity, self.results_page, self.lists_page,
                      self.team_page, self.settings, self.history):
             self.stack.addWidget(page)
-        self.run_rows = RowsModel(("#", "Email", "Result"), self)
+        self.run_rows = RowsModel(("#", "Email", "Version", "Subject", "Result", "Time"), self,
+                                  tone_of=lambda row: RUN_TONE.get(row[4], "accent"))
+        self._run_pending = False
         self.activity.rows.setModel(self.run_rows)
+        head = self.activity.rows.horizontalHeader()
+        head.setStretchLastSection(False)
+        for col in range(len(self.run_rows.columns)):
+            head.setSectionResizeMode(col, QHeaderView.Stretch if col in (1, 3) else QHeaderView.ResizeToContents)
         self.list_rows = RowsModel(("Row", "Email", "Name used", "Subject", "Shortcut", "Segment", "Reference",
                                     "Action"), self)
         self.lists_page.table.setModel(self.list_rows)
@@ -1481,6 +1489,7 @@ class MainWindow(QMainWindow):
         self.activity.unconfirmed_banner.hide()
         self.activity.retry_banner.hide()
         self.run_rows.set_rows([])
+        self._run_pending = False
         self.activity.rows_empty.show()
         self.prefs.set_recovery(email="", csv=v["csv"], started=f"{datetime.now():%Y-%m-%d %H:%M}",
                                 mode="dry run" if dry else "real sending")
@@ -1617,6 +1626,7 @@ class MainWindow(QMainWindow):
             a.percent.setText("0%")
             a.s_done.value.setText("0")
             a.s_failed.value.setText("0")
+            a.s_skipped.value.setText("0")
             a.s_remaining.value.setText("—")
             self._update_run_metrics()
             return
@@ -1631,12 +1641,16 @@ class MainWindow(QMainWindow):
             step = "Run stopped"
         elif phase == rs.STOPPING:
             step = f"Stopping after this recipient · {s.step}" if s.position else "Stopping…"
+        elif phase == rs.RUNNING and s.position and s.campaign:
+            step = f"Running “{s.campaign}”"                    # the live step is on the recipient's row
         a.step.setText(step)
         self._sync_run_rows(s)
 
         if s.position and s.eligible:
             who = s.current_email + (f" ({s.current_name})" if s.current_name else "")
-            detail = f"Recipient {s.position} of {s.eligible}: {who}"
+            version = s.variants.get(s.current_email, ("", ""))[0]
+            detail = (f"{'Dry run' if s.dry_run else 'REAL SENDING'} · Recipient {s.position} of {s.eligible}: "
+                      f"{who}" + (f" · {version}" if version else ""))
         elif phase == rs.WAITING_LOGIN:
             detail = "Sign in to Crisp in the Chromium window. The run continues automatically."
         elif phase == rs.STARTING:
@@ -1658,6 +1672,7 @@ class MainWindow(QMainWindow):
         a.s_done.title.setText("Passed (dry run)" if s.dry_run else "Sent")
         a.s_done.value.setText(str(s.completed if s.dry_run else s.sent_confirmed))
         a.s_failed.value.setText(str(s.failed))
+        a.s_skipped.value.setText(str(s.skipped))
         remaining = max(0, s.eligible - s.processed) if s.eligible else 0
         a.s_remaining.value.setText(str(remaining) if s.eligible else "—")
 
@@ -2742,17 +2757,32 @@ class MainWindow(QMainWindow):
                    "failed": "Failed", "other runner": "Taken by another runner"}
 
     def _sync_run_rows(self, s):
-        """Append new per-recipient results to the Run table (fast for thousands)."""
-        have = len(self.run_rows.rows)
+        """Append new per-recipient results to the Run table (fast for thousands). The last row
+        is the recipient being worked on right now, with its current step."""
+        model = self.run_rows
+        if self._run_pending:
+            model.pop()
+            self._run_pending = False
+        have = len(model.rows)
         if len(s.history) < have:
-            self.run_rows.set_rows([])
+            model.set_rows([])
             have = 0
-        new = [(str(have + i + 1), email, self.RESULT_TEXT.get(outcome, outcome))
+        now = datetime.now().strftime("%H:%M:%S")
+
+        def row(n, email, result):
+            version, subject = s.variants.get(email, ("", ""))
+            return (str(n), email, version, subject, result, now)
+        new = [row(have + i + 1, email, self.RESULT_TEXT.get(outcome, outcome))
                for i, (email, outcome) in enumerate(s.history[have:])]
         if new:
-            self.run_rows.append(new)
+            model.append(new)
+        done = {email for email, _ in s.history}
+        if self.runner.is_running() and s.current_email and s.current_email not in done:
+            model.append([row(len(model.rows) + 1, s.current_email, (s.step or "Working") + "…")])
+            self._run_pending = True
+        if new or self._run_pending:
             self.activity.rows.scrollToBottom()
-        self.activity.rows_empty.setVisible(not self.run_rows.rows)
+        self.activity.rows_empty.setVisible(not model.rows)
 
     def refresh_lists(self):
         lp = self.lists_page
@@ -2935,13 +2965,14 @@ class MainWindow(QMainWindow):
             a.eta.setText("")
             return
         if s.paused:
-            a.eta.setText(f"Paused after {s.paused_after}. Press Resume to continue with the next recipient.")
+            a.eta.setText("Paused")
+            a.recipient.setText(f"Paused after {s.paused_after}. Press Resume to continue with the next recipient.")
             return
         seconds = rs.eta_seconds(s, time.monotonic())
         finish = datetime.now() + timedelta(seconds=seconds)
         mins = max(1, round(seconds / 60))
-        text = (f"{s.processed} of {s.eligible} done · ETA {finish:%H:%M} (about {mins} min)"
-                if seconds > 0 else f"{s.processed} of {s.eligible} done")
+        text = (f"about {mins} min left · done by {finish:%H:%M}" if seconds > 0
+                else f"{s.processed} of {s.eligible} done")
         a.eta.setText(text)
 
     def _close_run_log(self):

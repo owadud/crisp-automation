@@ -19,7 +19,7 @@ from .message_editor import MessageEditor
 from .theme import ThemeManager
 from .widgets import (
     Banner, Card, ChipDelegate, Collapsible, Field, FlowRow, KeyValueList, MetricCard, ResponsiveRow,
-    SegmentedControl, SettingRow, SettingsGroup, ToggleSwitch, button, label,
+    SegmentedControl, SettingRow, SettingsGroup, StatChip, ToggleSwitch, button, label,
 )
 
 
@@ -52,19 +52,6 @@ class Page(QScrollArea):
 
     def finish(self):
         self.layout_.addStretch(1)
-
-
-class MiniStat(QWidget):
-    def __init__(self, title: str):
-        super().__init__()
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(2)
-        self.value = label("0", "metricValue")
-        self.value.setStyleSheet("font-size: 20px;")
-        self.title = label(title, "metricLabel")
-        lay.addWidget(self.value)
-        lay.addWidget(self.title)
 
 
 # =====================================================================
@@ -647,9 +634,15 @@ class ActivityPage(Page):
         self.stop.setEnabled(False)
         card.head_actions.addWidget(self.stop)
         self.step = label("Not running", "bigStep", wrap=True)
+        self.eta = label("", "muted")
+        self.eta.setAlignment(Qt.AlignRight | Qt.AlignTop)
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        head.addWidget(self.step, 1)
+        head.addWidget(self.eta, 0, Qt.AlignTop)
+        card.body.addLayout(head)
         self.recipient = label("Recipient status appears here once a run starts.", "muted", wrap=True)
         self.recipient.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        card.body.addWidget(self.step)
         card.body.addWidget(self.recipient)
         prow = QHBoxLayout()
         prow.setSpacing(12)
@@ -662,14 +655,13 @@ class ActivityPage(Page):
         prow.addWidget(self.progress, 1)
         prow.addWidget(self.percent)
         card.body.addLayout(prow)
-        self.eta = label("", "faint", wrap=True)
-        card.body.addWidget(self.eta)
         stats = QHBoxLayout()
-        stats.setSpacing(36)
-        self.s_done = MiniStat("Sent")
-        self.s_failed = MiniStat("Failed")
-        self.s_remaining = MiniStat("Remaining")
-        for s in (self.s_done, self.s_failed, self.s_remaining):
+        stats.setSpacing(8)
+        self.s_done = StatChip(tm, "Sent", "success")
+        self.s_failed = StatChip(tm, "Failed", "danger")
+        self.s_skipped = StatChip(tm, "Skipped", "warning")
+        self.s_remaining = StatChip(tm, "Remaining")
+        for s in (self.s_done, self.s_failed, self.s_skipped, self.s_remaining):
             stats.addWidget(s)
         stats.addStretch()
         card.body.addLayout(stats)
@@ -685,6 +677,9 @@ class ActivityPage(Page):
         self.rows.horizontalHeader().setStretchLastSection(True)
         self.rows.setMinimumHeight(180)
         self.rows.setWordWrap(False)
+        self.rows.setShowGrid(False)
+        self.rows.verticalHeader().setDefaultSectionSize(36)
+        self.rows.setItemDelegateForColumn(4, ChipDelegate(tm, self.rows))
         rows_card.body.addWidget(self.rows)
         self.rows_empty = label("Each recipient appears here with its result as the run goes.", "faint", wrap=True)
         rows_card.body.addWidget(self.rows_empty)

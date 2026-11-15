@@ -86,6 +86,7 @@ class RunState:
     summary_seen: bool = False
     no_eligible: bool = False
     history: list = field(default_factory=list)  # (email, outcome)
+    variants: dict = field(default_factory=dict)  # email -> (version, subject) from "variant" events
     health: list = field(default_factory=list)   # (check, ok, detail) from "Check Crisp"
     crisp_lists: dict = field(default_factory=dict)  # "Check Crisp": {"subjects": [...], "shortcuts": [...]}
     # pause / ETA
@@ -392,6 +393,8 @@ class RunParser:
         elif kind == "error":
             s.last_error = str(ev.get("message") or "Error")
             s.step = "Error"
+        elif kind == "variant":
+            s.variants[str(ev.get("email") or "")] = (str(ev.get("version") or ""), str(ev.get("subject") or ""))
         elif kind == "crisp_lists":
             for key in ("subjects", "shortcuts"):
                 if isinstance(ev.get(key), list):

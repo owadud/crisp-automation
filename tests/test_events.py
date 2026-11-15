@@ -71,13 +71,14 @@ def test_main_emits_the_expected_events(load_agent, monkeypatch, capsys):
     ev = [e for e in events_of(capsys.readouterr().out) if e["event"] != "waiting"]
     assert [e["event"] for e in ev] == [
         "run_start", "eligible", "logged_in",
-        "recipient", "success",
-        "recipient", "skipped",
-        "recipient", "success",
+        "recipient", "variant", "success",
+        "recipient", "variant", "skipped",
+        "recipient", "variant", "success",
         "summary", "retry"]
     assert ev[1] == {"event": "eligible", "count": 3}
-    assert ev[5]["email"] == "b@x.com" and ev[5]["row"] == 2
-    assert ev[6] == {"event": "skipped", "email": "b@x.com", "error": "RuntimeError: Subject not found"}
+    assert ev[4]["email"] == "a@x.com" and "version" in ev[4] and "subject" in ev[4]   # Run table columns
+    assert ev[6]["email"] == "b@x.com" and ev[6]["row"] == 2
+    assert ev[8] == {"event": "skipped", "email": "b@x.com", "error": "RuntimeError: Subject not found"}
     assert ev[-2] == {"event": "summary", "completed": 2, "failed": 0, "skipped": 1}
 
 

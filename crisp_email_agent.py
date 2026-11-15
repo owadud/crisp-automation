@@ -2801,7 +2801,7 @@ def _main():
                 print(f"  Shortcut: {SHORTCUT} ({SHORTCUT_VERSION})")
                 if len(set(SUBJECTS)) > 1:
                     print(f"  Subject: {SUBJECT}")
-                emit("variant", email=email, shortcut=SHORTCUT, version=SHORTCUT_VERSION)
+            emit("variant", email=email, shortcut=SHORTCUT, version=SHORTCUT_VERSION, subject=SUBJECT)
 
             try:
 

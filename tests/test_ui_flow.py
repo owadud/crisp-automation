@@ -72,7 +72,7 @@ def test_main_flow_choose_check_dry_run_then_send(win, dialogs, monkeypatch):
     QTest.mouseClick(win.run_button, Qt.LeftButton)
     s = run_to_end(win, 30)
     assert s.phase == rs.FINISHED and win.stack.currentIndex() == RUN
-    assert win.run_rows.rowCount() == 3 and win.run_rows.rows[0][2] == "Dry run passed"
+    assert win.run_rows.rowCount() == 3 and win.run_rows.rows[0][4] == "Dry run passed"
 
     # Live: the switch says LIVE, the button is the danger style, the confirmation is exact
     win.navigate(EDITOR)
