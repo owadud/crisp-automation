@@ -1079,6 +1079,7 @@ def open_new_conversation(page):
     relative to Filters.
     """
 
+    dismiss_crisp_tips(page)
     selectors = [
         'button[aria-label*="new" i]',
         'button[aria-label*="create" i]',
@@ -1369,7 +1370,29 @@ def dialog_closed(page, timeout_ms=8000):
         return False
 
 
+def dismiss_crisp_tips(page) -> bool:
+    """Crisp now and then shows a 'new feature' tip (e.g. 'Batch actions ... Got it').
+    While it is open, clicks such as Create Conversation are ignored, so close it first."""
+    closed = False
+    for loc in (page.get_by_role("button", name=re.compile(r"^\s*got it\s*$", re.I)),
+                page.get_by_text(re.compile(r"^\s*got it\s*$", re.I))):
+        try:
+            for i in range(min(loc.count(), 5)):
+                b = loc.nth(i)
+                if b.is_visible():
+                    b.click(timeout=2000)
+                    closed = True
+        except Exception:
+            pass
+        if closed:
+            print("  Closed a Crisp tip ('Got it') that was blocking clicks.", flush=True)
+            page.wait_for_timeout(500)
+            break
+    return closed
+
+
 def click_create_conversation(page):
+    dismiss_crisp_tips(page)
     create_button = page.get_by_role(
         "button",
         name=re.compile(r"Create Conversation", re.I)
