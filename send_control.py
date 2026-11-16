@@ -327,13 +327,12 @@ def version_status(shortcut: str, subject: str, lists: dict, api: bool = False) 
     shortcuts = {norm_text(s).lstrip("!") for s in lists.get("shortcuts") or []}
     if not subjects and not shortcuts:
         return "Not checked", None
-    problems = []
-    if subjects and norm_text(subject) not in subjects:
-        problems.append("subject not saved in Crisp")
+    # A subject that is not in Crisp's list is fine: Crisp takes a typed subject and adds it to the list.
     if not api and shortcuts and norm_text(shortcut).lstrip("!") not in shortcuts:
-        problems.append("shortcut not seen")
-    text = "; ".join(problems)
-    return ("Found" if not problems else text[:1].upper() + text[1:]), not problems
+        return "Shortcut not seen", False
+    if subjects and norm_text(subject) not in subjects:
+        return "New subject (typed in)", True
+    return "Found", True
 
 
 def versions_to_text(rows) -> tuple[str, str, str]:

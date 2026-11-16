@@ -142,6 +142,7 @@ def test_version_table_round_trips_through_the_saved_texts():
 def test_version_status_from_the_last_check():
     lists = {"subjects": ["Hi there"], "shortcuts": ["!a"]}
     assert sc.version_status("!a", "hi  there", lists) == ("Found", True)
-    assert sc.version_status("b", "Other", lists) == ("Subject not saved in Crisp; shortcut not seen", False)
+    assert sc.version_status("b", "Other", lists) == ("Shortcut not seen", False)
+    assert sc.version_status("!a", "Brand new subject", lists) == ("New subject (typed in)", True)   # Crisp takes it
     assert sc.version_status("b", "Hi there", lists, api=True) == ("Found", True)     # API: no shortcut
     assert sc.version_status("a", "x", {}) == ("Not checked", None)

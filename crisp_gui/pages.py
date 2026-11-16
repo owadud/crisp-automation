@@ -224,8 +224,8 @@ class VersionTable(QWidget):
         self.table.blockSignals(False)
         self.table.setColumnHidden(self.SHORTCUT, api)
         self.hint.setText("One row per subject. The message versions are the texts below (--- between them)."
-                          if api else "One row per version. Recipients are split evenly between the rows. The "
-                          "subject must exactly match a saved subject in Crisp's subject dropdown.")
+                          if api else "One row per version. Recipients are split evenly between the rows. A subject "
+                          "that is not in Crisp's list yet is typed in, and Crisp adds it to the list.")
 
     def mirror(self):
         """Show the hidden fields' check result under the table: an error first, else the A/B summary."""
@@ -239,7 +239,7 @@ class VersionTable(QWidget):
             if kind and text and kind not in found:
                 found[kind] = f"{what}: {text}" if text == "Required." else text
         if "error" not in found and self.any_missing():
-            found["error"] = ("A version is not in Crisp (see In Crisp). Fix the subject or shortcut, or click "
+            found["error"] = ("A shortcut is not in Crisp (see In Crisp). Fix its name, or click "
                               "Check in Crisp again if you just saved it there.")
         kind = "error" if "error" in found else "ok" if "ok" in found else ""
         if kind == "ok" and found["ok"].startswith("A/B test"):   # the rows already show each version
@@ -448,7 +448,7 @@ class CampaignPage(Page):
         self.campaign_name = Field("Campaign name", "Saved in history: one person is never emailed twice in "
                                    "the same campaign. Blank = the subject.", placeholder="Same as the subject")
         card.body.addWidget(self.campaign_name)
-        self.subject = Field("Email subject(s)", "Must exactly match a saved subject in Crisp's subject dropdown. "
+        self.subject = Field("Email subject(s)", "Any subject: one not in Crisp's list yet is typed in. "
                              "For an A/B test, enter several separated by | (one per shortcut, or several "
                              "with one shortcut): recipients are split evenly between them.",
                              placeholder="e.g. Subject A | Subject B")

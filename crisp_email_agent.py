@@ -1287,10 +1287,10 @@ def select_subject_from_dropdown(page):
             page.wait_for_timeout(900)
 
             idx, row, rows = _find_subject_row(page)
-            if row is None and attempt >= 2:
-                # Some Crisp builds only list the subject after typing.
-                # Type the FULL subject (never a prefix) and wait until the
-                # field really contains all of it before looking at the menu.
+            if row is None:
+                # Not in Crisp's list of earlier subjects: type it. Crisp then offers the typed
+                # subject as a row (and adds it to its list). Type the FULL subject (never a
+                # prefix) and wait until the field really contains all of it before looking.
                 field.press_sequentially(full_subject, delay=45)
                 for _ in range(20):
                     if _subject_is_full(field):
