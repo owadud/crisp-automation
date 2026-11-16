@@ -184,6 +184,23 @@ def html_to_text(page: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+def fill_mail_tags(page: str, cfg: dict) -> tuple[str, bool]:
+    """{{ url.unsubscribe }} (as Crisp and Mailchimp write it) -> a ready 'unsubscribe' email to you.
+    Returns (page, True when the email already had its own unsubscribe link)."""
+    import personal
+    target = (cfg.get("reply_to") or cfg.get("email") or "").strip()
+    link = f"mailto:{target}?subject=unsubscribe"
+    found = False
+
+    def fill(m):
+        nonlocal found
+        if m.group(1).strip().lower() in personal.MAIL_TAGS:
+            found = True
+            return link
+        return m.group(0)
+    return re.sub(r"\{\{\s*([^{}]*?)\s*\}\}", fill, page), found
+
+
 def _html_with_unsubscribe(page: str) -> str:
     line = ('<p style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#888888;margin-top:24px">'
             + html.escape(UNSUBSCRIBE_LINE, quote=False) + "</p>")
@@ -216,7 +233,8 @@ def build_message(cfg: dict, to: str, subject: str, text: str, to_name: str = ""
     if cfg.get("unsubscribe", True):
         msg["List-Unsubscribe"] = f"<mailto:{reply_to or sender}?subject=unsubscribe>"
     if pasted_html:                       # HTML code pasted in the editor: sent exactly as written
-        page = _html_with_unsubscribe(body) if cfg.get("unsubscribe", True) else body
+        body, own_link = fill_mail_tags(body, cfg)
+        page = _html_with_unsubscribe(body) if cfg.get("unsubscribe", True) and not own_link else body
         plain = html_to_text(body) + ("\n\n" + UNSUBSCRIBE_LINE if cfg.get("unsubscribe", True) else "")
         msg.set_content(plain)
         msg.add_alternative(_tracked(cfg, page, track_id), subtype="html")

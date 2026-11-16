@@ -156,7 +156,11 @@ def _test(cond, info, smart) -> bool:
 # ------------------------------------------------------------------ render / check
 _HTML_START = re.compile(r"\s*(<!--.*?-->\s*)*<(!doctype|html|head|body|table|div|p|center|span|style|meta|h[1-6]|img|a)\b",
                          re.I | re.S)
-_CODE_BLOCK = re.compile(r"<(style|script)\b.*?</\1\s*>", re.I | re.S)
+_CODE_BLOCK = re.compile(r"<(style|script)\b.*?</\1\s*>|\{\{.*?\}\}", re.I | re.S)
+# Tags written {{ like.this }} (Crisp, Mailchimp ...) are not this app's fields. These are filled when
+# the email is sent from your own account; any other one is reported before sending.
+MAIL_TAGS = {"url.unsubscribe", "unsubscribe", "unsubscribe_url", "unsub"}
+_DOUBLE = re.compile(r"\{\{\s*([^{}]*?)\s*\}\}")
 
 
 def is_html(text) -> bool:
@@ -165,7 +169,8 @@ def is_html(text) -> bool:
 
 
 def _hide_code(text: str) -> tuple[str, list[str]]:
-    """<style>/<script> blocks are full of { } that are CSS, not fields: set them aside."""
+    """<style>/<script> blocks are full of { } that are CSS, not fields: set them aside, and
+    {{ mail tags }} too (they are filled when the email is sent)."""
     kept = []
 
     def keep(m):
@@ -217,6 +222,10 @@ def check(texts, headers) -> list[str]:
     problems = []
     for n, text in enumerate(texts, start=1):
         where = f"Message {n}: " if len(texts) > 1 else ""
+        for tag in _DOUBLE.findall(str(text or "")):
+            if tag.strip().lower() not in MAIL_TAGS:
+                problems.append(f"{where}{{{{ {tag} }}}} can't be filled by this app. For names use {{first_name}} "
+                                "or {name}; for the unsubscribe link use {{ url.unsubscribe }}.")
         body = _BUNDLE.sub("", _hide_code(str(text or ""))[0])
         opens, closes = len(re.findall(r"\{\s*if\s", body, re.I)), len(re.findall(r"\{\s*endif\s*\}", body, re.I))
         if opens != closes:

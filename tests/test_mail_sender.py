@@ -218,3 +218,15 @@ def test_tracked_campaign_writes_who_got_which_id(agent, tmp_path, monkeypatch):
     (tid, rec), = ledger.items()
     assert (rec["Email"], rec["Campaign"]) == ("ann@x.com", "Promo")
     assert f'{url}?i={tid}' in sent[0].get_body(("html",)).get_content()
+
+
+def test_crisp_style_unsubscribe_tag_becomes_a_link():
+    import personal as pz
+    page = ('<html><body><p>Hi {first_name}</p><a href="{{ url.unsubscribe }}">Unsubscribe</a></body></html>')
+    assert pz.check([page], ["Full Name"]) == []                       # not "url.unsubscribe is not a column"
+    assert "can't be filled" in pz.check(["<p>{{ contact.first }}</p>"], [])[0]
+    body, _ = pz.render(page, "Ann Lee", pz.SAMPLE)
+    msg = ms.build_message(dict(CFG, reply_to="support@x.com"), "ann@x.com", "Offer", body)
+    html_part = list(msg.iter_parts())[1].get_content()
+    assert 'href="mailto:support@x.com?subject=unsubscribe"' in html_part
+    assert "take you off the list" not in html_part                      # its own link: no second one

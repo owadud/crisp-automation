@@ -12,6 +12,7 @@ textChanged / setPlaceholderText.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 import threading
@@ -54,6 +55,26 @@ FIELDS = (
 SEPARATOR = "\n---\n"
 QUOTE = QTextFormat.UserProperty + 1
 SAMPLE_NAME = "Ann Lee"
+
+def _web_view():
+    """A real browser view for the preview (same engine as Chrome), when the app loaded it at start.
+    Tests and computers without it use Qt's simple HTML viewer instead."""
+    if "PySide6.QtWebEngineWidgets" not in sys.modules or os.environ.get("QT_QPA_PLATFORM") == "offscreen":
+        return None
+    try:
+        from PySide6.QtWebEngineCore import QWebEnginePage
+        from PySide6.QtWebEngineWidgets import QWebEngineView
+    except Exception:  # noqa: BLE001
+        return None
+
+    class Page(QWebEnginePage):
+        def acceptNavigationRequest(self, url, kind, main_frame):   # noqa: N802 (Qt name)
+            return kind != QWebEnginePage.NavigationType.NavigationTypeLinkClicked   # links don't leave the preview
+
+    view = QWebEngineView()
+    view.setPage(Page(view))
+    return view
+
 
 # Tests answer the link / image prompts through this: hook(title) -> text or None.
 PROMPT_HOOK = None
@@ -453,14 +474,30 @@ class MessageEditor(QWidget):
         hl.addWidget(self.preview_title)
         hl.addStretch()
         pv.addWidget(head)
-        self.preview = QTextBrowser()
+        self.phone = QToolButton()
+        self.phone.setObjectName("toolText")
+        self.phone.setText("Phone width")
+        self.phone.setCheckable(True)
+        self.phone.setToolTip("See the email as on a phone (375 pixels wide)")
+        self.phone.setCursor(Qt.PointingHandCursor)
+        self.phone.toggled.connect(self._phone_width)
+        hl.addWidget(self.phone)
+        self.web = _web_view()
+        if self.web is not None:
+            self.preview = self.web
+        else:
+            self.preview = QTextBrowser()
+            self.preview.setDocument(_ImageDoc(self.loader, self.preview))
+            self.preview.setFrameShape(QFrame.NoFrame)
+            self.preview.setOpenExternalLinks(False)
+            self.preview.setOpenLinks(False)
+            self.preview.document().setDocumentMargin(16)
         self.preview.setObjectName("messagePreview")
-        self.preview.setDocument(_ImageDoc(self.loader, self.preview))
-        self.preview.setFrameShape(QFrame.NoFrame)
-        self.preview.setOpenExternalLinks(False)
-        self.preview.setOpenLinks(False)
-        self.preview.document().setDocumentMargin(16)
-        pv.addWidget(self.preview, 1)
+        self._page = ""
+        prow = QHBoxLayout()
+        prow.setContentsMargins(0, 0, 0, 0)
+        prow.addWidget(self.preview, 1)
+        pv.addLayout(prow, 1)
         self.split.addWidget(self.preview_box)
         self.split.setStretchFactor(0, 3)
         self.split.setStretchFactor(1, 2)
@@ -503,6 +540,7 @@ class MessageEditor(QWidget):
         want = Qt.Vertical if self.width() < 820 else Qt.Horizontal
         if self.split.orientation() != want:
             self.split.setOrientation(want)
+            self._size_preview()
 
     # ---------------------------------------------------------- QPlainTextEdit-like API
     def toPlainText(self) -> str:   # noqa: N802 (Qt name)
@@ -556,6 +594,14 @@ class MessageEditor(QWidget):
         self.toolbar.setVisible(self.mode == "visual")
         self.html.setVisible(self.mode == "html")
         self._loading = False
+        self._size_preview()
+
+    def _size_preview(self) -> None:
+        """HTML emails are usually 600 px wide: give the preview room for the desktop layout."""
+        total = sum(self.split.sizes())
+        if self.split.orientation() == Qt.Horizontal and total > 0:
+            want = 660 if self.mode == "html" else int(total * 0.4)
+            self.split.setSizes([max(300, total - want), min(want, total - 300)])
 
     def _rebuild_tabs(self, index: int) -> None:
         self.tabs.blockSignals(True)
@@ -654,13 +700,26 @@ class MessageEditor(QWidget):
         text = self.versions[self.current] if self.current < len(self.versions) else ""
         filled = pz.render(text, SAMPLE_NAME, pz.SAMPLE)[0] if text.strip() else ""
         page = filled if self.mode == "html" else mail_sender.to_html(filled)
-        bar = self.preview.verticalScrollBar().value()
-        self.preview.setHtml(page if filled else
-                             '<p style="color:#9a9aa5">The email appears here as you write.</p>')
-        self.preview.verticalScrollBar().setValue(bar)
+        page = page if filled else '<p style="color:#9a9aa5;font-family:Arial">The email appears here as you write.</p>'
+        if page == self._page:
+            return
+        self._page = page
+        if self.web is not None:
+            self.web.setHtml(page, QUrl("https://preview.invalid/"))   # images load from the web
+        else:
+            bar = self.preview.verticalScrollBar().value()
+            self.preview.setHtml(page)
+            self.preview.verticalScrollBar().setValue(bar)
         n = len(self.versions)
         self.preview_title.setText(f"Preview · Version {self.current + 1} · as {SAMPLE_NAME} sees it" if n > 1
                                    else f"Preview · as {SAMPLE_NAME} sees it")
+
+    def preview_text(self) -> str:
+        """What the preview shows, as text (tests, and a quick check)."""
+        return mail_sender.html_to_text(self._page)
+
+    def _phone_width(self, on: bool) -> None:
+        self.preview.setMaximumWidth(375 if on else 16777215)
 
     def _toggle_preview(self, on: bool) -> None:
         self.preview_box.setVisible(on)
@@ -669,7 +728,7 @@ class MessageEditor(QWidget):
             self._refresh_preview()
 
     def _image_arrived(self, url: str, img: QImage) -> None:
-        for view in (self.visual, self.preview):
+        for view in (self.visual,) + (() if self.web is not None else (self.preview,)):
             doc = view.document()
             doc.addResource(QTextDocument.ImageResource, QUrl(url), img)
             doc.markContentsDirty(0, doc.characterCount())

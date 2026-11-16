@@ -53,6 +53,11 @@ def main() -> int:
         except Exception:  # noqa: BLE001
             pass
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    try:      # the email preview shows HTML like a real browser; Qt wants this loaded before the app
+        import PySide6.QtWebEngineWidgets  # noqa: F401
+        QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
+    except Exception:  # noqa: BLE001  (no web engine: the preview falls back to a simple viewer)
+        pass
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName("CrispAutomation")

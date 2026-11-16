@@ -152,7 +152,7 @@ def test_editor_html_mode_only_with_my_email(app, dialogs):
     ed = me.MessageEditor()
     ed.setPlainText(page)
     assert ed.mode == "html" and ed.toPlainText() == page and ed.html.isVisibleTo(ed)
-    assert "Hi Ann" in ed.preview.toPlainText()
+    assert "Hi Ann" in ed.preview_text()
     ed.set_html_allowed(False)                                # Crisp API: a clear warning
     assert ed.note.isVisibleTo(ed) and "My email" in ed.note.text()
     ed.set_html_allowed(True)
