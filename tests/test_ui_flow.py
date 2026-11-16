@@ -317,3 +317,27 @@ def test_run_both_at_once_starts_the_queue_in_a_second_browser(win, dialogs, mon
     assert wait_until(lambda: not win.queue_ctl.busy() and not win.runner.is_running(), 30)
     assert store.get(a.id).status == cs.FINISHED
     run_to_end(win)
+
+
+def test_run_this_one_too_from_the_editor(win, dialogs, monkeypatch):
+    monkeypatch.setenv("FAKE_STEP_DELAY", "0.2")
+    store = win.campaign_store
+    base = {"source": "csv", "csv": str(win._csv), "subject": "S", "shortcut": "!a", "segment": "g",
+            "reference": "Shahriar"}
+    two, waiting = store.add("Two", base), store.add("Waiting", base)
+    store.enqueue(waiting.id)                                            # must NOT start with it
+    win.prefs.set_parallel(1)
+    QTest.mouseClick(win.run_button, Qt.LeftButton)
+    assert wait_until(lambda: win.runner.is_running(), 5)
+    assert win.campaign.start.text() == "Running…" and not win.campaign.start.isEnabled()
+    win.refresh_campaigns(select=two.id)
+    win.open_campaign()
+    start = win.campaign.start
+    assert start.text() == "Run this one too" and start.isEnabled()
+    QTest.mouseClick(start, Qt.LeftButton)                               # "Run 2 at the same time": yes
+    assert "Run at the same time?" in dialogs["seen"] and win.prefs.parallel() == 2
+    assert wait_until(lambda: store.get(two.id).status == cs.RUNNING, 10)
+    assert win.queue_ctl.slot_of(two.id) == 1 and store.get(waiting.id).status == cs.QUEUED
+    assert wait_until(lambda: not win.queue_ctl.busy() and not win.runner.is_running(), 30)
+    assert store.get(two.id).status == cs.FINISHED and store.get(waiting.id).status == cs.QUEUED
+    run_to_end(win)

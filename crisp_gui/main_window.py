@@ -418,7 +418,7 @@ class MainWindow(QMainWindow):
         c.skip_failed.toggled.connect(lambda _c: self._update_summary())
         c.reload.clicked.connect(self.refresh_csv)
         c.reset.clicked.connect(self.reset_campaign)
-        c.start.clicked.connect(self.start_run)
+        c.start.clicked.connect(self._editor_start)
         c.dry.toggled.connect(self._dry_toggled)
         for key, field in c.fields().items():
             field.edit.textChanged.connect(lambda value, k=key: self._field_changed(k, value))
@@ -1395,9 +1395,12 @@ class MainWindow(QMainWindow):
         b.setToolTip("" if running else f"Starts the campaign open in the editor"
                      + (f": '{editing.name}'" if editing else "") + ".")
         c = self.campaign.start
-        c.setText(b.text() if not running else "Running…")
-        c.setEnabled(not running)
-        c.setObjectName(b.objectName() if not running else "primary")
+        busy = running or self.queue_ctl.busy()
+        alongside = busy and not self._editor_view_only()      # another campaign is sending
+        c.setText("Run this one too" if alongside else b.text() if not running else "Running…")
+        c.setToolTip("Starts this campaign at the same time, in its own Chromium window." if alongside else "")
+        c.setEnabled(alongside or not running)
+        c.setObjectName("primary" if (alongside or running) else b.objectName())
         c.setIcon(icon("play" if self.dry_run() else "send", p.accent_text))
         c.style().unpolish(c)
         c.style().polish(c)
@@ -1605,15 +1608,45 @@ class MainWindow(QMainWindow):
     def _running_campaign_ids(self) -> set[str]:
         return self.queue_ctl.running_ids()
 
+    def _editor_view_only(self) -> bool:
+        """The campaign open in the editor is the one sending right now."""
+        cid = self.prefs.editing_campaign()
+        return ((self.runner.is_running() and self._editor_runs)
+                or (bool(cid) and cid in self._running_campaign_ids()))
+
+    def _editor_start(self):
+        if self.runner.is_running() or self.queue_ctl.busy():
+            self.run_alongside()
+        else:
+            self.start_run()
+
+    def run_alongside(self):
+        """Start the campaign open in the editor while another one is sending: save it,
+        then run just this one in a free Chromium window (asks before opening one more)."""
+        self.save_campaign()
+        c = self.campaign_store.get(self.prefs.editing_campaign())
+        if c is None:
+            return
+        if c.missing():
+            W.inform(self, "Fill in the campaign first", "Missing: " + ", ".join(c.missing()) + ".")
+            return
+        if c.status in (cs.RUNNING, cs.PAUSED, cs.UNCONFIRMED):
+            W.inform(self, "Not possible", f"'{c.name}' is {cs.STATUS_LABELS[c.status].lower()}.")
+            return
+        self.campaign_store.run_next(c.id)
+        if self.queue_ctl.active:                # the queue is running: it starts when a browser is free
+            self.queue_ctl.fill()
+            self.refresh_campaigns(select=c.id)
+            return
+        self.run_queue(only=c.id)
+
     def _update_editor_lock(self):
         """While campaigns run, any OTHER campaign can be opened and edited. Only the one that
         is running is view-only (a run keeps the settings it started with). The Dry run / Real
         sending switch stays put while anything runs, so it always matches what is sending."""
         c = self.campaign
         busy = self.runner.is_running() or self.queue_ctl.busy()
-        cid = self.prefs.editing_campaign()
-        view_only = ((self.runner.is_running() and getattr(self, "_editor_runs", False))
-                     or (bool(cid) and cid in self._running_campaign_ids()))
+        view_only = self._editor_view_only()
         for f in c.fields().values():
             f.edit.setEnabled(not view_only)
         for w in (c.browse, c.reload, c.reset):
@@ -1625,6 +1658,7 @@ class MainWindow(QMainWindow):
         c.locked_banner.set_text("This campaign is running, so it can only be viewed now. Open another "
                                  "campaign to edit it, or stop this one first.")
         c.locked_banner.setVisible(view_only)
+        self._style_run_button()                  # editor Start: "Run this one too" or not
 
     # ================================================================ log
     def _gui_line(self, text: str):
@@ -2753,7 +2787,8 @@ class MainWindow(QMainWindow):
             return [], 0, "", st.range_error or st.dnc_error
         return [p["email"] for p in st.plan if p["send"]], st.duplicates, "", ""
 
-    def run_queue(self):
+    def run_queue(self, only: str = ""):
+        only = only if isinstance(only, str) else ""     # clicked(bool) passes False
         store = self.campaign_store
         if self.queue_ctl.active:
             self.queue_ctl.fill()
@@ -2762,7 +2797,7 @@ class MainWindow(QMainWindow):
             return
         if (self.runner.is_running() or self.queue_ctl.busy()) and not self._allow_one_more():
             return
-        queued = [c for c in store.list() if c.status == cs.QUEUED]
+        queued = [c for c in store.list() if c.status == cs.QUEUED and (not only or c.id == only)]
         if not queued:
             W.inform(self, "Nothing queued", "Select campaigns and click Add to queue first.")
             return
@@ -2813,7 +2848,7 @@ class MainWindow(QMainWindow):
             confirm = f"Send {n} emails: {names}" if len(names) < 60 else f"Send {n} emails in {k} campaigns"
         if not show_preview(self, title, "\n".join(lines), rows, confirm=confirm, danger=not dry, columns=columns):
             return
-        self.queue_ctl.start(dry)
+        self.queue_ctl.start(dry, only=only)
 
     def launch_campaign(self, c, runner, slot: int, dry: bool) -> str | None:
         """Start one campaign (called by the queue). App-wide pace values come from the app."""

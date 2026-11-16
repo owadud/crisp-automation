@@ -79,7 +79,7 @@ class QueueController(QObject):
     # ---------------------------------------------------------------- queue
     def start(self, dry: bool, only: str = "") -> None:
         self.active, self.dry, self.only = True, dry, only
-        self.message.emit(("Scheduled campaign started" if only else "Queue started")
+        self.message.emit(("Campaign started on its own" if only else "Queue started")
                           + f" ({'DRY RUN' if dry else 'REAL SENDING'}).")
         self.fill()
 
