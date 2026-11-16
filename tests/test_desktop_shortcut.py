@@ -98,6 +98,23 @@ def test_mac_quotes_paths_with_spaces_and_quotes():
     assert ds._sh_quote("it's") == r"'it'\''s'"
 
 
+def test_logo_fills_the_icon_at_any_size(tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(ds, "data_dir", lambda: tmp_path / "data")
+    home = tmp_path / "home"
+    png = home / ".local" / "share" / "icons" / "crisp-automation.png"
+    assert ds.refresh_icons(home) == [] and not png.exists()          # never adds an icon
+    png.parent.mkdir(parents=True)
+    png.write_bytes(b"old")
+    assert ds.refresh_icons(home) == [png]
+    from PySide6.QtGui import QImage
+    img = QImage(str(png))
+    w = img.width()
+    white = sum(1 for x in range(0, w, 4) for y in range(0, w, 4) if img.pixelColor(x, y).lightness() > 240)
+    assert white > (w // 4) ** 2 * 0.04                                # the plane is big, not a dot
+
+
 def test_linux_also_puts_an_icon_on_the_desktop(tmp_path, monkeypatch):
     monkeypatch.setattr(ds.sys, "platform", "linux")
     root, home = fake_app(tmp_path, windows=False), tmp_path / "home"

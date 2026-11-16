@@ -67,6 +67,11 @@ def main() -> int:
     for size in (16, 24, 32, 48, 64, 128, 256):
         icon.addPixmap(logo_pixmap("#5b5bd6", size))
     app.setWindowIcon(icon)
+    try:
+        from crisp_gui import desktop_shortcut
+        desktop_shortcut.refresh_icons()   # an older version drew the launcher icon too small
+    except Exception:  # noqa: BLE001
+        pass
 
     prefs = Preferences()
     tm = ThemeManager(app, prefs.theme())

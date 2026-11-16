@@ -49,6 +49,18 @@ def make_icon(path: Path, ico: bool = False) -> Path | None:
     return None
 
 
+def refresh_icons(home: Path | None = None) -> list[Path]:
+    """Redraw the icon files an earlier version already installed, so an update alone
+    fixes them (no need to click Create shortcut again). Never adds new ones."""
+    home = Path(home or Path.home())
+    done = []
+    for path in (home / ".local" / "share" / "icons" / "crisp-automation.png",
+                 data_dir() / "crisp-automation.ico"):
+        if path.exists() and make_icon(path, ico=path.suffix == ".ico"):
+            done.append(path)
+    return done
+
+
 # ------------------------------------------------------------------ Windows
 def _ps_quote(text: str) -> str:
     return "'" + str(text).replace("'", "''") + "'"
