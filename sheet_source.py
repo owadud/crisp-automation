@@ -316,6 +316,31 @@ class SheetSource:
             self.pacer.call(self.worksheet().batch_update, data, value_input_option="USER_ENTERED")
         return row
 
+    def push_many(self, items) -> list[str]:
+        """Like push() for many rows at once: the email column is read ONCE and everything is
+        written in ONE request (row by row, 100 rows took minutes against Google's per-minute
+        limits). items: [(email, values, prefer_row)]. Returns the emails not found."""
+        if not items:
+            return []
+        col = self.header.index(self._col("Contact Email")) + 1
+        cells = self.pacer.call(self.worksheet().col_values, col)
+        rows_of: dict[str, list[int]] = {}
+        for i, v in enumerate(cells):
+            if i > 0:
+                rows_of.setdefault(str(v).strip().lower(), []).append(i + 1)
+        data, missing = [], []
+        for email, values, prefer_row in items:
+            matches = rows_of.get(str(email or "").strip().lower(), [])
+            if not matches:
+                missing.append(email)
+                continue
+            row = prefer_row if prefer_row in matches else min(matches, key=lambda r: abs(r - (prefer_row or r)))
+            data += [{"range": _a1(row, self.header.index(self._col(c)) + 1), "values": [[str(v)]]}
+                     for c, v in values.items() if self._col(c) in self.header]
+        if data:
+            self.pacer.call(self.worksheet().batch_update, data, value_input_option="USER_ENTERED")
+        return missing
+
     # ------------------------------------------------------------ lock
     def _control(self):
         try:

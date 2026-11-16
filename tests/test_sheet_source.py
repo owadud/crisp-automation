@@ -76,6 +76,22 @@ def test_download_tabs_and_push_by_email(tmp_path):
         src.push("gone@x.com", {"Status": "Sent"})
 
 
+def test_push_many_writes_all_rows_in_one_request():
+    book = make_sheet(ROWS)
+    src = source(book)
+    src.download()
+    src.ensure_columns(["Status", "Error"])
+    ws = book.tabs["Customers"]
+    before = ws.writes
+    missing = src.push_many([("a@x.com", {"Status": "Skipped", "Error": "duplicate email"}, 2),
+                             ("C@X.com", {"Status": "Skipped", "Error": "duplicate email"}, 4),
+                             ("gone@x.com", {"Status": "Skipped"}, 9)])
+    assert missing == ["gone@x.com"] and ws.writes - before == 1          # one request, not one per row
+    assert ws.cell(2, "Status") == "Skipped" and ws.cell(4, "Error") == "duplicate email"
+    assert ws.cell(3, "Status") in ("", None)                             # b@ untouched
+    assert src.push_many([]) == []
+
+
 def test_missing_columns_and_bad_tab():
     book = FakeSpreadsheet({"T": [["Name", "Phone"], ["a", "123"]]})
     with pytest.raises(ss.SheetError, match="No email column"):

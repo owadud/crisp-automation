@@ -825,10 +825,21 @@ def mark_precheck(rows, fieldnames):
                 changed_rows.append((index, outcome))
     if changed:
         save_csv(rows, fieldnames)
-        for index, outcome in changed_rows:
-            # Shared Sheet: history-based skips are this runner's view only; never write them there.
-            if SHEET is None or outcome in (rules.INVALID, rules.DUPLICATE, rules.DO_NOT_CONTACT):
-                sync_row(rows, index, ("Status", "Error"))
+        # Shared Sheet: history-based skips are this runner's view only; never write them there.
+        to_sheet = [i for i, outcome in changed_rows
+                    if outcome in (rules.INVALID, rules.DUPLICATE, rules.DO_NOT_CONTACT)]
+        if SHEET is not None and not DRY_RUN and to_sheet:
+            print(f"Marking {len(to_sheet)} skipped row(s) in the Google Sheet...", flush=True)
+            items = [(clean(rows[i].get("Contact Email")),
+                      {c: rows[i].get(c, "") for c in ("Status", "Error") if c in COLMAP}, i + 2)
+                     for i in to_sheet]
+            try:
+                SHEET.push_many(items)
+            except Exception as exc:  # noqa: BLE001
+                for email, values, row in items:
+                    SHEET_QUEUE.add(SHEET.id, SHEET.tab, email, row, values)
+                print(f"  WARNING: Sheet not updated for the skipped rows ({exc}). Saved locally; "
+                      "retried later.")
 
 
 def record(rows, fieldnames, row_index, status, error=""):
