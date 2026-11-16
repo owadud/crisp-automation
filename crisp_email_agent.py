@@ -1286,24 +1286,23 @@ def select_subject_from_dropdown(page):
             field.click()
             page.wait_for_timeout(900)
 
+            # Always type the FULL subject first (never a prefix), then click the one matching
+            # row. Typing narrows Crisp's menu to that row, also for a subject Crisp has never
+            # seen. Clicking a row in the long, untyped list of earlier subjects closed the whole
+            # New conversation dialog once Crisp listed about 10 of them.
+            field.press_sequentially(full_subject, delay=45)
+            for _ in range(20):
+                if _subject_is_full(field):
+                    break
+                page.wait_for_timeout(150)
+            if not _subject_is_full(field):
+                print(
+                    f"  Subject typing incomplete: {_subject_value(field)!r}; retrying.",
+                    flush=True,
+                )
+                continue
+            page.wait_for_timeout(900)
             idx, row, rows = _find_subject_row(page)
-            if row is None:
-                # Not in Crisp's list of earlier subjects: type it. Crisp then offers the typed
-                # subject as a row (and adds it to its list). Type the FULL subject (never a
-                # prefix) and wait until the field really contains all of it before looking.
-                field.press_sequentially(full_subject, delay=45)
-                for _ in range(20):
-                    if _subject_is_full(field):
-                        break
-                    page.wait_for_timeout(150)
-                if not _subject_is_full(field):
-                    print(
-                        f"  Subject typing incomplete: {_subject_value(field)!r}; retrying.",
-                        flush=True,
-                    )
-                    continue
-                page.wait_for_timeout(900)
-                idx, row, rows = _find_subject_row(page)
 
             print(f"  Subject menu rows (attempt {attempt}): {[t for _, t in rows]}", flush=True)
             if row is None:
