@@ -842,7 +842,8 @@ class SettingsPage(Page):
         # read tracking: this computer only, off until you set up your own tracker
         fl.addWidget(label("Read tracking (only you, only this computer)", "rowTitle"))
         self.mail_track = QCheckBox("Track when people open my emails (Results shows who opened and when)")
-        self.mail_track_clicks = QCheckBox("Also track link clicks (links go through your tracker first)")
+        self.mail_track_clicks = QCheckBox("Also track link clicks (not recommended: people see a script.google.com "
+                                           "address instead of your link)")
         fl.addWidget(self.mail_track)
         fl.addWidget(self.mail_track_clicks)
         self.mail_track_url = Field("Tracker web address", "From Google Apps Script, see the steps below. Saved only "
