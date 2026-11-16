@@ -230,3 +230,15 @@ def test_crisp_style_unsubscribe_tag_becomes_a_link():
     html_part = list(msg.iter_parts())[1].get_content()
     assert 'href="mailto:support@x.com?subject=unsubscribe"' in html_part
     assert "take you off the list" not in html_part                      # its own link: no second one
+
+
+def test_dry_run_log_shows_html_as_short_text(agent, tmp_path, monkeypatch, capsys):
+    page = ("<!DOCTYPE html><html><head><style>p{color:red}</style></head><body><p>Hi {first_name},</p>"
+            + "".join(f"<p>Line {i}</p>" for i in range(40)) + "</body></html>")
+    path = write(tmp_path / "r.csv", HEADER, [["Ann Lee", "ann@x.com", "Shahriar", "FALSE", "$900"]])
+    mod = mail_agent(agent, tmp_path, monkeypatch, path, (page,), CRISP_DRY_RUN="true",
+                     CRISP_DATA_DIR=str(tmp_path))
+    mod.main()
+    out = capsys.readouterr().out
+    assert "(HTML email," in out and "| Hi Ann," in out and "more line(s)" in out
+    assert "<p>" not in out and "color:red" not in out                    # no code in the log

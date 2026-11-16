@@ -286,6 +286,26 @@ def open_mail():
               + " (Settings > Your email account). Results show who opened and when.")
 
 
+LOG_MESSAGE_LINES = 15
+
+
+def print_message(text):
+    """Dry run: what this person would get, short. An HTML email is shown as its readable text
+    (the code would flood the log); the editor's Preview shows how it looks."""
+    if pz.is_html(text):
+        import mail_sender
+        lines = [l for l in mail_sender.html_to_text(text).splitlines() if l.strip()]
+        print(f"  ----- message (HTML email, {len(text)} characters, shown as text) -----")
+    else:
+        lines = text.splitlines()
+        print("  ----- message -----")
+    for line in lines[:LOG_MESSAGE_LINES]:
+        print("  | " + line)
+    if len(lines) > LOG_MESSAGE_LINES:
+        print(f"  | … {len(lines) - LOG_MESSAGE_LINES} more line(s)")
+    print("  -------------------")
+
+
 def mail_send(email, name, text):
     """One email from your own account. 'Sending' is recorded right before it goes out."""
     global SEND_CLICKED
@@ -335,10 +355,7 @@ def api_send(row):
         else:
             print(f"  [DRY RUN] Crisp API: would create the conversation and send {len(text)} characters. "
                   "Nothing was created or sent.")
-        print("  ----- message -----")
-        for line in text.splitlines():
-            print("  | " + line)
-        print("  -------------------")
+        print_message(text)
         return True
     if MAIL_MODE:
         return mail_send(email, name, text)
