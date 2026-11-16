@@ -24,6 +24,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -32,6 +33,8 @@ from typing import Callable
 
 USER_AGENT = "CrispAutomation-Updater"
 API_LATEST = "https://api.github.com/repos/{repo}/releases/latest"
+WEB_LATEST = "https://github.com/{repo}/releases/latest"          # redirects to .../releases/tag/vX.Y
+WEB_ASSET = "https://github.com/{repo}/releases/download/{tag}/{name}"
 
 # Only these count as app code and may be replaced by an update.
 CODE_SUFFIXES = {".py", ".sh", ".bat", ".md", ".txt", ".html"}
@@ -94,13 +97,46 @@ def http_get(url: str, accept: str = "application/vnd.github+json") -> bytes:
         return resp.read()
 
 
-def fetch_latest_release(repo: str, opener: Opener = http_get) -> Release | None:
+def final_url(url: str) -> str:
+    """Where a github.com link ends up after its redirects (no API, so no hourly limit)."""
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="HEAD")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.geturl()
+
+
+def web_latest_release(repo: str, resolve: Callable[[str], str] = final_url) -> Release | None:
+    """The latest release from the normal github.com links. GitHub's API allows only 60
+    lookups an hour per internet connection, which a team on one office line can use up."""
+    try:
+        landed = resolve(WEB_LATEST.format(repo=repo))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise UpdateError(f"GitHub answered with error {exc.code}. Try again later.") from exc
+    except (urllib.error.URLError, OSError) as exc:
+        raise UpdateError(f"Could not reach GitHub. Check the internet connection. ({exc})") from exc
+    m = re.search(r"/releases/tag/([^/?#]+)$", landed)
+    if not m:
+        return None                                   # no release yet: github.com shows the list
+    tag = urllib.parse.unquote(m.group(1))
+    name = f"crisp-automation-v{tag.lstrip('vV')}.zip"
+    return Release(
+        tag=tag, version=tag.lstrip("vV"), zip_name=name,
+        zip_url=WEB_ASSET.format(repo=repo, tag=tag, name=name),
+        sha256_url=WEB_ASSET.format(repo=repo, tag=tag, name=name + ".sha256"),
+        digest=None, page_url=landed)
+
+
+def fetch_latest_release(repo: str, opener: Opener = http_get,
+                         resolve: Callable[[str], str] = final_url) -> Release | None:
     """Latest published release, or None if the repo has none yet."""
     try:
         data = json.loads(opener(API_LATEST.format(repo=repo), "application/vnd.github+json"))
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return None
+        if exc.code in (403, 429):                     # hourly API limit used up: same release, other door
+            return web_latest_release(repo, resolve)
         raise UpdateError(f"GitHub answered with error {exc.code}. Try again later.") from exc
     except (urllib.error.URLError, OSError, ValueError) as exc:
         raise UpdateError(f"Could not reach GitHub. Check the internet connection. ({exc})") from exc

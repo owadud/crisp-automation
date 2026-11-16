@@ -102,12 +102,19 @@ def test_logo_fills_the_icon_at_any_size(tmp_path, monkeypatch):
     from PySide6.QtWidgets import QApplication
     QApplication.instance() or QApplication([])
     monkeypatch.setattr(ds, "data_dir", lambda: tmp_path / "data")
+    monkeypatch.setattr(ds, "desktop_folder", lambda home: home / "Desktop")
     home = tmp_path / "home"
-    png = home / ".local" / "share" / "icons" / "crisp-automation.png"
-    assert ds.refresh_icons(home) == [] and not png.exists()          # never adds an icon
-    png.parent.mkdir(parents=True)
-    png.write_bytes(b"old")
-    assert ds.refresh_icons(home) == [png]
+    png = home / ".local" / "share" / "icons" / ds.LINUX_ICON
+    assert ds.refresh_icons(home) == [] and not png.exists()          # never adds a launcher or icon
+    old = home / ".local" / "share" / "icons" / "crisp-automation.png"
+    launchers = [home / ".local" / "share" / "applications" / "crisp-automation.desktop",
+                 home / "Desktop" / "crisp-automation.desktop"]
+    for f in launchers:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(f"[Desktop Entry]\nName=Crisp Automation\nIcon={old}\nTerminal=false\n")
+    assert ds.refresh_icons(home) == launchers                          # an update re-points the old ones
+    assert all(f"Icon={png}" in f.read_text() and "Terminal=false" in f.read_text() for f in launchers)
+    assert ds.refresh_icons(home) == []                                 # already current: untouched
     from PySide6.QtGui import QImage
     img = QImage(str(png))
     w = img.width()

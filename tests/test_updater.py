@@ -90,6 +90,16 @@ def test_fetch_latest_release_parses_assets_and_handles_no_release():
     assert up.expected_sha256(rel, lambda url, accept: f"{sha}  file.zip\n".encode()) == sha
 
 
+def test_api_limit_falls_back_to_the_normal_release_links():
+    def limited(url, accept):
+        raise urllib.error.HTTPError(url, 403, "rate limit exceeded", {}, None)
+    rel = up.fetch_latest_release("o/r", limited, lambda url: "https://github.com/o/r/releases/tag/v3.23")
+    assert rel.version == "3.23" and rel.zip_name == "crisp-automation-v3.23.zip"
+    assert rel.zip_url == "https://github.com/o/r/releases/download/v3.23/crisp-automation-v3.23.zip"
+    assert rel.sha256_url == rel.zip_url + ".sha256"
+    assert up.fetch_latest_release("o/r", limited, lambda url: "https://github.com/o/r/releases") is None
+
+
 def test_install_replaces_code_only_and_keeps_user_data(tmp_path):
     root = make_app(tmp_path / "app")
     zip_path, sha = make_zip(tmp_path / "u.zip")

@@ -21,6 +21,11 @@ APP_NAME = "Crisp Automation"
 APP_ID = "CrispAutomation.Desktop"     # Windows taskbar groups the window with its shortcut
 
 
+# A new file name whenever the picture changes: Ubuntu keeps showing its stored copy of
+# an icon for as long as the launcher points at the same file.
+LINUX_ICON = "crisp-automation-2.png"
+
+
 def data_dir() -> Path:
     return Path.home() / ".crisp_email_agent"
 
@@ -50,14 +55,29 @@ def make_icon(path: Path, ico: bool = False) -> Path | None:
 
 
 def refresh_icons(home: Path | None = None) -> list[Path]:
-    """Redraw the icon files an earlier version already installed, so an update alone
-    fixes them (no need to click Create shortcut again). Never adds new ones."""
+    """Bring icons an earlier version installed up to date, so an update alone fixes them
+    (no need to click Create shortcut again): redraw the Windows .ico, and point the Ubuntu
+    launchers at the current icon file. Never adds a launcher or icon that was not there."""
     home = Path(home or Path.home())
     done = []
-    for path in (home / ".local" / "share" / "icons" / "crisp-automation.png",
-                 data_dir() / "crisp-automation.ico"):
-        if path.exists() and make_icon(path, ico=path.suffix == ".ico"):
-            done.append(path)
+    ico = data_dir() / "crisp-automation.ico"
+    if ico.exists() and make_icon(ico, ico=True):
+        done.append(ico)
+    desk = desktop_folder(home)
+    launchers = [home / ".local" / "share" / "applications" / "crisp-automation.desktop"]
+    launchers += [desk / "crisp-automation.desktop"] if desk else []
+    png = home / ".local" / "share" / "icons" / LINUX_ICON
+    for launcher in (f for f in launchers if f.exists()):
+        text = launcher.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        want = f"Icon={png}"
+        if want in lines:
+            continue
+        if not png.exists() and not make_icon(png):
+            break
+        launcher.write_text("\n".join(want if ln.startswith("Icon=") else ln for ln in lines) + "\n",
+                            encoding="utf-8")
+        done.append(launcher)
     return done
 
 
@@ -114,7 +134,7 @@ def linux_launcher(root: Path = ROOT, home: Path | None = None) -> list[Path]:
         raise RuntimeError("Run the one-time setup first: bash setup_ubuntu.sh")
     apps = home / ".local" / "share" / "applications"
     apps.mkdir(parents=True, exist_ok=True)
-    icon = make_icon(home / ".local" / "share" / "icons" / "crisp-automation.png", ico=False)
+    icon = make_icon(home / ".local" / "share" / "icons" / LINUX_ICON, ico=False)
     desktop = apps / "crisp-automation.desktop"
     desktop.write_text("\n".join([
         "[Desktop Entry]",
