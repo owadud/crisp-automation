@@ -20,6 +20,7 @@ import sheet_source as ss  # noqa: E402  (gspread is imported only when used)
 import campaign_results as cr  # noqa: E402
 import crisp_api  # noqa: E402  (Crisp REST API: read-only status tracking)
 import mail_sender  # noqa: E402  (sending from your own mail account)
+import tracking  # noqa: E402  (read tracking for My email, this computer only)
 
 TEXT_MODES = ("api", "email")   # send modes that use the campaign's message text (no browser)
 
@@ -95,6 +96,7 @@ PAGES = (
     ("settings", "Settings", "settings", SETTINGS),
 )
 TEAM_NAV = 4
+TRACK_TEST_CAMPAIGN = "Test email (tracking)"
 NAV_FOR = {CAMPAIGNS: 0, EDITOR: 0, RUN: 1, RESULTS: 2, LISTS: 3, TEAM: 4, SETTINGS: 5, RUNS: 2}
 # The top-bar Start/Stop button: on every page, like the prototype. It starts the campaign open in the editor.
 RUN_BUTTON_PAGES = (CAMPAIGNS, EDITOR, RUN, RESULTS, LISTS, TEAM, SETTINGS, RUNS)
@@ -360,6 +362,10 @@ class MainWindow(QMainWindow):
         self.settings.mail_provider.currentIndexChanged.connect(self._mail_provider_changed)
         self._mail_signal = _SheetSignal(self)
         self._mail_signal.done.connect(self._mail_tested)
+        self._track_signal = _SheetSignal(self)
+        self._track_signal.done.connect(self._tracking_done)
+        self.settings.mail_track_script.clicked.connect(self.copy_tracking_script)
+        self.settings.mail_track_test.clicked.connect(self.test_tracker)
         self.settings.api_save.clicked.connect(self.save_api_token)
         self.settings.api_remove.clicked.connect(self.remove_api_token)
         self.settings.api_test_send.clicked.connect(self.send_api_test)
@@ -989,6 +995,7 @@ class MainWindow(QMainWindow):
         c.versions.set_api(api)
         for w in (c.api_message_label, c.api_message, c.api_message_help, c.ai_box):
             w.setVisible(api)
+        c.api_message.set_html_allowed(mode == "email")      # the Crisp API sends text, not HTML
         self._ai_refresh_status()
 
     @staticmethod
@@ -1300,10 +1307,9 @@ class MainWindow(QMainWindow):
                     c.shortcut_version.set_state("error", str(exc))
                     ok = False
             c.api_message_help.setObjectName("fieldError" if problem else "fieldHelp")
-            c.api_message_help.setText(problem or ("Sent as the email body through the Crisp API. {name} and "
-                                                   "{first_name} become the recipient's name; {…} Fields adds data "
-                                                   "from their row (amount spent, plugins, any column). For an A/B test, "
-                                                   "put a line with only --- between the versions."))
+            c.api_message_help.setText(problem or ("Insert field adds each person's name or data from their row. "
+                                                   "+ Version adds an A/B version: recipients are split evenly."
+                                                   + (" HTML: paste a full email's code." if email_mode else "")))
             c.api_message_help.style().unpolish(c.api_message_help)
             c.api_message_help.style().polish(c.api_message_help)
             ok = ok and not problem
@@ -2044,8 +2050,11 @@ class MainWindow(QMainWindow):
             self._run_sync(list(self.sync_sources.items), then=lambda: self.refresh_statuses(synced=True))
             return
         self.refresh_results()
+        tracked = self.sync_tracking(quiet=False)            # My email: opens from your own tracker
         campaign = self._selected_campaign()
         rows = [x for x in self.results.rows(campaign) if x.get("link")]
+        if not rows and tracked:
+            return
         if not rows:
             W.inform(self, "Nothing to check",
                      "No conversation links are recorded for this campaign yet. Links are saved for real sends "
@@ -2111,6 +2120,12 @@ class MainWindow(QMainWindow):
         s.mail_security.setCurrentIndex(max(0, s.mail_security.findData(cfg.get("security") or security)))
         s.mail_daily.edit.setText(str(cfg.get("daily_limit") or ""))
         s.mail_unsubscribe.setChecked(bool(cfg.get("unsubscribe", True)))
+        s.mail_track.setChecked(bool(cfg.get("track")))
+        s.mail_track_clicks.setChecked(bool(cfg.get("track_clicks")))
+        s.mail_track_url.edit.setText(cfg.get("track_url", ""))
+        self._track_key = cfg.get("track_key", "")
+        s.mail_track_status.setText("Tracking is on: opens are written down by your tracker." if tracking.configured(cfg)
+                                    else "")
         s.mail_status.setText(f"Saved: {cfg['email']}. Campaigns set to Send with: My email use it."
                               if mail_sender.configured(cfg) else "No email account yet.")
 
@@ -2132,13 +2147,18 @@ class MainWindow(QMainWindow):
                 "host": s.mail_host.text(), "port": int(port) if port.isdigit() else 587,
                 "security": s.mail_security.currentData(),
                 "daily_limit": int(s.mail_daily.text()) if s.mail_daily.text().isdigit() else 0,
-                "unsubscribe": s.mail_unsubscribe.isChecked()}
+                "unsubscribe": s.mail_unsubscribe.isChecked(),
+                "track": s.mail_track.isChecked(), "track_clicks": s.mail_track_clicks.isChecked(),
+                "track_url": s.mail_track_url.text().strip(), "track_key": getattr(self, "_track_key", "")}
 
     def save_mail_account(self):
         """Save the account, then send ONE test email to the account's own address."""
         s = self.settings
         cfg = self._mail_form()
         problem = mail_sender.problem(cfg) or rules.email_problem(cfg["email"])
+        if not problem and cfg["track"] and not tracking.configured(cfg):
+            problem = ("Tracking is ticked but not set up: click Copy setup script, follow the steps, and paste the "
+                       "Web app address. Or untick Track.")
         if problem:
             s.mail_status.setText(problem)
             return
@@ -2146,13 +2166,19 @@ class MainWindow(QMainWindow):
         s.mail_save.setEnabled(False)
         s.mail_status.setText(f"Saved. Logging in and sending a test email to {cfg['email']}…")
 
+        track_id = ""
+        if tracking.configured(cfg):          # the test email is tracked too: open it to see tracking work
+            track_id = tracking.new_id()
+            tracking.record_sent(self.data_dir, sc.stamp(), track_id, cfg["email"], cfg.get("from_name", ""),
+                                 TRACK_TEST_CAMPAIGN, "Test from Crisp Automation")
+
         def work():
             sender = self._mail_factory(cfg)
             try:
                 sender.connect()
                 sender.send(cfg["email"], "Test from Crisp Automation",
                             "Hi,\n\nThis is a test from Crisp Automation. Your email account works for campaigns "
-                            "set to **Send with: My email**.", to_name=cfg.get("from_name", ""))
+                            "set to **Send with: My email**.", to_name=cfg.get("from_name", ""), track_id=track_id)
                 self._mail_signal.done.emit("mail", cfg["email"], None)
             except Exception as exc:  # noqa: BLE001
                 self._mail_signal.done.emit("mail", None, str(exc))
@@ -2166,8 +2192,82 @@ class MainWindow(QMainWindow):
         if error:
             s.mail_status.setText(f"Saved, but the test failed: {error}")
             return
-        s.mail_status.setText(f"Connected. A test email was sent to {email}: check that inbox (and Spam).")
+        s.mail_status.setText(f"Connected. A test email was sent to {email}: check that inbox (and Spam)."
+                              + (" Open it, then click Test tracker: it should say the test email was opened."
+                                 if tracking.configured(mail_sender.load_config(self.mail_config_path)) else ""))
         self._validate_fields()
+
+    # ============================================================ read tracking (My email, this computer)
+    def copy_tracking_script(self):
+        """A fresh key (once) saved on this computer, and the script with that key on the clipboard."""
+        if not getattr(self, "_track_key", ""):
+            self._track_key = tracking.new_key()
+            cfg = mail_sender.load_config(self.mail_config_path)
+            cfg["track_key"] = self._track_key
+            mail_sender.save_config(cfg, self.mail_config_path)
+        QGuiApplication.clipboard().setText(tracking.script_for(self._track_key))
+        self.flash(self.settings.mail_track_script, "Copied")
+        self.settings.mail_track_status.setText("Setup script copied. Paste it in Apps Script (step 2), deploy it "
+                                                "(step 3), then paste the Web app address above.")
+
+    def test_tracker(self):
+        s = self.settings
+        cfg = self._mail_form()
+        s.mail_track_status.setText("Asking your tracker…")
+        s.mail_track_test.setEnabled(False)
+
+        def work():
+            problem = tracking.ping(cfg)
+            opened = ""
+            if not problem:
+                try:
+                    summ = tracking.summarize(tracking.fetch_events(cfg), tracking.read_ledger(self.data_dir))
+                    test = [v for (camp, _e), v in summ.items() if camp == TRACK_TEST_CAMPAIGN and v["opens"]]
+                    opened = (f" Your test email was opened {test[-1]['first_open'][11:]}: tracking works."
+                              if test else " No open of the test email yet: open it in your inbox, then test again.")
+                except Exception as exc:  # noqa: BLE001
+                    opened = f" (Could not read the opens: {exc})"
+            self._track_signal.done.emit("ping", problem or ("The tracker answers." + opened), None)
+        threading.Thread(target=work, daemon=True).start()
+
+    def sync_tracking(self, quiet: bool = True) -> bool:
+        """Read opens / clicks from your tracker into Results (in the background). False = not set up."""
+        cfg = mail_sender.load_config(self.mail_config_path)
+        if not tracking.configured(cfg) or getattr(self, "_track_busy", False):
+            return tracking.configured(cfg)
+        self._track_busy = True
+
+        def work():
+            try:
+                summ = tracking.summarize(tracking.fetch_events(cfg), tracking.read_ledger(self.data_dir))
+                for v in summ.values():
+                    v["note"] = tracking.summary_text(v)
+                self._track_signal.done.emit("sync", summ, None)
+            except Exception as exc:  # noqa: BLE001
+                self._track_signal.done.emit("sync", None, None if quiet else str(exc))
+        threading.Thread(target=work, daemon=True).start()
+        return True
+
+    def _tracking_done(self, kind, result, error):
+        if kind == "ping":
+            self.settings.mail_track_test.setEnabled(True)
+            self.settings.mail_track_status.setText(str(result))
+            return
+        self._track_busy = False
+        if error:
+            self.results_page.progress_text.setText(f"Read tracking: could not reach your tracker ({error}).")
+            return
+        if not result:
+            return
+        if self.results.sync_history(sc.read_history(self.history_file)):
+            self.results.save()
+        changed = sum(self.results.apply_tracking(cr.rkey(camp, email), v) for (camp, email), v in result.items())
+        if changed:
+            self.results.save()
+        self.refresh_results()
+        opened = sum(1 for v in result.values() if v["opens"] or v["clicks"])
+        self.results_page.progress_text.setText(f"Read tracking: {opened} of your emails opened so far"
+                                                + (f", {changed} new." if changed else "."))
 
     def remove_mail_account(self):
         if not W.ask(self, "Remove your email account from this computer?",
@@ -2311,6 +2411,8 @@ class MainWindow(QMainWindow):
     def auto_check_statuses(self):
         """Every 30 min: re-read emails that are not yet replied (sent in the last 14 days),
         quietly, so each one gets a 'Read at' time within about 30 minutes."""
+        if self.prefs.auto_check():
+            self.sync_tracking(quiet=True)
         cfg = self._api_config()
         if (not self.prefs.auto_check() or not crisp_api.configured(cfg) or self._api_checking
                 or self.runner.is_running() or self.queue_ctl.busy()):

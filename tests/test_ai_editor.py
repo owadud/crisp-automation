@@ -110,26 +110,57 @@ def test_company_names():
 
 # ------------------------------------------------------------------ editor toolbar
 def test_editor_toolbar_writes_crisp_markdown(app, monkeypatch):
+    """The visual editor shows formatting but saves the same Markdown as before."""
     ed = me.MessageEditor()
     ed.setPlainText("Buy now")
-    cur = ed.edit.textCursor()
+    cur = ed.visual.textCursor()
     cur.select(cur.SelectionType.Document)
-    ed.edit.setTextCursor(cur)
+    ed.visual.setTextCursor(cur)
     ed.apply("bold")
     assert ed.toPlainText() == "**Buy now**"
     ed.setPlainText("one\ntwo")
-    cur = ed.edit.textCursor()
+    cur = ed.visual.textCursor()
     cur.select(cur.SelectionType.Document)
-    ed.edit.setTextCursor(cur)
+    ed.visual.setTextCursor(cur)
     ed.apply("bullets")
     assert ed.toPlainText() == "- one\n- two"
     monkeypatch.setattr(me, "PROMPT_HOOK", lambda title: "https://wpxpo.com")
     ed.setPlainText("")
     ed.apply("link")
     ed.apply("first_name")
-    ed.apply("divider")
-    assert ed.toPlainText() == "[link text](https://wpxpo.com){first_name}\n---\n"
-    assert "2 versions" not in ed.count.text()
+    assert ed.toPlainText() == "[link text](https://wpxpo.com){first_name}"
+    ed.apply("divider")                                       # + Version: a second tab
+    ed.insert_text("Second")
+    assert ed.toPlainText() == "[link text](https://wpxpo.com){first_name}\n---\nSecond"
+    assert "2 versions" in ed.count.text() and ed.tabs.count() == 2
+
+
+def test_editor_keeps_every_format_and_versions(app):
+    text = ("Hi {first_name},\n\nGet **10 plugins** for *just 3* ~~$999~~ `code`\n\n- One\n- Two\n\n1. A\n2. B\n\n"
+            "> Quote\n\n[See the deal](https://x.com/deal) ![image](https://x.com/a.png)\n\n"
+            "{if spent >= 599}Thanks!{endif} {Country|there}\nBest,\nShahriar\n---\nVersion two")
+    ed = me.MessageEditor()
+    ed.setPlainText(text)
+    assert ed.toPlainText() == text and ed.tabs.count() == 2
+    ed.tabs.setCurrentIndex(1)
+    assert ed.visual.toPlainText() == "Version two"
+    assert ed.toPlainText() == text
+
+
+def test_editor_html_mode_only_with_my_email(app, dialogs):
+    page = "<!DOCTYPE html><html><head><style>p{color:red}</style></head><body><p>Hi {first_name}</p></body></html>"
+    ed = me.MessageEditor()
+    ed.setPlainText(page)
+    assert ed.mode == "html" and ed.toPlainText() == page and ed.html.isVisibleTo(ed)
+    assert "Hi Ann" in ed.preview.toPlainText()
+    ed.set_html_allowed(False)                                # Crisp API: a clear warning
+    assert ed.note.isVisibleTo(ed) and "My email" in ed.note.text()
+    ed.set_html_allowed(True)
+    ed.set_mode("visual")                                     # asks first (answered yes), keeps the text
+    assert ed.mode == "visual" and ed.toPlainText() == "Hi {first_name}"
+    ed.set_html_allowed(False)
+    ed.set_mode("html")
+    assert ed.mode == "visual" and "HTML needs My email" in dialogs["seen"]
 
 
 # ------------------------------------------------------------------ dialogs fit their text

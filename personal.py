@@ -16,6 +16,7 @@ the header on its left, so all its tags are read together.
 
 from __future__ import annotations
 
+import html as _html
 import re
 
 import recipient_rules as rules
@@ -153,9 +154,41 @@ def _test(cond, info, smart) -> bool:
 
 
 # ------------------------------------------------------------------ render / check
+_HTML_START = re.compile(r"\s*(<!--.*?-->\s*)*<(!doctype|html|head|body|table|div|p|center|span|style|meta|h[1-6]|img|a)\b",
+                         re.I | re.S)
+_CODE_BLOCK = re.compile(r"<(style|script)\b.*?</\1\s*>", re.I | re.S)
+
+
+def is_html(text) -> bool:
+    """A message pasted as HTML code (My email only), rather than the editor's text."""
+    return bool(_HTML_START.match(str(text or "")))
+
+
+def _hide_code(text: str) -> tuple[str, list[str]]:
+    """<style>/<script> blocks are full of { } that are CSS, not fields: set them aside."""
+    kept = []
+
+    def keep(m):
+        kept.append(m.group(0))
+        return f"\x00{len(kept) - 1}\x00"
+    return _CODE_BLOCK.sub(keep, text), kept
+
+
+def _show_code(text: str, kept: list[str]) -> str:
+    return re.sub(r"\x00(\d+)\x00", lambda m: kept[int(m.group(1))], text)
+
+
 def render(text, name, info=None, bundle=None) -> tuple[str, list[str]]:
     """(finished message, fields that came out empty) for one recipient."""
     text = str(text or "")
+    if is_html(text):
+        body, kept = _hide_code(text)
+        out, empty = _render(body, name, info, bundle, escape=True)
+        return _show_code(out, kept), empty
+    return _render(text, name, info, bundle)
+
+
+def _render(text, name, info=None, bundle=None, escape=False) -> tuple[str, list[str]]:
     bundle = bundle if bundle is not None else bundle_of(text)
     text = _BUNDLE.sub("", text)
     smart = values(name, info, bundle)
@@ -167,9 +200,12 @@ def render(text, name, info=None, bundle=None) -> tuple[str, list[str]]:
         v = lookup(field, info, smart).strip()
         if not v and not _bar:
             empty.append(field.strip())
-        return v or fallback.strip()
+        out = v or fallback.strip()
+        return _html.escape(out, quote=False) if escape else out    # a name like "A&B" stays valid HTML
 
     text = _FIELD.sub(fill, text)
+    if escape:
+        return text.strip(), empty
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     return text, empty
@@ -181,7 +217,7 @@ def check(texts, headers) -> list[str]:
     problems = []
     for n, text in enumerate(texts, start=1):
         where = f"Message {n}: " if len(texts) > 1 else ""
-        body = _BUNDLE.sub("", str(text or ""))
+        body = _BUNDLE.sub("", _hide_code(str(text or ""))[0])
         opens, closes = len(re.findall(r"\{\s*if\s", body, re.I)), len(re.findall(r"\{\s*endif\s*\}", body, re.I))
         if opens != closes:
             problems.append(f"{where}{opens} {{if ...}} but {closes} {{endif}}. Close every {{if}} with {{endif}}.")

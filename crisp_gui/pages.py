@@ -223,7 +223,7 @@ class VersionTable(QWidget):
         self._paint_status()
         self.table.blockSignals(False)
         self.table.setColumnHidden(self.SHORTCUT, api)
-        self.hint.setText("One row per subject. The message versions are the texts below (--- between them)."
+        self.hint.setText("One row per subject. The message versions are the Version tabs of the message below."
                           if api else "One row per version. Recipients are split evenly between the rows. A subject "
                           "that is not in Crisp's list yet is typed in, and Crisp adds it to the list.")
 
@@ -242,7 +242,7 @@ class VersionTable(QWidget):
             found["error"] = ("A shortcut is not in Crisp (see In Crisp). Fix its name, or click "
                               "Check in Crisp again if you just saved it there.")
         kind = "error" if "error" in found else "ok" if "ok" in found else ""
-        if kind == "ok" and found["ok"].startswith("A/B test"):   # the rows already show each version
+        if kind == "ok" and found["ok"].startswith("A/B test") and not self.api:   # the rows show each version
             n = self.table.rowCount()
             found["ok"] = f"A/B test: {n} versions, recipients split evenly."
         self.status.setObjectName({"error": "fieldError", "ok": "fieldOk"}.get(kind, "fieldHelp"))
@@ -475,14 +475,13 @@ class CampaignPage(Page):
             f.hide()
         self.versions = VersionTable(self.shortcut, self.subject, self.shortcut_version, tm)
         card.body.addWidget(self.versions)
-        self.api_message_label = label("Message text", "fieldLabel")
+        self.api_message_label = label("Message", "fieldLabel")
         self.api_message = MessageEditor(tm)
         self.api_message.setPlaceholderText("Hi {first_name},\n\nYour message…")
-        self.api_message.setMinimumHeight(180)
-        self.api_message_help = label("Sent as the email body through the Crisp API. {name} and {first_name} "
-                                      "become the recipient's name; {…} Fields adds data from their row "
-                                      "(amount spent, plugins, any column). For an A/B test, put a line with only --- "
-                                      "between the versions.", "fieldHelp", wrap=True)
+        self.api_message.setMinimumHeight(300)
+        self.api_message_help = label("Insert field adds each person's name or data from their row. + Version "
+                                      "adds an A/B version: recipients are split evenly. HTML: paste a full email "
+                                      "(My email only).", "fieldHelp", wrap=True)
         self.ai_box = QWidget()
         ai = QVBoxLayout(self.ai_box)
         ai.setContentsMargins(0, 0, 0, 0)
@@ -805,7 +804,7 @@ class SettingsPage(Page):
         prow.addWidget(self.mail_provider)
         prow.addStretch()
         fl.addLayout(prow)
-        frow = ResponsiveRow(min_item_width=220, spacing=12)
+        frow = ResponsiveRow(min_item_width=220, spacing=12, align_top=True)
         self.mail_email = Field("Email address", "The account you send from (also your login).",
                                 placeholder="you@yourcompany.com")
         self.mail_password = Field("App password", "Gmail: the 16-letter App password, not your normal one.",
@@ -817,7 +816,7 @@ class SettingsPage(Page):
         for f in (self.mail_email, self.mail_password, self.mail_from_name, self.mail_reply_to):
             frow.add(f)
         fl.addWidget(frow)
-        srow = ResponsiveRow(min_item_width=160, spacing=12)
+        srow = ResponsiveRow(min_item_width=160, spacing=12, align_top=True)
         self.mail_host = Field("SMTP server", placeholder="smtp.gmail.com")
         self.mail_port = Field("Port", placeholder="465")
         self.mail_port.edit.setValidator(QIntValidator(1, 65535))
@@ -839,6 +838,34 @@ class SettingsPage(Page):
         self.mail_unsubscribe = QCheckBox("Add an unsubscribe line to every email (needed for bulk email)")
         self.mail_unsubscribe.setChecked(True)
         fl.addWidget(self.mail_unsubscribe)
+
+        # read tracking: this computer only, off until you set up your own tracker
+        fl.addWidget(label("Read tracking (only you, only this computer)", "rowTitle"))
+        self.mail_track = QCheckBox("Track when people open my emails (Results shows who opened and when)")
+        self.mail_track_clicks = QCheckBox("Also track link clicks (links go through your tracker first)")
+        fl.addWidget(self.mail_track)
+        fl.addWidget(self.mail_track_clicks)
+        self.mail_track_url = Field("Tracker web address", "From Google Apps Script, see the steps below. Saved only "
+                                    "on this computer.", placeholder="https://script.google.com/macros/s/…/exec")
+        fl.addWidget(self.mail_track_url)
+        trow = QHBoxLayout()
+        self.mail_track_script = button("Copy setup script", None, "copy", tm, "text_muted")
+        self.mail_track_test = button("Test tracker", "ghost")
+        trow.addWidget(self.mail_track_script)
+        trow.addWidget(self.mail_track_test)
+        trow.addStretch()
+        fl.addLayout(trow)
+        self.mail_track_help = label(
+            "One-time setup, under your own Google account: 1) Create a new Google Sheet that only you use. "
+            "2) Extensions > Apps Script: delete what is there and paste the setup script. 3) Deploy > New "
+            "deployment > Web app, Execute as: Me, Who has access: Anyone > Deploy, and allow access. 4) Paste the "
+            "Web app address above, tick Track, then Save and send test email to me. 5) Open that test email: "
+            "Refresh statuses in Results shows it as read. No reading time; Apple Mail can open emails by itself, "
+            "and people who block images show no open.", "fieldHelp", wrap=True)
+        fl.addWidget(self.mail_track_help)
+        self.mail_track_status = label("", "faint", wrap=True)
+        self.mail_track_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        fl.addWidget(self.mail_track_status)
         brow = QHBoxLayout()
         self.mail_save = button("Save and send test email to me", None, "send", tm, "text_muted")
         self.mail_remove = button("Remove account", "ghost")

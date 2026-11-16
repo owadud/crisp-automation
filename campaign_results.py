@@ -285,6 +285,25 @@ class ResultsStore:
         if result.get("open") is not None:
             rec["open"] = result["open"]
 
+    def apply_tracking(self, key: str, s: dict) -> bool:
+        """Opens / clicks from your own tracker (My email). Exact times, so no 'first seen' window.
+        Returns True when something new was learned."""
+        rec = self.recipients.get(key)
+        if rec is None or not (s.get("opens") or s.get("clicks")):
+            return False
+        before = (rec.get("opens"), rec.get("clicks"), rec.get("status"))
+        if RANK.get(rec["status"], 0) < RANK[READ]:
+            rec["status"] = READ
+        first = s.get("first_open", "")
+        if first and (not rec.get("read_at") or rec.get("read_seen")):
+            rec["read_at"], rec["read_seen"], rec["read_from"] = first, False, ""
+        if first and not rec.get("delivered_at"):
+            rec["delivered_at"], rec["delivered_seen"] = first, False
+        rec.update({"opens": s.get("opens", 0), "last_open": s.get("last_open", ""),
+                    "clicks": s.get("clicks", 0), "last_click": s.get("last_click", ""),
+                    "track_note": s.get("note", "")})
+        return before != (rec.get("opens"), rec.get("clicks"), rec.get("status"))
+
     def record_check(self, campaign: str, now: datetime | None = None) -> dict:
         snap = {"campaign": campaign, "at": fmt(now or datetime.now()), **summary(self.rows(campaign))}
         self.checks.append(snap)
@@ -385,7 +404,7 @@ def table_row(r: dict) -> list[str]:
             seen(r.get("read_at", ""), r.get("read_seen"), r.get("read_from", "")),
             seen(r.get("reply_at", ""), r.get("reply_seen")),
             r.get("version", ""), r["campaign"], r.get("link", ""),
-            r.get("note") or ("" if r.get("link") else "no conversation link recorded")]
+            r.get("note") or r.get("track_note") or ("" if r.get("link") else "no conversation link recorded")]
 
 
 def export_csv(rows, path: Path) -> Path:

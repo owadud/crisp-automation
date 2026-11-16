@@ -59,6 +59,7 @@ def env(tmp_path, monkeypatch):
     out = tmp_path / "env.json"
     monkeypatch.setenv("FAKE_ENV_OUT", str(out))
     monkeypatch.setenv("CRISP_API_CONFIG", str(tmp_path / "crisp_api.json"))   # never the real token
+    monkeypatch.setenv("CRISP_MAIL_CONFIG", str(tmp_path / "mail_account.json"))   # never the real mail account
     return out
 
 

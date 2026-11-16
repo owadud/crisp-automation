@@ -389,9 +389,10 @@ class KeyValueList(QWidget):
 class ResponsiveRow(QWidget):
     """Lays children out in N columns, dropping to fewer when narrow."""
 
-    def __init__(self, min_item_width: int = 190, spacing: int = 12):
+    def __init__(self, min_item_width: int = 190, spacing: int = 12, align_top: bool = False):
         super().__init__()
         self.items = []
+        self.align_top = align_top          # fields of different heights line up at their labels
         self.min_item_width = min_item_width
         self.grid = QGridLayout(self)
         self.grid.setContentsMargins(0, 0, 0, 0)
@@ -427,7 +428,7 @@ class ResponsiveRow(QWidget):
         for c in range(len(self.items)):
             self.grid.setColumnStretch(c, 0)
         for i, w in enumerate(self.shown()):
-            self.grid.addWidget(w, i // cols, i % cols)
+            self.grid.addWidget(w, i // cols, i % cols, Qt.AlignTop if self.align_top else Qt.Alignment())
         for c in range(cols):
             self.grid.setColumnStretch(c, 1)
 

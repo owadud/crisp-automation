@@ -188,3 +188,33 @@ def test_settings_save_sends_a_test_email_and_campaign_needs_no_segment(tmp_path
         assert w.campaign.api_message_help.objectName() == "fieldHelp"
     finally:
         w.close()
+
+
+def test_pasted_html_is_sent_as_written_with_a_text_part():
+    import personal as pz
+    page = ("<!DOCTYPE html><html><head><style>.b{color:#fff} p { margin: 0 }</style></head><body>"
+            "<p>Hi {first_name},</p><a class=\"b\" href=\"https://x.com/deal\">See the deal</a></body></html>")
+    assert pz.is_html(page) and not pz.is_html("Hi **Ann**") and pz.check([page], ["Full Name"]) == []
+    body, _ = pz.render(page, "Ann & Bo Lee", pz.SAMPLE)
+    assert ".b{color:#fff} p { margin: 0 }" in body and "Hi Ann," in body       # CSS braces untouched
+    msg = ms.build_message(CFG, "ann@x.com", "Offer", body)
+    plain, html_part = [p.get_content() for p in msg.iter_parts()]
+    assert "See the deal (https://x.com/deal)" in plain and "color:#fff" not in plain
+    assert html_part.index("unsubscribe") < html_part.index("</body>")         # inside the page
+    assert '<a class="b" href="https://x.com/deal">' in html_part
+
+
+def test_tracked_campaign_writes_who_got_which_id(agent, tmp_path, monkeypatch):
+    import tracking
+    url = "https://script.google.com/macros/s/AKfycbxTEST/exec"
+    path = write(tmp_path / "r.csv", HEADER, [["Ann Lee", "ann@x.com", "Shahriar", "FALSE", "$900"]])
+    mod = mail_agent(agent, tmp_path, monkeypatch, path, ("Hi {first_name}.",),
+                     cfg={"track": True, "track_url": url, "track_key": "k"}, CRISP_CAMPAIGN="Promo",
+                     CRISP_DATA_DIR=str(tmp_path))
+    mod.main()
+    sent = [m for i in FakeSMTP.instances for m in i.sent]
+    assert mod.DATA_DIR == tmp_path                                       # never the project folder
+    ledger = tracking.read_ledger(tmp_path)
+    (tid, rec), = ledger.items()
+    assert (rec["Email"], rec["Campaign"]) == ("ann@x.com", "Promo")
+    assert f'{url}?i={tid}' in sent[0].get_body(("html",)).get_content()

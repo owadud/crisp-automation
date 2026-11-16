@@ -139,10 +139,71 @@ def to_plain(markdown: str) -> str:
     return t
 
 
-def build_message(cfg: dict, to: str, subject: str, text: str, to_name: str = "") -> EmailMessage:
+def is_html(text) -> bool:
+    import personal
+    return personal.is_html(text)
+
+
+def html_to_text(page: str) -> str:
+    """The plain-text part of an HTML email: readable text, links as 'text (url)'."""
+    from html.parser import HTMLParser
+
+    class P(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.out, self.href, self.skip = [], None, 0
+
+        def handle_starttag(self, tag, attrs):
+            if tag in ("style", "script", "head", "title"):
+                self.skip += 1
+            elif tag in ("br",):
+                self.out.append("\n")
+            elif tag in ("p", "div", "tr", "h1", "h2", "h3", "h4", "li", "table", "blockquote"):
+                self.out.append("\n" + ("- " if tag == "li" else ""))
+            elif tag == "a":
+                self.href = dict(attrs).get("href")
+            elif tag == "img" and dict(attrs).get("alt"):
+                self.out.append(f"[{dict(attrs)['alt']}]")
+
+        def handle_endtag(self, tag):
+            if tag in ("style", "script", "head", "title"):
+                self.skip = max(0, self.skip - 1)
+            elif tag == "a" and self.href and not self.href.startswith("#"):
+                self.out.append(f" ({self.href})")
+                self.href = None
+            elif tag in ("p", "div", "tr", "h1", "h2", "h3", "h4", "table", "blockquote"):
+                self.out.append("\n")
+
+        def handle_data(self, data):
+            if not self.skip:
+                self.out.append(re.sub(r"\s+", " ", data))
+
+    p = P()
+    p.feed(str(page or ""))
+    text = re.sub(r"[ \t]*\n[ \t]*", "\n", "".join(p.out))
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _html_with_unsubscribe(page: str) -> str:
+    line = ('<p style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#888888;margin-top:24px">'
+            + html.escape(UNSUBSCRIBE_LINE, quote=False) + "</p>")
+    m = re.search(r"</body\s*>", page, re.I)
+    return page[:m.start()] + line + page[m.start():] if m else page + line
+
+
+def _tracked(cfg: dict, page: str, track_id: str) -> str:
+    import tracking
+    if not track_id or not tracking.configured(cfg):
+        return page
+    return tracking.add_tracking(page, cfg["track_url"].strip(), track_id, links=bool(cfg.get("track_clicks")))
+
+
+def build_message(cfg: dict, to: str, subject: str, text: str, to_name: str = "",
+                  track_id: str = "") -> EmailMessage:
     sender = cfg.get("email", "")
     body = str(text or "").rstrip()
-    if cfg.get("unsubscribe", True):
+    pasted_html = is_html(body)
+    if cfg.get("unsubscribe", True) and not pasted_html:
         body += "\n\n" + UNSUBSCRIBE_LINE
     msg = EmailMessage()
     msg["From"] = formataddr((cfg.get("from_name", "") or "", sender))
@@ -154,8 +215,14 @@ def build_message(cfg: dict, to: str, subject: str, text: str, to_name: str = ""
         msg["Reply-To"] = reply_to
     if cfg.get("unsubscribe", True):
         msg["List-Unsubscribe"] = f"<mailto:{reply_to or sender}?subject=unsubscribe>"
+    if pasted_html:                       # HTML code pasted in the editor: sent exactly as written
+        page = _html_with_unsubscribe(body) if cfg.get("unsubscribe", True) else body
+        plain = html_to_text(body) + ("\n\n" + UNSUBSCRIBE_LINE if cfg.get("unsubscribe", True) else "")
+        msg.set_content(plain)
+        msg.add_alternative(_tracked(cfg, page, track_id), subtype="html")
+        return msg
     msg.set_content(to_plain(body))
-    msg.add_alternative(to_html(body), subtype="html")
+    msg.add_alternative(_tracked(cfg, to_html(body), track_id), subtype="html")
     return msg
 
 
@@ -206,9 +273,9 @@ class MailSender:
         except (smtplib.SMTPException, OSError):
             return False
 
-    def send(self, to: str, subject: str, text: str, to_name: str = "") -> str:
+    def send(self, to: str, subject: str, text: str, to_name: str = "", track_id: str = "") -> str:
         """Send one email; returns its Message-ID. MailError(uncertain=True) = it MAY have gone out."""
-        msg = build_message(self.cfg, to, subject, text, to_name)
+        msg = build_message(self.cfg, to, subject, text, to_name, track_id)
         if not self._alive():
             self.close()
             self._open()                       # nothing was sent yet: safe to reconnect

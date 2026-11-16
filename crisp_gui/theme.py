@@ -188,6 +188,28 @@ QHeaderView::section {{
 }}
 QTableCornerButton::section {{ background: {p.surface_alt}; border: none; }}
 
+/* message editor ------------------------------------------------------- */
+QFrame#editorBox {{ background: {p.surface}; border: 1px solid {p.border_strong}; border-radius: 8px; }}
+QFrame#editorToolbar {{ background: {p.surface_alt}; border: none; border-bottom: 1px solid {p.border};
+    border-top-left-radius: 8px; border-top-right-radius: 8px; }}
+QFrame#toolSep {{ background: {p.border_strong}; border: none; margin: 0 4px; }}
+QToolButton#toolBtn, QToolButton#toolText {{
+    background: transparent; border: 1px solid transparent; border-radius: 5px; color: {p.text};
+    min-height: 26px; padding: 0 6px; font-size: 13px; }}
+QToolButton#toolBtn {{ min-width: 26px; }}
+QToolButton#toolBtn:hover, QToolButton#toolText:hover {{ background: {p.hover}; }}
+QToolButton#toolBtn:checked {{ background: {p.selected}; border-color: {p.border_strong}; }}
+QToolButton#toolText:disabled, QToolButton#toolBtn:disabled {{ color: {p.text_faint}; }}
+QTextEdit#messageVisual, QPlainTextEdit#messageHtml, QTextBrowser#messagePreview {{
+    background: {p.surface}; border: none; border-bottom-left-radius: 8px; border-bottom-right-radius: 8px;
+    selection-background-color: {p.accent}; selection-color: {p.accent_text}; }}
+QTextEdit#messageVisual {{ font-size: 14px; }}
+QTabBar#versionTabs::tab {{ background: transparent; border: 1px solid transparent; border-radius: 6px;
+    padding: 4px 12px; margin-right: 2px; color: {p.text_muted}; }}
+QTabBar#versionTabs::tab:selected {{ background: {p.surface}; border-color: {p.border_strong}; color: {p.text};
+    font-weight: 600; }}
+QTabBar#versionTabs::tab:hover {{ color: {p.text}; }}
+
 /* progress ------------------------------------------------------------- */
 QProgressBar {{ background: {p.surface_alt}; border: 1px solid {p.border}; border-radius: 4px; min-height: 8px; max-height: 8px; }}
 QProgressBar::chunk {{ background: {p.accent}; border-radius: 3px; }}

@@ -239,6 +239,9 @@ def personalize(text, name, email=""):
 def check_message_fields():
     """API mode: stop before anything is sent if the message uses a field the file does not have."""
     problems = pz.check(API_TEXTS, PHEADERS or [])
+    if not MAIL_MODE and any(pz.is_html(t) for t in API_TEXTS):
+        problems.insert(0, "The message is HTML code, which the Crisp API cannot send (it would arrive as code). "
+                           "Use Send with: My email, or write the message in the Visual editor.")
     if problems:
         raise RuntimeError("Message fields: " + " ".join(problems))
 
@@ -277,6 +280,10 @@ def open_mail():
     except mail_sender.MailError as exc:
         raise RuntimeError(str(exc))
     print(f"Your email account connected: {cfg['email']} via {cfg.get('host')}. No browser is used.")
+    import tracking
+    if tracking.configured(cfg):
+        print("Tracking: opens" + (" and link clicks" if cfg.get("track_clicks") else "")
+              + " (Settings > Your email account). Results show who opened and when.")
 
 
 def mail_send(email, name, text):
@@ -285,9 +292,13 @@ def mail_send(email, name, text):
     import mail_sender
     before_send_click()   # shared Sheet: record "Sending" and re-check the claim
     print(f"  Sending from {MAIL.cfg.get('email')}...")
+    import tracking
+    track_id = tracking.new_id() if tracking.configured(MAIL.cfg) and not DRY_RUN else ""
+    if track_id:                  # written BEFORE sending, so an open can always be matched to this person
+        tracking.record_sent(DATA_DIR, sc.stamp(), track_id, email, name, CAMPAIGN, SUBJECT)
     SEND_CLICKED = True
     try:
-        MAIL.send(email, SUBJECT, text, to_name=name)
+        MAIL.send(email, SUBJECT, text, to_name=name, track_id=track_id)
     except mail_sender.MailError as exc:
         if not exc.uncertain:
             SEND_CLICKED = False           # the server refused it: nothing was sent
