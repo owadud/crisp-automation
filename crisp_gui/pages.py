@@ -461,9 +461,12 @@ class CampaignPage(Page):
         mrow = QHBoxLayout()
         mrow.addWidget(label("Send with", "fieldLabel"))
         mrow.addSpacing(8)
-        self.send_mode = SegmentedControl([("browser", "Browser", None), ("api", "Crisp API", None)], tm)
+        self.send_mode = SegmentedControl([("browser", "Browser", None), ("api", "Crisp API", None),
+                                           ("email", "My email", None)], tm)
         self.send_mode.setToolTip("Browser: Crisp inbox with your saved shortcut. "
-                                  "Crisp API: no browser, your message text below.")
+                                  "Crisp API: no browser, your message text below. "
+                                  "My email: the same message text, sent from your own mail account "
+                                  "(Settings > Your email account).")
         mrow.addWidget(self.send_mode)
         mrow.addStretch()
         card.body.addLayout(mrow)
@@ -784,6 +787,69 @@ class SettingsPage(Page):
         row.set_details(form)
         self.api_status = row.add_below(label("", "faint", wrap=True))
         self.api_row = row
+
+        row = group.add(SettingRow("Your email account", "For campaigns set to Send with: My email. Emails go out "
+                                   "from your own address and replies come to your inbox (or the Reply-to). "
+                                   "Gmail needs an App password: Google Account > Security > 2-Step Verification "
+                                   "> App passwords. Saved only on this computer."))
+        form = QWidget()
+        fl = QVBoxLayout(form)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.setSpacing(12)
+        prow = QHBoxLayout()
+        prow.addWidget(label("Provider", "fieldLabel"))
+        self.mail_provider = QComboBox()
+        import mail_sender
+        for key, text in mail_sender.PROVIDER_LABELS:
+            self.mail_provider.addItem(text, key)
+        prow.addWidget(self.mail_provider)
+        prow.addStretch()
+        fl.addLayout(prow)
+        frow = ResponsiveRow(min_item_width=220, spacing=12)
+        self.mail_email = Field("Email address", "The account you send from (also your login).",
+                                placeholder="you@yourcompany.com")
+        self.mail_password = Field("App password", "Gmail: the 16-letter App password, not your normal one.",
+                                   placeholder="App password")
+        self.mail_password.edit.setEchoMode(QLineEdit.Password)
+        self.mail_from_name = Field("From name", "What people see as the sender.", placeholder="e.g. Owadud from WPXPO")
+        self.mail_reply_to = Field("Reply-to (optional)", "Replies go here, e.g. your Crisp support address.",
+                                   placeholder="support@yourcompany.com")
+        for f in (self.mail_email, self.mail_password, self.mail_from_name, self.mail_reply_to):
+            frow.add(f)
+        fl.addWidget(frow)
+        srow = ResponsiveRow(min_item_width=160, spacing=12)
+        self.mail_host = Field("SMTP server", placeholder="smtp.gmail.com")
+        self.mail_port = Field("Port", placeholder="465")
+        self.mail_port.edit.setValidator(QIntValidator(1, 65535))
+        self.mail_security = QComboBox()
+        for key, text in (("ssl", "SSL (port 465)"), ("starttls", "STARTTLS (port 587)"), ("none", "None")):
+            self.mail_security.addItem(text, key)
+        self.mail_daily = Field("Daily limit", "Gmail allows about 500 a day, Workspace about 2,000.",
+                                placeholder="400")
+        self.mail_daily.edit.setValidator(QIntValidator(0, 100000))
+        sec = QWidget()
+        sl = QVBoxLayout(sec)
+        sl.setContentsMargins(0, 0, 0, 0)
+        sl.addWidget(label("Security", "fieldLabel"))
+        sl.addWidget(self.mail_security)
+        sl.addStretch()
+        for w in (self.mail_host, self.mail_port, sec, self.mail_daily):
+            srow.add(w)
+        fl.addWidget(srow)
+        self.mail_unsubscribe = QCheckBox("Add an unsubscribe line to every email (needed for bulk email)")
+        self.mail_unsubscribe.setChecked(True)
+        fl.addWidget(self.mail_unsubscribe)
+        brow = QHBoxLayout()
+        self.mail_save = button("Save and send test email to me", None, "send", tm, "text_muted")
+        self.mail_remove = button("Remove account", "ghost")
+        brow.addWidget(self.mail_save)
+        brow.addWidget(self.mail_remove)
+        brow.addStretch()
+        fl.addLayout(brow)
+        row.set_details(form)
+        self.mail_status = row.add_below(label("", "faint", wrap=True))
+        self.mail_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.mail_row = row
 
         row = group.add(SettingRow("AI for opening lines", "Claude, ChatGPT, Gemini, a free one (Groq, OpenRouter, "
                                    "Ollama on this computer) or any OpenAI-compatible service. The AI receives your "

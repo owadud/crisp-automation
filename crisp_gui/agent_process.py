@@ -105,6 +105,7 @@ class AgentRunner(QObject):
             "CRISP_SEND_MODE": settings.get("send_mode", "browser"),
             "CRISP_API_MESSAGES": settings.get("api_messages", "[]"),
             "CRISP_API_CONFIG": settings.get("api_config", ""),
+            "CRISP_MAIL_CONFIG": settings.get("mail_config", ""),
             "CRISP_AI_OPENERS": settings.get("ai_openers_file", ""),
             "CRISP_WORKCOPY_TAG": settings.get("workcopy_tag", ""),
             "CRISP_CLAIM_BATCH": settings.get("claim_batch", "") or "10",

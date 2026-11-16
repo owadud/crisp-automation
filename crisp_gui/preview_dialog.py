@@ -22,7 +22,7 @@ def preview_rows(plan, campaign: dict) -> list[tuple]:
     A/B test: the expected shortcut per row (the real run balances by actual sends)."""
     import send_control as sc
     try:
-        if campaign.get("send_mode") == "api":
+        if campaign.get("send_mode") in ("api", "email"):
             n = max(1, len(sc.split_messages(campaign.get("api_message", ""))))
             names = ", ".join(f"api-{i + 1}" for i in range(n))
         else:

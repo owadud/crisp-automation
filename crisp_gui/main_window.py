@@ -19,6 +19,9 @@ import send_control as sc  # noqa: E402
 import sheet_source as ss  # noqa: E402  (gspread is imported only when used)
 import campaign_results as cr  # noqa: E402
 import crisp_api  # noqa: E402  (Crisp REST API: read-only status tracking)
+import mail_sender  # noqa: E402  (sending from your own mail account)
+
+TEXT_MODES = ("api", "email")   # send modes that use the campaign's message text (no browser)
 
 from PySide6.QtCore import QObject, QProcess, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QKeySequence, QShortcut
@@ -133,6 +136,8 @@ class MainWindow(QMainWindow):
         self.sync_sources = results_sync.SyncSources(self.data_dir / "results_sources.json")
         # CRISP_API_CONFIG lets tests use a temporary file instead of the real token file.
         self.api_config_path = Path(os.environ.get("CRISP_API_CONFIG") or crisp_api.CONFIG)
+        self.mail_config_path = Path(os.environ.get("CRISP_MAIL_CONFIG") or mail_sender.CONFIG)
+        self._mail_factory = mail_sender.MailSender      # tests replace it with a fake
         self.queue_ctl = QueueController(self.campaign_store, self.launch_campaign, self.runner,
                                          agent_script or AGENT_SCRIPT, self.prefs_parallel, self)
         self.updater = UpdateController(GITHUB_REPO, ROOT, APP_VERSION, self)
@@ -349,6 +354,11 @@ class MainWindow(QMainWindow):
         self._import_signal = _SheetSignal(self)
         self._import_signal.done.connect(self._import_read)
         self.settings.make_shortcut.clicked.connect(self.make_shortcut)
+        self.settings.mail_save.clicked.connect(self.save_mail_account)
+        self.settings.mail_remove.clicked.connect(self.remove_mail_account)
+        self.settings.mail_provider.currentIndexChanged.connect(self._mail_provider_changed)
+        self._mail_signal = _SheetSignal(self)
+        self._mail_signal.done.connect(self._mail_tested)
         self.settings.api_save.clicked.connect(self.save_api_token)
         self.settings.api_remove.clicked.connect(self.remove_api_token)
         self.settings.api_test_send.clicked.connect(self.send_api_test)
@@ -533,6 +543,7 @@ class MainWindow(QMainWindow):
         self.settings.parallel.edit.setText(str(self.prefs.parallel()))
         self.settings.parallel.edit.editingFinished.connect(self._save_parallel)
         self._load_api_fields()
+        self._load_mail_fields()
         notes = self.campaign_store.restore()
         for n in notes:
             self._gui_line(n)
@@ -750,9 +761,10 @@ class MainWindow(QMainWindow):
         values["api_message"] = self.campaign.api_message.toPlainText().strip()
         values["api_messages"] = json.dumps(sc.split_messages(values["api_message"]))
         values["api_config"] = str(self.api_config_path)
+        values["mail_config"] = str(self.mail_config_path)
         values["ai_opener"] = "true" if self.campaign.ai_enabled.isChecked() else "false"
         values["ai_openers_file"] = (str(self._ai_store(values).path)
-                                     if values["send_mode"] == "api" and values["ai_opener"] == "true" else "")
+                                     if values["send_mode"] in TEXT_MODES and values["ai_opener"] == "true" else "")
         values.update(self._shared_values())
         return values
 
@@ -766,7 +778,7 @@ class MainWindow(QMainWindow):
 
     def _ai_text(self, v: dict) -> str:
         """Line for the live confirmation: how many AI opening lines are ready."""
-        if v.get("send_mode") != "api" or v.get("ai_opener") != "true":
+        if v.get("send_mode") not in TEXT_MODES or v.get("ai_opener") != "true":
             return ""
         store = self._ai_store(v)
         emails = [e for e, _n in self._ai_recipients()]
@@ -777,7 +789,7 @@ class MainWindow(QMainWindow):
 
     def _ai_refresh_status(self):
         c = self.campaign
-        if not c.ai_box.isVisibleTo(c) and c.send_mode.value() != "api":
+        if not c.ai_box.isVisibleTo(c) and c.send_mode.value() not in TEXT_MODES:
             return
         on = c.ai_enabled.isChecked()
         c.ai_generate.setEnabled(on and not self._ai_busy)
@@ -860,7 +872,7 @@ class MainWindow(QMainWindow):
 
     def _edit_ai_line(self, index):
         v = self.campaign_values()
-        if v.get("send_mode") != "api" or v.get("ai_opener") != "true":
+        if v.get("send_mode") not in TEXT_MODES or v.get("ai_opener") != "true":
             return
         row = self.list_rows.rows[index.row()] if index.row() < len(self.list_rows.rows) else None
         if not row or not row[1]:
@@ -971,8 +983,8 @@ class MainWindow(QMainWindow):
 
     def _apply_send_mode(self, mode):
         c = self.campaign
-        api = mode == "api"
-        c.send_mode.set_value("api" if api else "browser")
+        api = mode in TEXT_MODES
+        c.send_mode.set_value(mode if api else "browser")
         c.versions.set_api(api)
         for w in (c.api_message_label, c.api_message, c.api_message_help, c.ai_box):
             w.setVisible(api)
@@ -980,10 +992,11 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _shortcut_text(v: dict) -> str:
-        if v.get("send_mode") == "api":
+        if v.get("send_mode") in TEXT_MODES:
             texts = sc.split_messages(v.get("api_message", ""))
             first = (texts[0] if texts else "").replace("\n", " ")
-            head = "Send with: Crisp API (no browser)"
+            head = ("Send with: your email account (no browser)" if v.get("send_mode") == "email"
+                    else "Send with: Crisp API (no browser)")
             if len(texts) > 1:
                 labels = " / ".join(lab for _n, lab in sc.api_variants(v.get("api_message", ""),
                                                                          v.get("shortcut_version", "")))
@@ -1256,8 +1269,9 @@ class MainWindow(QMainWindow):
                                   and not self.runner.is_running())
         c.retry_failed.setText(f"Retry failed only ({st.retry_candidates})" if st.retry_candidates
                                else "Retry failed only")
-        api = c.send_mode.value() == "api"
-        for key in ("subject", "segment") + (() if api else ("shortcut",)):
+        api = c.send_mode.value() in TEXT_MODES
+        email_mode = c.send_mode.value() == "email"      # no Crisp segment for your own email
+        for key in ("subject",) + (() if email_mode else ("segment",)) + (() if api else ("shortcut",)):
             f = c.fields()[key]
             if not f.text():
                 f.set_state("error", "Required.")
@@ -1270,7 +1284,9 @@ class MainWindow(QMainWindow):
             problem = ""
             if not texts:
                 problem = "Type the message text for the Crisp API."
-            elif not crisp_api.configured(self._api_config()):
+            elif email_mode and mail_sender.problem(mail_sender.load_config(self.mail_config_path)):
+                problem = mail_sender.problem(mail_sender.load_config(self.mail_config_path))
+            elif not email_mode and not crisp_api.configured(self._api_config()):
                 problem = "Save the Crisp API token first: Settings > Crisp API."
             else:
                 try:
@@ -2020,6 +2036,91 @@ class MainWindow(QMainWindow):
             self.runner.request_stop()
             self.results_page.progress_text.setText("Stopping after the current page…")
 
+    # ============================================================ Your email account
+    def _load_mail_fields(self):
+        cfg = mail_sender.load_config(self.mail_config_path)
+        s = self.settings
+        provider = cfg.get("provider") or "gmail"
+        s.mail_provider.blockSignals(True)
+        s.mail_provider.setCurrentIndex(max(0, s.mail_provider.findData(provider)))
+        s.mail_provider.blockSignals(False)
+        host, port, security = mail_sender.PROVIDERS.get(provider, mail_sender.PROVIDERS["other"])
+        s.mail_email.edit.setText(cfg.get("email", ""))
+        s.mail_password.edit.setText(cfg.get("password", ""))
+        s.mail_from_name.edit.setText(cfg.get("from_name", ""))
+        s.mail_reply_to.edit.setText(cfg.get("reply_to", ""))
+        s.mail_host.edit.setText(cfg.get("host") or host)
+        s.mail_port.edit.setText(str(cfg.get("port") or port))
+        s.mail_security.setCurrentIndex(max(0, s.mail_security.findData(cfg.get("security") or security)))
+        s.mail_daily.edit.setText(str(cfg.get("daily_limit") or ""))
+        s.mail_unsubscribe.setChecked(bool(cfg.get("unsubscribe", True)))
+        s.mail_status.setText(f"Saved: {cfg['email']}. Campaigns set to Send with: My email use it."
+                              if mail_sender.configured(cfg) else "No email account yet.")
+
+    def _mail_provider_changed(self, _index):
+        s = self.settings
+        host, port, security = mail_sender.PROVIDERS.get(s.mail_provider.currentData(),
+                                                         mail_sender.PROVIDERS["other"])
+        s.mail_host.edit.setText(host)
+        s.mail_port.edit.setText(str(port))
+        s.mail_security.setCurrentIndex(max(0, s.mail_security.findData(security)))
+
+    def _mail_form(self) -> dict:
+        s = self.settings
+        port = s.mail_port.text()
+        return {"provider": s.mail_provider.currentData(), "email": s.mail_email.text(),
+                "password": s.mail_password.edit.text().replace(" ", "") if s.mail_provider.currentData() == "gmail"
+                else s.mail_password.edit.text(),
+                "from_name": s.mail_from_name.text(), "reply_to": s.mail_reply_to.text(),
+                "host": s.mail_host.text(), "port": int(port) if port.isdigit() else 587,
+                "security": s.mail_security.currentData(),
+                "daily_limit": int(s.mail_daily.text()) if s.mail_daily.text().isdigit() else 0,
+                "unsubscribe": s.mail_unsubscribe.isChecked()}
+
+    def save_mail_account(self):
+        """Save the account, then send ONE test email to the account's own address."""
+        s = self.settings
+        cfg = self._mail_form()
+        problem = mail_sender.problem(cfg) or rules.email_problem(cfg["email"])
+        if problem:
+            s.mail_status.setText(problem)
+            return
+        mail_sender.save_config(cfg, self.mail_config_path)
+        s.mail_save.setEnabled(False)
+        s.mail_status.setText(f"Saved. Logging in and sending a test email to {cfg['email']}…")
+
+        def work():
+            sender = self._mail_factory(cfg)
+            try:
+                sender.connect()
+                sender.send(cfg["email"], "Test from Crisp Automation",
+                            "Hi,\n\nThis is a test from Crisp Automation. Your email account works for campaigns "
+                            "set to **Send with: My email**.", to_name=cfg.get("from_name", ""))
+                self._mail_signal.done.emit("mail", cfg["email"], None)
+            except Exception as exc:  # noqa: BLE001
+                self._mail_signal.done.emit("mail", None, str(exc))
+            finally:
+                sender.close()
+        threading.Thread(target=work, daemon=True).start()
+
+    def _mail_tested(self, _kind, email, error):
+        s = self.settings
+        s.mail_save.setEnabled(True)
+        if error:
+            s.mail_status.setText(f"Saved, but the test failed: {error}")
+            return
+        s.mail_status.setText(f"Connected. A test email was sent to {email}: check that inbox (and Spam).")
+        self._validate_fields()
+
+    def remove_mail_account(self):
+        if not W.ask(self, "Remove your email account from this computer?",
+                     "Campaigns set to Send with: My email can't send until you add it again. For Gmail, you can "
+                     "also delete the App password in your Google Account.", confirm="Remove"):
+            return
+        mail_sender.remove_config(self.mail_config_path)
+        self._load_mail_fields()
+        self._validate_fields()
+
     # ============================================================ Crisp API (read-only)
     def _api_config(self) -> dict:
         return crisp_api.load_config(self.api_config_path)
@@ -2681,8 +2782,9 @@ class MainWindow(QMainWindow):
         v["workcopy_tag"] = c.id
         v["api_messages"] = json.dumps(sc.split_messages(v.get("api_message", "")))
         v["api_config"] = str(self.api_config_path)
+        v["mail_config"] = str(self.mail_config_path)
         v["ai_openers_file"] = (str(ai_openers.OpenerStore(self.data_dir / "ai_openers", c.name).path)
-                                if v.get("send_mode") == "api" and v.get("ai_opener") == "true" else "")
+                                if v.get("send_mode") in TEXT_MODES and v.get("ai_opener") == "true" else "")
         v["recent_days"] = str(sc.recent_days_value(v.get("recent_days")))   # 0 = other campaigns may email them
         if slot == 0:
             return self._start_agent(v, dry, label=f"campaign '{c.name}'")
@@ -2857,7 +2959,7 @@ class MainWindow(QMainWindow):
         lp.summary.setText(st.preview())
         rows = preview_rows(st.plan, v)
         base_cols = ("Row", "Email", "Name used", "Subject", "Shortcut", "Segment", "Reference", "Action")
-        if v.get("send_mode") == "api" and v.get("ai_opener") == "true":
+        if v.get("send_mode") in TEXT_MODES and v.get("ai_opener") == "true":
             store = self._ai_store(v)
             self.list_rows.columns = base_cols + ("AI opening line (double-click to edit)",)
             rows = [tuple(r) + ((store.get(r[1]) or ("—" if r[-1] == "Send" else "")),) for r in rows]

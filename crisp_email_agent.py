@@ -168,8 +168,20 @@ SHORTCUT_VERSION = os.environ.get("CRISP_SHORTCUT_VERSION", "").strip()
 # Sending: "browser" (Crisp inbox + saved shortcut, the default) or "api" (Crisp REST
 # API with the campaign's own message text; no browser). A/B in API mode = several
 # message texts; each variant is named "api-1", "api-2", ... with the same labels.
-SEND_MODE = "api" if os.environ.get("CRISP_SEND_MODE", "").strip().lower() == "api" else "browser"
-API_MODE = SEND_MODE == "api"
+# "email" = the same message texts, sent from your own mail account (mail_sender.py).
+SEND_MODE = os.environ.get("CRISP_SEND_MODE", "").strip().lower()
+SEND_MODE = SEND_MODE if SEND_MODE in ("api", "email") else "browser"
+API_MODE = SEND_MODE in ("api", "email")      # message texts, no browser
+MAIL_MODE = SEND_MODE == "email"
+MAIL = None           # mail_sender.MailSender during an email-account run
+MAIL_CONFIG = Path(os.environ.get("CRISP_MAIL_CONFIG") or (Path.home() / ".crisp_email_agent" / "mail_account.json"))
+if MAIL_MODE:
+    try:
+        _mail_cap = int(json.loads(MAIL_CONFIG.read_text(encoding="utf-8")).get("daily_limit") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        _mail_cap = 0
+    if _mail_cap > 0 and not (DAILY_CAP.isdigit() and int(DAILY_CAP) <= _mail_cap):
+        DAILY_CAP = str(_mail_cap)     # the mail account's own daily limit (Gmail ~500)
 try:
     API_TEXTS = [str(t) for t in json.loads(os.environ.get("CRISP_API_MESSAGES", "") or "[]") if str(t).strip()]
 except ValueError:
@@ -234,6 +246,8 @@ def check_message_fields():
 def open_api():
     """API mode: the saved Crisp token (Settings > Crisp API), checked with one read."""
     global API
+    if MAIL_MODE:
+        return open_mail()
     cfg = crisp_api.load_config(Path(os.environ.get("CRISP_API_CONFIG") or crisp_api.CONFIG))
     if not crisp_api.configured(cfg):
         raise RuntimeError("Sending with the Crisp API needs the API token: Settings > Crisp API.")
@@ -244,6 +258,46 @@ def open_api():
     print(f"Crisp API connected: {site.get('name') or cfg['website_id']}. No browser is used.")
 
 
+def open_mail():
+    """Email-account mode: log in to the saved mail account once (Settings > Your email account)."""
+    global MAIL
+    import mail_sender
+    cfg = mail_sender.load_config(MAIL_CONFIG)
+    problem = mail_sender.problem(cfg)
+    if problem:
+        raise RuntimeError("Sending from your email account: " + problem)
+    if not API_TEXTS:
+        raise RuntimeError("Sending from your email account needs the message text (Campaign > Message).")
+    MAIL = mail_sender.MailSender(cfg)
+    if DRY_RUN:
+        print(f"Your email account: {cfg['email']} (dry run: not logged in, nothing is sent).")
+        return
+    try:
+        MAIL.connect()
+    except mail_sender.MailError as exc:
+        raise RuntimeError(str(exc))
+    print(f"Your email account connected: {cfg['email']} via {cfg.get('host')}. No browser is used.")
+
+
+def mail_send(email, name, text):
+    """One email from your own account. 'Sending' is recorded right before it goes out."""
+    global SEND_CLICKED
+    import mail_sender
+    before_send_click()   # shared Sheet: record "Sending" and re-check the claim
+    print(f"  Sending from {MAIL.cfg.get('email')}...")
+    SEND_CLICKED = True
+    try:
+        MAIL.send(email, SUBJECT, text, to_name=name)
+    except mail_sender.MailError as exc:
+        if not exc.uncertain:
+            SEND_CLICKED = False           # the server refused it: nothing was sent
+            raise RuntimeError(f"Not sent: {exc}")
+        raise RuntimeError(str(exc))
+    print("  Email sent successfully.", flush=True)
+    emit("sent")
+    return True
+
+
 def api_send(row):
     """One recipient through the Crisp API: new conversation, email / name / subject /
     segment, then the message. 'Sending' is recorded (shared Sheet) right before the
@@ -251,7 +305,8 @@ def api_send(row):
     global API_SESSION, API_LINK, SEND_CLICKED
     email = clean(row.get("Contact Email"))
     name, from_email = rules.display_name(row)
-    print(f"  Recipient: {email} | {name}" + (" (name from email)" if from_email else "") + " (Crisp API)")
+    print(f"  Recipient: {email} | {name}" + (" (name from email)" if from_email else "")
+          + (" (your email account)" if MAIL_MODE else " (Crisp API)"))
     API_SESSION = API_LINK = ""
     opener = ""
     if AI_OPENERS_FILE:
@@ -264,13 +319,18 @@ def api_send(row):
     if empty:
         print("  Empty for this person: " + ", ".join(dict.fromkeys(empty)) + " (left out of the message).")
     if DRY_RUN:
-        print(f"  [DRY RUN] Crisp API: would create the conversation and send {len(text)} characters. "
-              "Nothing was created or sent.")
+        if MAIL_MODE:
+            print(f"  [DRY RUN] Your email account: would send {len(text)} characters. Nothing was sent.")
+        else:
+            print(f"  [DRY RUN] Crisp API: would create the conversation and send {len(text)} characters. "
+                  "Nothing was created or sent.")
         print("  ----- message -----")
         for line in text.splitlines():
             print("  | " + line)
         print("  -------------------")
         return True
+    if MAIL_MODE:
+        return mail_send(email, name, text)
     API_SESSION = API.create_conversation()
     API_LINK = API.link(API_SESSION)
     API.set_meta(API_SESSION, email=email, nickname=name, subject=SUBJECT,
@@ -2613,7 +2673,8 @@ def _main():
     )
 
     if API_MODE:
-        print(f"Send with: Crisp API ({len(API_TEXTS)} message text(s)); no browser.")
+        print(f"Send with: {'your email account' if MAIL_MODE else 'Crisp API'} "
+              f"({len(API_TEXTS)} message text(s)); no browser.")
     if len(VARIANTS) > 1:
         print("A/B test, split evenly: " + " · ".join(
             f"{n} ({lab})" + (f" / subject: {s}" if len(set(SUBJECTS)) > 1 else "")
