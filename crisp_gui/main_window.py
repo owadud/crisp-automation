@@ -138,6 +138,7 @@ class MainWindow(QMainWindow):
         self.api_config_path = Path(os.environ.get("CRISP_API_CONFIG") or crisp_api.CONFIG)
         self.mail_config_path = Path(os.environ.get("CRISP_MAIL_CONFIG") or mail_sender.CONFIG)
         self._mail_factory = mail_sender.MailSender      # tests replace it with a fake
+        self._editor_runs = False              # True while a manual run uses the campaign in the editor
         self.queue_ctl = QueueController(self.campaign_store, self.launch_campaign, self.runner,
                                          agent_script or AGENT_SCRIPT, self.prefs_parallel, self)
         self.updater = UpdateController(GITHUB_REPO, ROOT, APP_VERSION, self)
@@ -1525,6 +1526,7 @@ class MainWindow(QMainWindow):
             if not ok:
                 return
         v["retry_only"] = "true" if retry_only else "false"
+        self._editor_runs = True             # the editor holds the campaign this run uses
         err = self._start_agent(v, dry)
         if err:
             W.inform(self, "Could not start", err)
@@ -1596,12 +1598,33 @@ class MainWindow(QMainWindow):
         self._render_state(self.runner.state)
 
     def _set_inputs_locked(self, locked: bool):
+        if not locked:
+            self._editor_runs = False
+        self._update_editor_lock()
+
+    def _running_campaign_ids(self) -> set[str]:
+        return self.queue_ctl.running_ids()
+
+    def _update_editor_lock(self):
+        """While campaigns run, any OTHER campaign can be opened and edited. Only the one that
+        is running is view-only (a run keeps the settings it started with). The Dry run / Real
+        sending switch stays put while anything runs, so it always matches what is sending."""
         c = self.campaign
+        busy = self.runner.is_running() or self.queue_ctl.busy()
+        cid = self.prefs.editing_campaign()
+        view_only = ((self.runner.is_running() and getattr(self, "_editor_runs", False))
+                     or (bool(cid) and cid in self._running_campaign_ids()))
         for f in c.fields().values():
-            f.edit.setEnabled(not locked)
-        for w in (c.browse, c.reload, c.reset, c.dry, self.settings.reset):
-            w.setEnabled(not locked)
-        c.locked_banner.setVisible(locked)
+            f.edit.setEnabled(not view_only)
+        for w in (c.browse, c.reload, c.reset):
+            w.setEnabled(not view_only)
+        for w in (c.dry, self.settings.reset):
+            w.setEnabled(not busy)
+        if hasattr(self, "mode_switch"):
+            self.mode_switch.setEnabled(not busy)
+        c.locked_banner.set_text("This campaign is running, so it can only be viewed now. Open another "
+                                 "campaign to edit it, or stop this one first.")
+        c.locked_banner.setVisible(view_only)
 
     # ================================================================ log
     def _gui_line(self, text: str):
@@ -2435,6 +2458,28 @@ class MainWindow(QMainWindow):
     def prefs_parallel(self) -> int:
         return self.prefs.parallel()
 
+    def _allow_one_more(self) -> bool:
+        """A campaign is running and another should start: fine if a browser is free; otherwise
+        offer to run one more at the same time (each in its own Chromium window, max 3)."""
+        if self.queue_ctl.has_free_slot():
+            return True
+        manual = self.runner.is_running() and self.queue_ctl.slot_of_runner(self.runner) is None
+        running = len(self.queue_ctl.running_ids()) + (1 if manual else 0)
+        n = max(running, self.prefs.parallel()) + 1
+        if n > 3:
+            W.inform(self, "3 campaigns are already running", "That is the most at the same time. "
+                     "Queue this one: it starts by itself when one of them ends.")
+            return False
+        if not W.ask(self, "Run at the same time?",
+                     f"A campaign is already running. Start this one too, in its own Chromium window "
+                     f"(browser {n})? The first time, log in to Crisp in that new window. The delay between "
+                     "emails and the daily cap are shared, so in total it is not faster.",
+                     confirm=f"Run {n} at the same time"):
+            return False
+        self.prefs.set_parallel(n)
+        self.settings.parallel.edit.setText(str(n))
+        return True
+
     def _save_parallel(self):
         try:
             self.prefs.set_parallel(int(self.settings.parallel.text() or 1))
@@ -2498,16 +2543,17 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             W.inform(self, "Not possible", str(exc))
             return
+        if self.queue_ctl.active and fn in (self.campaign_store.enqueue, self.campaign_store.run_next):
+            self.queue_ctl.fill()             # the queue is running: start it now if a browser is free
         self.refresh_campaigns(select=getattr(result, "id", cid))
 
     def new_campaign(self):
-        if self.runner.is_running():
-            W.inform(self, "A run is in progress", "Wait until it ends, then start a new campaign.")
-            return
         values = dict(CAMPAIGN_DEFAULTS)
         values.update({"campaign": "", "csv": "", "source": "csv", "sheet_tab": ""})
         self._apply_campaign_values(values)
         self.prefs.set_editing_campaign("")
+        self._editor_runs = False
+        self._update_editor_lock()
         self.navigate(EDITOR)
         self.campaign.campaign_name.edit.setFocus()
 
@@ -2566,11 +2612,10 @@ class MainWindow(QMainWindow):
         if c is None:
             W.inform(self, "Choose a campaign", "Select a campaign in the list first.")
             return
-        if self.runner.is_running():
-            W.inform(self, "A run is in progress", "Campaign Setup is locked while a run is in progress.")
-            return
         self.prefs.set_editing_campaign(c.id)
+        self._editor_runs = False
         self._apply_campaign_values(c.settings)
+        self._update_editor_lock()
         self.navigate(EDITOR)
 
     def _apply_campaign_values(self, values: dict):
@@ -2711,10 +2756,11 @@ class MainWindow(QMainWindow):
     def run_queue(self):
         store = self.campaign_store
         if self.queue_ctl.active:
-            W.inform(self, "The queue is already running", "Stop it first to change what runs.")
+            self.queue_ctl.fill()
+            W.inform(self, "The queue is already running",
+                     "Campaigns you add to the queue start by themselves as soon as a browser is free.")
             return
-        if self.runner.is_running() and self.prefs.parallel() == 1:
-            W.inform(self, "A run is in progress", "Wait until it ends, then run the queue.")
+        if (self.runner.is_running() or self.queue_ctl.busy()) and not self._allow_one_more():
             return
         queued = [c for c in store.list() if c.status == cs.QUEUED]
         if not queued:
@@ -2881,7 +2927,7 @@ class MainWindow(QMainWindow):
         running = has and self.queue_ctl.runner_of(c.id) is not None
         in_queue = has and c.id in self.campaign_store.queue
         show = {
-            cp.open_sel: has and not running,
+            cp.open_sel: has,                              # a running one opens view-only
             cp.duplicate: has,
             cp.delete: has and not running,
             cp.enqueue: has and c.status not in (cs.QUEUED, cs.RUNNING, cs.PAUSED, cs.UNCONFIRMED),
@@ -2907,6 +2953,7 @@ class MainWindow(QMainWindow):
         cp.run_queue.style().polish(cp.run_queue)
         cp.run_queue.setEnabled(not self.queue_ctl.active and queued)
         cp.stop_queue.setVisible(self.queue_ctl.active)
+        self._update_editor_lock()                         # a campaign may have started or ended
 
     # ============================================================ run rows, lists, team
     RESULT_TEXT = {"sent": "Sent", "dry-run": "Dry run passed", "skipped": "Skipped (before Send)",

@@ -67,6 +67,15 @@ class QueueController(QObject):
     def busy(self) -> bool:
         return bool(self.slots)
 
+    def slot_of_runner(self, runner) -> int | None:
+        return next((k for k, (_c, r) in self.slots.items() if r is runner), None)
+
+    def running_ids(self) -> set[str]:
+        return {cid for cid, _r in self.slots.values()}
+
+    def has_free_slot(self) -> bool:
+        return self._free_slot() is not None
+
     # ---------------------------------------------------------------- queue
     def start(self, dry: bool, only: str = "") -> None:
         self.active, self.dry, self.only = True, dry, only

@@ -247,3 +247,73 @@ def test_check_in_crisp_marks_each_version(win):
     assert "Checked" in vt.checked.text() and win._load_crisp_lists()["subjects"] == ["Hi there️"]
     vt.table.item(1, vt.SHORTCUT).setText("bf-offer-1")                # fixing the row clears it
     assert status()[1] == "✓ Found"
+
+
+# ------------------------------------------------------------------ while campaigns run
+def test_open_and_edit_other_campaigns_while_one_runs(win, dialogs, monkeypatch, tmp_path):
+    monkeypatch.setenv("FAKE_STEP_DELAY", "0.2")
+    store = win.campaign_store
+    other = store.add("Other", {"source": "csv", "csv": str(win._csv), "subject": "S", "shortcut": "!a",
+                                "segment": "g"})
+    QTest.mouseClick(win.run_button, Qt.LeftButton)                      # the editor's campaign runs
+    assert wait_until(lambda: win.runner.is_running(), 5)
+    c = win.campaign
+    assert not c.subject.edit.isEnabled() and c.locked_banner.isVisibleTo(c)   # the running one: view only
+    win.navigate(0)
+    win.refresh_campaigns(select=other.id)
+    assert win.campaigns_page.open_sel.isEnabled()
+    win.open_campaign()                                                  # no "a run is in progress" refusal
+    assert win.stack.currentIndex() == EDITOR and win.prefs.editing_campaign() == other.id
+    assert c.subject.edit.isEnabled() and not c.locked_banner.isVisibleTo(c)  # another one: editable
+    assert not c.dry.isEnabled() and not win.mode_switch.isEnabled()     # the mode matches what is sending
+    win.new_campaign()
+    assert c.subject.edit.isEnabled()
+    run_to_end(win)
+    assert c.dry.isEnabled()
+
+
+def test_run_queue_while_a_run_is_going_offers_a_second_browser(win, dialogs, monkeypatch):
+    monkeypatch.setenv("FAKE_STEP_DELAY", "0.2")
+    store = win.campaign_store
+    a = store.add("Second", {"source": "csv", "csv": str(win._csv), "subject": "S", "shortcut": "!a",
+                             "segment": "g"})
+    store.enqueue(a.id)
+    win.prefs.set_parallel(1)
+    QTest.mouseClick(win.run_button, Qt.LeftButton)
+    assert wait_until(lambda: win.runner.is_running(), 5)
+    dialogs["answers"] = [False]
+    win.run_queue()
+    assert dialogs["seen"][-1] == "Run at the same time?" and win.prefs.parallel() == 1   # declined
+    assert not win.queue_ctl.active
+    run_to_end(win)
+
+
+def test_campaign_added_while_the_queue_runs_starts_when_a_browser_is_free(win, dialogs, monkeypatch):
+    calls = []
+    monkeypatch.setattr(win.queue_ctl, "fill", lambda: calls.append("fill"))
+    store = win.campaign_store
+    a = store.add("Late", {"source": "csv", "csv": str(win._csv), "subject": "S", "shortcut": "!a",
+                           "segment": "g"})
+    win.queue_ctl.active = True
+    win.refresh_campaigns(select=a.id)
+    win._campaign_action(store.enqueue)
+    assert calls == ["fill"] and store.get(a.id).status == cs.QUEUED
+    win.queue_ctl.active = False
+
+
+def test_run_both_at_once_starts_the_queue_in_a_second_browser(win, dialogs, monkeypatch):
+    monkeypatch.setenv("FAKE_STEP_DELAY", "0.2")
+    store = win.campaign_store
+    a = store.add("Second", {"source": "csv", "csv": str(win._csv), "subject": "S", "shortcut": "!a",
+                             "segment": "g", "reference": "Shahriar"})
+    store.enqueue(a.id)
+    win.prefs.set_parallel(1)
+    QTest.mouseClick(win.run_button, Qt.LeftButton)
+    assert wait_until(lambda: win.runner.is_running(), 5)
+    win.run_queue()                                                      # "Run 2 at the same time": yes
+    assert win.prefs.parallel() == 2 and win.settings.parallel.text() == "2"
+    assert wait_until(lambda: store.get(a.id).status == cs.RUNNING, 10)
+    assert win.queue_ctl.slot_of(a.id) == 1                              # its own browser, not the main one
+    assert wait_until(lambda: not win.queue_ctl.busy() and not win.runner.is_running(), 30)
+    assert store.get(a.id).status == cs.FINISHED
+    run_to_end(win)
