@@ -49,11 +49,18 @@ function doGet(e) {
   const link = String(p.u || '');
   if (id) tab.appendRow([new Date().toISOString(), link ? 'click' : 'open', id, link.slice(0, 500)]);
   if (link && /^https?:\/\//i.test(link)) {
-    const safe = link.replace(/"/g, '%22').replace(/</g, '%3C');
+    // Google does not let this page forward by itself, so it shows one clear button to the link.
+    const safe = link.replace(/"/g, '%22').replace(/</g, '%3C').replace(/>/g, '%3E');
+    const host = safe.replace(/^https?:\/\//i, '').split('/')[0];
     return HtmlService.createHtmlOutput(
-      '<meta http-equiv="refresh" content="0;url=' + safe + '">' +
-      '<script>window.top.location.href = "' + safe + '";</script>' +
-      '<p style="font-family:Arial">Opening <a href="' + safe + '" target="_top">' + safe + '</a></p>');
+      '<base target="_top"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+      '<div style="font-family:Arial,Helvetica,sans-serif;max-width:420px;margin:12vh auto;padding:32px 24px;' +
+      'text-align:center;border:1px solid #e6e6eb;border-radius:14px">' +
+      '<p style="margin:0 0 18px;font-size:16px;color:#18181b">Your link is ready</p>' +
+      '<a href="' + safe + '" style="display:inline-block;padding:14px 26px;background:#5b5bd6;color:#fff;' +
+      'border-radius:8px;font-size:16px;font-weight:bold;text-decoration:none">Continue to the offer &rarr;</a>' +
+      '<p style="margin:16px 0 0;font-size:12px;color:#888">' + host + '</p></div>')
+      .setTitle('Continue');
   }
   return ContentService.createTextOutput('');
 }
