@@ -930,11 +930,18 @@ class SettingsPage(Page):
 
         # ------------------------------------------------------------ Sending
         group = self.add(SettingsGroup("Sending"))
+        self.together = QCheckBox("On")
+        self.together.setChecked(True)
+        group.add(SettingRow("Run Browser, Crisp API and My email together",
+                             "A Browser, a Crisp API and a My email campaign in the queue all start at once. "
+                             "Crisp campaigns (Browser and API) share one delay and the daily cap; My email has "
+                             "its own delay and its account's daily limit.").add_control(self.together))
         self.parallel = short(Field("Campaigns at the same time", placeholder="1"), 90)
-        group.add(SettingRow("Campaigns at the same time",
-                             "1 = one after another in your Crisp browser (the safe default). 2 or 3 run together, "
-                             "each in its own browser window with its own Crisp login. The delay and daily cap still "
-                             "count for all of them together, so it is not faster.").add_control(self.parallel))
+        group.add(SettingRow("Campaigns of the same type at the same time",
+                             "1 = one after another (the safe default). 2 or 3 run together; extra Browser "
+                             "campaigns each get their own browser window with its own Crisp login. The delay "
+                             "and daily cap still count for all of them together, so it is not faster.")
+                  .add_control(self.parallel))
         self.claim_batch = short(Field("Batch size", placeholder="10"), 90)
         group.add(SettingRow("Shared Sheet: batch size",
                              "Recipients each runner claims at a time, so teammates sending from the same Sheet "

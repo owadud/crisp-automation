@@ -120,6 +120,13 @@ class Preferences:
     def set_allow_resend(self, on: bool) -> None:
         self._s.setValue("sending/allow_resend", "true" if on else "false")
 
+    def together(self) -> bool:
+        """Browser, Crisp API and My email campaigns run side by side (each type its own limit)."""
+        return str(self._s.value("queue/together", "true")) == "true"
+
+    def set_together(self, on: bool) -> None:
+        self._s.setValue("queue/together", "true" if on else "false")
+
     # Campaign Results: background checks through the Crisp API ------------------
     def auto_check(self) -> bool:
         return str(self._s.value("results/auto_check", "true")) == "true"

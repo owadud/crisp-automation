@@ -180,8 +180,12 @@ if MAIL_MODE:
         _mail_cap = int(json.loads(MAIL_CONFIG.read_text(encoding="utf-8")).get("daily_limit") or 0)
     except (OSError, ValueError, TypeError, AttributeError):
         _mail_cap = 0
-    if _mail_cap > 0 and not (DAILY_CAP.isdigit() and int(DAILY_CAP) <= _mail_cap):
-        DAILY_CAP = str(_mail_cap)     # the mail account's own daily limit (Gmail ~500)
+    # My email is its own channel: the account's daily limit (Gmail ~500) instead of the
+    # Crisp daily cap, and its own pace file, so it runs beside Crisp campaigns.
+    DAILY_CAP = str(_mail_cap) if _mail_cap > 0 else ""
+    if PACE_FILE:
+        PACE_FILE = str(Path(PACE_FILE).with_name(Path(PACE_FILE).stem + "_email" + Path(PACE_FILE).suffix))
+CHANNEL = "email" if MAIL_MODE else "crisp"     # history.csv Channel: daily counts per channel
 try:
     API_TEXTS = [str(t) for t in json.loads(os.environ.get("CRISP_API_MESSAGES", "") or "[]") if str(t).strip()]
 except ValueError:
@@ -609,13 +613,14 @@ def pace_turn():
 
     def told(wait):
         if wait >= 5:
-            print(f"  Waiting {wait:.0f} s (app-wide pace, shared by all campaigns)...")
+            print(f"  Waiting {wait:.0f} s (app-wide pace, shared by all "
+                  f"{'My email' if MAIL_MODE else 'Crisp'} campaigns)...")
         emit("waiting", seconds=round(wait, 1))
     if not PACER.acquire(stop_requested, told):
         return False
     cap = sc.optional_int(DAILY_CAP, "Daily cap")
     if cap:
-        done = sc.sent_today(HISTORY_FILE)
+        done = sc.sent_today(HISTORY_FILE, channel=CHANNEL)
         if done >= cap:
             PACER.release(0)
             print(f"Daily cap reached: {done} of {cap} sent today by all campaigns (Dhaka time). Stopping.")
@@ -891,7 +896,7 @@ def log_result(row_index, row, result, error="", link=""):
         sc.append_history(HISTORY_FILE, Email=entry["Email"], Name=entry["Name"], Result=result,
                           Campaign=CAMPAIGN, Subject=SUBJECT, Mode="live", Error=entry["Error"],
                           Row=entry["Row"], CSV=CSV_FILE.name, Shortcut=SHORTCUT,
-                          Version=SHORTCUT_VERSION, Link=link)
+                          Version=SHORTCUT_VERSION, Link=link, Channel=CHANNEL)
     except OSError as exc:
         print(f"  WARNING: could not write history: {exc}")
 
@@ -941,7 +946,7 @@ def apply_limits(eligible):
         notes.append(f"max {per_run} per run")
     cap = sc.optional_int(DAILY_CAP, "Daily cap")
     if cap and not DRY_RUN:
-        done = sc.sent_today(HISTORY_FILE)
+        done = sc.sent_today(HISTORY_FILE, channel=CHANNEL)
         left = max(0, cap - done)
         notes.append(f"daily cap {cap}, {done} sent today")
         limit = left if limit is None else min(limit, left)

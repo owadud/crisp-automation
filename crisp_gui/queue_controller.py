@@ -2,6 +2,10 @@
 once (each in its OWN browser profile and agent process) when parallel mode
 is on. The app-wide pace file keeps all of them at one shared speed.
 
+Send types (Browser, Crisp API, My email) can run side by side: with "together" on,
+the "Campaigns at the same time" limit counts each send type on its own, so one
+Browser, one Crisp API and one My email campaign run at once even when it is 1.
+
 Slot 0 uses the main window's runner (so the Activity page shows it); extra
 slots get their own AgentRunner and write their output to their run folder.
 """
@@ -30,6 +34,14 @@ def outcome_of(state: rs.RunState) -> tuple[str, str]:
     return cs.FINISHED, ""
 
 
+CHANNEL_LABELS = {"browser": "Browser", "api": "Crisp API", "email": "My email"}
+
+
+def channel_of(c) -> str:
+    mode = (getattr(c, "settings", None) or {}).get("send_mode") or "browser"
+    return mode if mode in CHANNEL_LABELS else "browser"
+
+
 def last_numbers(state: rs.RunState) -> dict:
     return {"sent": state.sent_confirmed if not state.dry_run else 0, "completed": state.completed,
             "failed": state.failed, "skipped": state.skipped, "elsewhere": state.elsewhere,
@@ -42,7 +54,7 @@ class QueueController(QObject):
     halted = Signal(str)        # the queue stopped because of a failure
 
     def __init__(self, store: cs.CampaignStore, launch, main_runner: AgentRunner, script: Path,
-                 max_parallel=lambda: 1, parent=None):
+                 max_parallel=lambda: 1, parent=None, together=lambda: True):
         """launch(campaign, runner, slot, dry) -> error text or None."""
         super().__init__(parent)
         self.store = store
@@ -50,6 +62,7 @@ class QueueController(QObject):
         self.main_runner = main_runner
         self.script = Path(script)
         self.max_parallel = max_parallel
+        self.together = together      # different send types run side by side
         self.active = False
         self.dry = True
         self.only = ""             # a scheduled start runs just this campaign
@@ -76,6 +89,32 @@ class QueueController(QObject):
     def has_free_slot(self) -> bool:
         return self._free_slot() is not None
 
+    def _limit(self) -> int:
+        return max(1, int(self.max_parallel() or 1))
+
+    def _running_channels(self) -> list[str]:
+        out = [channel_of(self.store.get(cid)) for cid, _r in self.slots.values() if self.store.get(cid)]
+        if self.main_runner.is_running() and self.slot_of_runner(self.main_runner) is None:
+            out.append(getattr(self.main_runner, "channel", "browser") or "browser")   # a run started by hand
+        return out
+
+    def can_start(self, c) -> bool:
+        """Room for this campaign now: a free slot, and its send type under the limit."""
+        if self._free_slot() is None:
+            return False
+        running = self._running_channels()
+        if self.together():
+            return running.count(channel_of(c)) < self._limit()
+        return len(running) < self._limit()
+
+    def startable(self, only: str = ""):
+        """The first queued campaign (queue order) that can start now, or None."""
+        for cid in self.store.queue:
+            c = self.store.get(cid)
+            if c is not None and c.status == cs.QUEUED and (not only or cid == only) and self.can_start(c):
+                return c
+        return None
+
     # ---------------------------------------------------------------- queue
     def start(self, dry: bool, only: str = "") -> None:
         self.active, self.dry, self.only = True, dry, only
@@ -91,7 +130,8 @@ class QueueController(QObject):
             self.changed.emit()
 
     def _free_slot(self):
-        for k in range(max(1, int(self.max_parallel() or 1))):
+        total = self._limit() * (len(CHANNEL_LABELS) if self.together() else 1)
+        for k in range(total):
             if k in self.slots:
                 continue
             if k == 0 and self.main_runner.is_running():
@@ -103,16 +143,17 @@ class QueueController(QObject):
         while self.active:
             if self.only:
                 c = self.store.get(self.only)
-                nxt = c if c is not None and c.status == cs.QUEUED else None
+                waiting = c if c is not None and c.status == cs.QUEUED else None
             else:
-                nxt = self.store.next_queued()
-            if nxt is None:
+                waiting = self.store.next_queued()
+            if waiting is None:
                 if not self.slots:
                     self.active = False
                     self.message.emit("Queue finished.")
                 break
+            nxt = self.startable(self.only)
             k = self._free_slot()
-            if k is None:
+            if nxt is None or k is None:
                 break
             runner = self.main_runner if k == 0 else self._extra_runner(k)
             err = self.launch(nxt, runner, k, self.dry)
@@ -122,7 +163,7 @@ class QueueController(QObject):
                 break
             self.slots[k] = (nxt.id, runner)
             self.store.start(nxt.id, getattr(runner, "run_dir", "") or "")
-            self.message.emit(f"Campaign '{nxt.name}' started" + (f" (browser {k + 1})" if k else "") + ".")
+            self.message.emit(f"Campaign '{nxt.name}' started ({CHANNEL_LABELS[channel_of(nxt)]}).")
         self.changed.emit()
 
     def _extra_runner(self, k: int) -> AgentRunner:

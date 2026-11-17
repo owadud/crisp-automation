@@ -57,6 +57,9 @@ class AgentRunner(QObject):
         if not self.script.is_file():
             return f"Agent script not found: {self.script}"
 
+        # The Chromium profile this run uses (None: Crisp API / My email open no browser).
+        self.profile_used = Path(profile_dir) if settings.get("send_mode", "browser") == "browser" else None
+        self.channel = settings.get("send_mode") or "browser"
         self.stop_file = Path(tempfile.gettempdir()) / f"crisp_agent_stop_{uuid.uuid4().hex}"
         self.pause_file = Path(tempfile.gettempdir()) / f"crisp_agent_pause_{uuid.uuid4().hex}"
         self._remove_stop_file()

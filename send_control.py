@@ -16,7 +16,7 @@ from pathlib import Path
 
 DHAKA = timezone(timedelta(hours=6), "Dhaka")
 HISTORY_COLUMNS = ["Time", "Email", "Name", "Result", "Campaign", "Subject", "Mode", "Error", "Row", "CSV",
-                   "Shortcut", "Version", "Link"]
+                   "Shortcut", "Version", "Link", "Channel"]
 # Results written to history.csv / report.csv / the CSV Status column.
 SENT, DRY_RUN, FAILED, SKIPPED, UNCONFIRMED, INVALID = (
     "Sent", "Dry run", "Failed", "Skipped", "Unconfirmed", "Invalid")
@@ -168,11 +168,13 @@ def read_history(path: Path) -> list[dict]:
         return []
 
 
-def count_sent(path: Path, since: datetime) -> int:
-    """Real (not dry-run) sends recorded at or after `since` (Dhaka)."""
+def count_sent(path: Path, since: datetime, channel: str | None = None) -> int:
+    """Real (not dry-run) sends recorded at or after `since` (Dhaka). channel "crisp" / "email"
+    counts only that channel (rows from before the Channel column are Crisp)."""
     cutoff = stamp(since)
     return sum(1 for r in read_history(path)
-               if r.get("Result") == SENT and r.get("Mode") == "live" and r.get("Time", "") >= cutoff)
+               if r.get("Result") == SENT and r.get("Mode") == "live" and r.get("Time", "") >= cutoff
+               and (channel is None or (r.get("Channel") or "crisp") == channel))
 
 
 class HistoryIndex:
@@ -216,9 +218,9 @@ class HistoryIndex:
         return self._recent.get(str(email or "").strip().lower())
 
 
-def sent_today(path: Path, now: datetime | None = None) -> int:
+def sent_today(path: Path, now: datetime | None = None, channel: str | None = None) -> int:
     now = now or now_dhaka()
-    return count_sent(path, now.replace(hour=0, minute=0, second=0, microsecond=0))
+    return count_sent(path, now.replace(hour=0, minute=0, second=0, microsecond=0), channel)
 
 
 def sent_last_days(path: Path, days: int = 7, now: datetime | None = None) -> int:

@@ -142,7 +142,8 @@ class MainWindow(QMainWindow):
         self._mail_factory = mail_sender.MailSender      # tests replace it with a fake
         self._editor_runs = False              # True while a manual run uses the campaign in the editor
         self.queue_ctl = QueueController(self.campaign_store, self.launch_campaign, self.runner,
-                                         agent_script or AGENT_SCRIPT, self.prefs_parallel, self)
+                                         agent_script or AGENT_SCRIPT, self.prefs_parallel, self,
+                                         together=lambda: self.prefs.together())
         self.updater = UpdateController(GITHUB_REPO, ROOT, APP_VERSION, self)
         self.stats = CsvStats()
         self.last_state: rs.RunState | None = None
@@ -383,6 +384,8 @@ class MainWindow(QMainWindow):
         self._api_checking = False
         self._api_quiet = False
         self.settings.api_auto.toggled.connect(lambda on: self.prefs.set_auto_check(on))
+        self.settings.together.setChecked(self.prefs.together())
+        self.settings.together.toggled.connect(self._together_changed)
         self.settings.allow_resend.setChecked(self.prefs.allow_resend())
         self.settings.allow_resend.toggled.connect(self._allow_resend_changed)
         self.auto_check_timer = QTimer(self)
@@ -1540,7 +1543,7 @@ class MainWindow(QMainWindow):
         if err:
             W.inform(self, "Could not start", err)
 
-    def _start_agent(self, v: dict, dry: bool, label: str = "") -> str | None:
+    def _start_agent(self, v: dict, dry: bool, label: str = "", profile: Path | None = None) -> str | None:
         """Run folder, settings.json, run.log, then start the agent on the main runner."""
         v["history_file"] = str(self.history_file)
         v["pace_file"] = str(self.data_dir / "pace.json")
@@ -1556,7 +1559,7 @@ class MainWindow(QMainWindow):
             self.run_dir, self._run_log = None, None
             v["run_dir"] = ""
             self._gui_line(f"Could not create the run folder ({exc}); continuing without it.")
-        err = self.runner.start(v, dry, self.profile_dir)
+        err = self.runner.start(v, dry, profile or self.profile_dir)
         self.runner.run_dir = str(self.run_dir or "")
         if err:
             self._close_run_log()
@@ -2594,10 +2597,26 @@ class MainWindow(QMainWindow):
     def prefs_parallel(self) -> int:
         return self.prefs.parallel()
 
+    def _together_changed(self, on: bool):
+        self.prefs.set_together(on)
+        if self.queue_ctl.active:
+            self.queue_ctl.fill()
+
+    def _free_profile(self) -> Path:
+        """The first Chromium profile no running Browser campaign is using (main one first)."""
+        runners = [self.runner] + [r for _c, r in self.queue_ctl.slots.values()]
+        used = {getattr(r, "profile_used", None) for r in runners if r.is_running()}
+        k = 1
+        while True:
+            path = self.profile_dir if k == 1 else self.profile_dir.with_name(f"{self.profile_dir.name}_{k}")
+            if path not in used:
+                return path
+            k += 1
+
     def _allow_one_more(self) -> bool:
         """A campaign is running and another should start: fine if a browser is free; otherwise
         offer to run one more at the same time (each in its own Chromium window, max 3)."""
-        if self.queue_ctl.has_free_slot():
+        if self.queue_ctl.startable() is not None:
             return True
         manual = self.runner.is_running() and self.queue_ctl.slot_of_runner(self.runner) is None
         running = len(self.queue_ctl.running_ids()) + (1 if manual else 0)
@@ -2969,8 +2988,9 @@ class MainWindow(QMainWindow):
         v["ai_openers_file"] = (str(ai_openers.OpenerStore(self.data_dir / "ai_openers", c.name).path)
                                 if v.get("send_mode") in TEXT_MODES and v.get("ai_opener") == "true" else "")
         v["recent_days"] = str(sc.recent_days_value(v.get("recent_days")))   # 0 = other campaigns may email them
+        profile = self._free_profile()
         if slot == 0:
-            return self._start_agent(v, dry, label=f"campaign '{c.name}'")
+            return self._start_agent(v, dry, label=f"campaign '{c.name}'", profile=profile)
         v["history_file"] = str(self.history_file)
         v["pace_file"] = str(self.data_dir / "pace.json")
         try:
@@ -2982,7 +3002,6 @@ class MainWindow(QMainWindow):
         (run_dir / "settings.json").write_text(json.dumps(settings, indent=2, ensure_ascii=False), encoding="utf-8")
         runner.run_log = (run_dir / "run.log").open("a", encoding="utf-8")
         runner.run_dir = str(run_dir)
-        profile = self.profile_dir.with_name(f"{self.profile_dir.name}_{slot + 1}")
         err = runner.start(v, dry, profile)
         if err:
             runner.run_log.close()
