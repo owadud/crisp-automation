@@ -98,8 +98,13 @@ def test_advanced_is_collapsed_and_opens_with_the_keyboard(win):
     c, st = win.campaign, win.settings
     assert not c.advanced.is_open()
     assert not c.delay.isVisibleTo(c) and c.versions.isVisibleTo(c)      # common visible, rest folded
-    # Settings: grouped rows all visible; only the long Crisp API and AI forms fold out
-    assert st.runner_name.isVisibleTo(st) and st.claim_batch.isVisibleTo(st)
+    # Settings: one tab at a time; inside a tab every row shows, only the long account forms fold out
+    assert st.tabs.value() == "accounts" and not st.runner_name.isVisibleTo(st)
+    st.show_tab("general")
+    assert st.runner_name.isVisibleTo(st)
+    st.show_tab("sending")
+    assert st.claim_batch.isVisibleTo(st) and not st.runner_name.isVisibleTo(st)
+    st.show_tab("accounts")
     assert not st.api_key.isVisibleTo(st) and not st.ai_key.isVisibleTo(st)
     st.ai_row.toggle.click()
     assert st.ai_key.isVisibleTo(st) and st.ai_row.toggle.text() == "Done"

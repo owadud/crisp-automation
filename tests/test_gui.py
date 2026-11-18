@@ -432,8 +432,9 @@ def test_update_available_shows_button_and_blocks_run_while_installing(win, dial
     rel = Release(tag="v9.9", version="9.9", zip_name="x.zip", zip_url="https://x/zip")
     win.updater.release = rel
     win._update_checked(rel, "Version 9.9 is available.")
-    assert s.install_update.isVisibleTo(s)
     assert "9.9 available" in win.version_label.text()
+    win.version_label.mousePressEvent(None)        # the sidebar line opens Settings > App
+    assert s.tabs.value() == "app" and s.install_update.isVisibleTo(s)
 
     started = []
     win.updater.install = lambda: started.append(True) or True

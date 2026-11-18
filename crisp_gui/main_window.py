@@ -3656,6 +3656,12 @@ class MainWindow(QMainWindow):
         self.settings.install_update.setVisible(release is not None)
         foot = f"Version {APP_VERSION}"
         self.version_label.setText(f"{foot} · v{release.version} available" if release else foot)
+        # Settings has tabs now: the sidebar line opens Settings > App, where Update now is.
+        self.version_label.setCursor(Qt.PointingHandCursor if release else Qt.ArrowCursor)
+        self.version_label.setToolTip("Open Settings > App to update" if release else "")
+        self.version_label.mousePressEvent = (
+            (lambda _e: (self.navigate(SETTINGS), self.settings.show_tab("app"))) if release
+            else (lambda _e: None))
 
     def install_update(self):
         rel = self.updater.release
