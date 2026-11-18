@@ -207,7 +207,7 @@ QToolButton#toolText:disabled, QToolButton#toolBtn:disabled {{ color: {p.text_fa
 QTextEdit#messageVisual, QPlainTextEdit#messageHtml, QTextBrowser#messagePreview {{
     background: {p.surface}; border: none; border-bottom-left-radius: 8px; border-bottom-right-radius: 8px;
     selection-background-color: {p.accent}; selection-color: {p.accent_text}; }}
-QTextEdit#messageVisual {{ font-size: 14px; }}
+QTextEdit#messageVisual {{ font-family: Arial, Helvetica, sans-serif; font-size: 14px; }}
 QTabBar#versionTabs::tab {{ background: transparent; border: 1px solid transparent; border-radius: 6px;
     padding: 4px 12px; margin-right: 2px; color: {p.text_muted}; }}
 QTabBar#versionTabs::tab:selected {{ background: {p.surface}; border-color: {p.border_strong}; color: {p.text};

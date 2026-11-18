@@ -99,36 +99,41 @@ def _inline(text: str) -> str:
 
 
 def to_html(markdown: str) -> str:
-    """The editor's Markdown (bold, italic, links, lists, quotes) as simple email HTML."""
-    out, para, items, kind = [], [], [], ""
+    """The editor's Markdown (bold, italic, links, lists, quotes) as simple email HTML.
+
+    Line for line, like the visual editor and like Gmail writes emails: each line is one
+    <div>, each empty line is one empty line (<div><br></div>), so the spacing people see
+    is exactly the spacing typed. No paragraph margins are added."""
+    out, items, kind = [], [], ""
 
     def flush():
-        nonlocal para, items, kind
-        if para:
-            out.append("<p>" + "<br>".join(_inline(p) for p in para) + "</p>")
+        nonlocal items, kind
         if items:
-            out.append(f"<{kind}>" + "".join(f"<li>{_inline(i)}</li>" for i in items) + f"</{kind}>")
-        para, items, kind = [], [], ""
+            out.append(f'<{kind} style="margin:0;padding-left:24px">'
+                       + "".join(f"<li>{_inline(i)}</li>" for i in items) + f"</{kind}>")
+        items, kind = [], ""
 
-    for line in str(markdown or "").splitlines():
+    lines = str(markdown or "").splitlines()
+    while lines and not lines[-1].strip():
+        lines.pop()                                    # no blank space after the last line
+    for line in lines:
         bullet = re.match(r"^\s*[-*]\s+(.*)$", line)
         number = re.match(r"^\s*\d+\.\s+(.*)$", line)
-        if not line.strip():
-            flush()
-        elif bullet or number:
+        if bullet or number:
             want = "ul" if bullet else "ol"
-            if para or (kind and kind != want):
+            if kind and kind != want:
                 flush()
             kind = want
             items.append((bullet or number).group(1))
+            continue
+        flush()
+        if not line.strip():
+            out.append("<div><br></div>")
         elif line.startswith(">"):
-            flush()
-            out.append(f'<blockquote style="margin:0 0 1em;padding-left:12px;border-left:3px solid #ccc">'
+            out.append(f'<blockquote style="margin:0;padding-left:12px;border-left:3px solid #ccc">'
                        f"{_inline(line.lstrip('> '))}</blockquote>")
         else:
-            if items:
-                flush()
-            para.append(line)
+            out.append(f"<div>{_inline(line)}</div>")
     flush()
     return ('<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5">'
             + "\n".join(out) + "</div>")

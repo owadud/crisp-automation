@@ -72,3 +72,34 @@ def test_editor_keeps_markers_off_soft_line_breaks():
     link.setAnchorHref("https://x.com/offer")
     cur.insertText("\u2028", link)
     assert me.to_markdown(doc) == "**Deals:**\nhttps://x.com/offer"
+
+
+def test_preview_spacing_follows_the_editor_line_for_line():
+    html = ms.to_html("Hi Ann,\nline two\n\n\n**Deals:**\n- one\n- two\nBye\n\n")
+    body = html[html.index(">") + 1:-len("</div>")]
+    assert body == ("<div>Hi Ann,</div>\n<div>line two</div>\n<div><br></div>\n<div><br></div>\n"
+                    "<div><b>Deals:</b></div>\n"
+                    '<ul style="margin:0;padding-left:24px"><li>one</li><li>two</li></ul>\n<div>Bye</div>')
+
+
+def test_editor_lines_use_the_email_spacing():
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtGui import QTextBlockFormat, QTextCursor, QTextDocument
+    from PySide6.QtWidgets import QApplication
+    from crisp_gui import message_editor as me
+    QApplication.instance() or QApplication([])
+    doc = QTextDocument()
+    me.load_markdown(doc, "a\n\nb")
+    cur = QTextCursor(doc)
+    cur.movePosition(QTextCursor.End)
+    bf = QTextBlockFormat()
+    bf.setBottomMargin(12)                     # like a pasted web paragraph
+    cur.insertBlock(bf)
+    cur.insertText("pasted")
+    me.set_email_spacing(doc)
+    block = doc.begin()
+    while block.isValid():
+        f = block.blockFormat()
+        assert f.lineHeight() == me.LINE_HEIGHT and f.bottomMargin() == 0
+        block = block.next()

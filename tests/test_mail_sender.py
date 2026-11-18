@@ -64,7 +64,7 @@ def test_message_has_html_plain_reply_to_and_unsubscribe():
     assert msg["List-Unsubscribe"] == "<mailto:support@example.com?subject=unsubscribe>"
     plain, html = (part.get_content() for part in msg.iter_parts())
     assert "Hi Ann," in plain and "Buy (https://x.com)" in plain and "unsubscribe" in plain
-    assert "<b>Ann</b>" in html and "<ul><li>PostX</li><li>WowStore</li></ul>" in html
+    assert "<b>Ann</b>" in html and "<ul style=\"margin:0;padding-left:24px\"><li>PostX</li><li>WowStore</li></ul>" in html
     assert '<a href="https://x.com">Buy</a>' in html
 
 

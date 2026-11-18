@@ -176,7 +176,27 @@ def load_markdown(doc: QTextDocument, md: str, accent: str = "#5b5bd6") -> None:
                 cur.setBlockFormat(bf)
                 line = quote.group(1)
         _insert_inline(cur, line, plain, accent)
+    set_email_spacing(doc)
     doc.setModified(False)
+
+
+LINE_HEIGHT = 130      # percent of Arial 14px line spacing (~16px) = 21px = the email CSS line-height 1.5 (14px x 1.5)
+
+
+def set_email_spacing(doc: QTextDocument) -> None:
+    """Every line gets the email's line spacing and no extra paragraph space; new lines
+    typed with Enter copy it from the line above."""
+    bf = QTextBlockFormat()
+    bf.setLineHeight(LINE_HEIGHT, 1)                 # 1 = proportional height
+    bf.setTopMargin(0)
+    bf.setBottomMargin(0)
+    block = doc.begin()
+    while block.isValid():                           # only lines that differ (pasted text): undo stays clean
+        f = block.blockFormat()
+        if f.lineHeight() != LINE_HEIGHT or f.topMargin() or f.bottomMargin():
+            cur = QTextCursor(block)
+            cur.mergeBlockFormat(bf)
+        block = block.next()
 
 
 def _wrap_md(text: str, left: str, right: str) -> str:
@@ -487,6 +507,10 @@ class MessageEditor(QWidget):
         self.visual.setAcceptRichText(True)
         self.visual.setFrameShape(QFrame.NoFrame)
         self.visual.document().setDocumentMargin(14)
+        email_font = QFont("Arial")                  # same font, size and line spacing as the email
+        email_font.setStyleHint(QFont.SansSerif)
+        email_font.setPixelSize(14)
+        self.visual.document().setDefaultFont(email_font)
         self.visual.textChanged.connect(self._changed)
         self.visual.cursorPositionChanged.connect(self._sync_buttons)
         self._hl_visual = FieldHighlighter(self.visual.document(), tm)
@@ -726,6 +750,12 @@ class MessageEditor(QWidget):
     def _changed(self) -> None:
         if self._loading:
             return
+        if getattr(self, "mode", "") == "visual" and not getattr(self, "_spacing", False):
+            self._spacing = True                     # pasted lines: the email's spacing, not the page's
+            try:
+                set_email_spacing(self.visual.document())
+            finally:
+                self._spacing = False
         self._store_current()
         text = self.toPlainText()
         n = len([v for v in self.versions if v.strip()])
