@@ -370,7 +370,7 @@ def api_send(row):
         if not body:                     # never happens for eligible rows; a last safety net
             raise RuntimeError("No approved AI email for this person; nothing was sent.")
         base = sc.insert_ai_email(base, body)
-    base = sc.fix_image_links(base)     # Drive / Dropbox / Giphy share links -> the image itself (GIFs animate)
+    base = sc.fix_image_links(sc.repair_markdown(base))     # Drive / Dropbox / Giphy share links -> the image itself (GIFs animate)
     text, empty = pz.render(sc.insert_opener(base, opener), name, PDATA.get(rules.normalize_email(email)))
     if not text.strip():
         raise RuntimeError("The message text is empty.")

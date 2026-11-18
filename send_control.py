@@ -390,9 +390,12 @@ def direct_image_url(url: str) -> str:
     Google Drive (shared 'Anyone with the link'), Dropbox and Giphy pages. Others unchanged."""
     u = str(url or "").strip()
     m = (re.search(r"drive\.google\.com/file/d/([\w-]{10,})", u)
-         or re.search(r"drive\.google\.com/(?:open|uc)\?(?:[^#]*&)?id=([\w-]{10,})", u))
+         or re.search(r"drive\.google\.com/(?:open|uc)\?(?:[^#]*&)?id=([\w-]{10,})", u)
+         or re.search(r"drive\.usercontent\.google\.com/download\?(?:[^#]*&)?id=([\w-]{10,})", u))
     if m:
-        return f"https://drive.usercontent.google.com/download?id={m.group(1)}&export=view"
+        # Google's image server: keeps GIFs animated and, unlike drive.usercontent, is not refused
+        # when a web page or web mail loads it from another site.
+        return f"https://lh3.googleusercontent.com/d/{m.group(1)}"
     if re.match(r"https?://(www\.)?dropbox\.com/", u):
         u = re.sub(r"([?&])dl=0", r"\1raw=1", u)
         return u if "raw=1" in u or "dl=1" in u else u + ("&" if "?" in u else "?") + "raw=1"
@@ -400,6 +403,13 @@ def direct_image_url(url: str) -> str:
     if m:
         return f"https://media.giphy.com/media/{m.group(1)}/giphy.gif"
     return u
+
+
+def repair_markdown(text: str) -> str:
+    """Messages saved by v3.33 and earlier: bold / strike markers that wrapped a line break
+    ('**Deals:\\n**' -> '**Deals:**\\n') and links on nothing but a line break ('[\\n](url)')."""
+    text = re.sub(r"(\*\*|~~)([^\n]*?\S)[ \t]*\n\1(?=\s|$)", r"\1\2\1\n", str(text or ""))
+    return re.sub(r"\[(\s*)\]\((https?://[^)\s]+)\)", r"\1", text)
 
 
 def fix_image_links(text: str) -> str:

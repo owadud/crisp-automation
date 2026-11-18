@@ -147,6 +147,7 @@ def _insert_inline(cur: QTextCursor, text: str, fmt: QTextCharFormat, accent: st
 
 def load_markdown(doc: QTextDocument, md: str, accent: str = "#5b5bd6") -> None:
     """The app's Markdown -> rich text, one line = one paragraph."""
+    md = sc.repair_markdown(md)                       # older saves: markers around line breaks
     doc.clear()
     cur = QTextCursor(doc)
     plain = QTextCharFormat()
@@ -179,12 +180,27 @@ def load_markdown(doc: QTextDocument, md: str, accent: str = "#5b5bd6") -> None:
 
 
 def _wrap_md(text: str, left: str, right: str) -> str:
-    """Markers hug the words: '**Buy now** ' not '**Buy now **' (that would not be bold)."""
+    """Markers hug the words: '**Buy now** ' not '**Buy now **' (that would not be bold).
+    A line break inside (Shift+Enter, pasted text) ends the markers on each line."""
+    if "\n" in text:
+        return "\n".join(_wrap_md(part, left, right) for part in text.split("\n"))
     core = text.strip(" ")
     if not core:
         return text
     lead, trail = text[:len(text) - len(text.lstrip(" "))], text[len(text.rstrip(" ")):]
     return f"{lead}{left}{core}{right}{trail}"
+
+
+def _link_md(text: str, href: str) -> str:
+    """[text](url), with spaces and line breaks kept outside the brackets; a link on
+    nothing but a line break is just that line break (no empty link)."""
+    if "\n" in text:
+        return "\n".join(_link_md(part, href) for part in text.split("\n"))
+    core = text.strip(" ")
+    if not core:
+        return text
+    lead, trail = text[:len(text) - len(text.lstrip(" "))], text[len(text.rstrip(" ")):]
+    return f"{lead}[{core}]({href}){trail}"
 
 
 def block_markdown(block) -> str:
@@ -224,7 +240,7 @@ def block_markdown(block) -> str:
             while i + 1 < len(out) and isinstance(out[i + 1], tuple) and out[i + 1][1] == href:
                 i += 1
                 texts.append(out[i][2])
-            md.append(f"[{''.join(texts)}]({href})")
+            md.append(_link_md("".join(texts), href))
         else:
             md.append(part)
         i += 1
@@ -731,7 +747,7 @@ class MessageEditor(QWidget):
         if not self.preview_box.isVisible() and not self.preview_toggle.isChecked():
             return
         text = self.versions[self.current] if self.current < len(self.versions) else ""
-        filled = pz.render(sc.fix_image_links(text), SAMPLE_NAME, pz.SAMPLE)[0] if text.strip() else ""
+        filled = pz.render(sc.fix_image_links(sc.repair_markdown(text)), SAMPLE_NAME, pz.SAMPLE)[0] if text.strip() else ""
         page = filled if self.mode == "html" else mail_sender.to_html(filled)
         page = page if filled else '<p style="color:#9a9aa5;font-family:Arial">The email appears here as you write.</p>'
         if page == self._page:

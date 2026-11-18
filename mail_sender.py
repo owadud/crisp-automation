@@ -93,6 +93,8 @@ def _inline(text: str) -> str:
     t = re.sub(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])", r"<i>\1</i>", t)
     t = re.sub(r"~~(.+?)~~", r"<s>\1</s>", t)
     t = re.sub(r"`([^`]+)`", r"<code>\1</code>", t)
+    # a bare web address becomes a link too (mail apps do the same)
+    t = re.sub(r"""(?<![="'>/\w])(https?://[^\s<"']*[^\s<"'.,;:!?)])""", r'<a href="\1">\1</a>', t)
     return t
 
 
