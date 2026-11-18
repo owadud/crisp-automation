@@ -468,6 +468,14 @@ class CampaignPage(Page):
                                   "My email: the same message text, sent from your own mail account "
                                   "(Settings > Your email account).")
         mrow.addWidget(self.send_mode)
+        # Shown when the chosen way of sending has no account yet: opens Settings > Accounts.
+        self.send_setup_hint = label("", "fieldError")
+        self.send_setup = button("Set up", "ghost")
+        self.send_setup_hint.hide()
+        self.send_setup.hide()
+        mrow.addSpacing(8)
+        mrow.addWidget(self.send_setup_hint)
+        mrow.addWidget(self.send_setup)
         mrow.addStretch()
         card.body.addLayout(mrow)
         for f in (self.subject, self.shortcut, self.shortcut_version):   # saved texts; edited in the table
@@ -486,8 +494,31 @@ class CampaignPage(Page):
         ai = QVBoxLayout(self.ai_box)
         ai.setContentsMargins(0, 0, 0, 0)
         ai.setSpacing(6)
-        self.ai_enabled = QCheckBox("Personalize the opening line with AI")
+        self.ai_enabled = QCheckBox("Personalize with AI")
         ai.addWidget(self.ai_enabled)
+        krow = QHBoxLayout()
+        krow.addWidget(label("AI writes", "fieldLabel"))
+        self.ai_kind = SegmentedControl([("opener", "Opening line", None), ("body", "Email body", None)], tm)
+        self.ai_kind.set_value("opener")
+        self.ai_kind.setToolTip("Opening line: one personal sentence before your message.\n"
+                                "Email body: a different offer per person from their row and your Products tab; "
+                                "it goes where {ai_email} is (or after the greeting).")
+        krow.addWidget(self.ai_kind)
+        krow.addSpacing(12)
+        self.ai_products_label = label("Products tab", "fieldLabel")
+        self.ai_products = QComboBox()
+        self.ai_products.setEditable(True)
+        self.ai_products.setMinimumWidth(180)
+        self.ai_products.setToolTip("The tab (in the campaign's Google Sheet) or CSV file listing your plugins: "
+                                    "Plugin, What it does, Best for, Pro price, Offer, Coupon, Link. "
+                                    "The AI may only offer what is in it.")
+        krow.addWidget(self.ai_products_label)
+        krow.addWidget(self.ai_products)
+        krow.addStretch()
+        self.ai_kind_row = QWidget()
+        self.ai_kind_row.setLayout(krow)
+        krow.setContentsMargins(0, 0, 0, 0)
+        ai.addWidget(self.ai_kind_row)
         arow = QHBoxLayout()
         self.ai_generate = button("Generate with AI…", None, "send", tm, "text_muted")
         self.ai_review = button("Review in Lists", "ghost")
@@ -710,10 +741,30 @@ class ActivityPage(Page):
 # =====================================================================
 class SettingsPage(Page):
     """Grouped rows: name and explanation on the left, the control on the right.
-    Long forms (Crisp API, AI) fold out under their row with Edit."""
+    Long forms (Crisp API, AI) fold out under their row with Edit. Tabs on top show
+    one part at a time (General, Accounts, Sending, This computer, App)."""
+
+    TABS = (("accounts", "Accounts"), ("sending", "Sending"), ("general", "General"),
+            ("computer", "This computer"), ("app", "App"))
 
     def __init__(self, tm: ThemeManager):
         super().__init__()
+        self.tabs = SegmentedControl([(k, t, None) for k, t in self.TABS], tm)
+        bar = QHBoxLayout()
+        bar.addWidget(self.tabs)
+        bar.addStretch()
+        holder = QWidget()
+        holder.setLayout(bar)
+        bar.setContentsMargins(0, 0, 0, 0)
+        self.add(holder)
+        self._tab_groups: dict[str, list] = {}
+        self.tabs.changed.connect(self.show_tab)
+
+        def group_for(title: str, tab: str):
+            g = self.add(SettingsGroup(title))
+            g.layout().itemAt(0).widget().hide()           # the tab already names the group
+            self._tab_groups.setdefault(tab, []).append(g)
+            return g
 
         def short(field: Field, width: int) -> Field:
             field.title.hide()
@@ -721,7 +772,7 @@ class SettingsPage(Page):
             return field
 
         # ------------------------------------------------------------ General
-        group = self.add(SettingsGroup("General"))
+        group = group_for("General", "general")
         self.theme = SegmentedControl(
             [("light", "Light", "sun"), ("dark", "Dark", "moon"), ("system", "System", "monitor")], tm)
         group.add(SettingRow("Theme", "System follows your operating system's light or dark setting.")
@@ -731,7 +782,7 @@ class SettingsPage(Page):
                              "Blank = this computer's name.").add_control(self.runner_name))
 
         # ------------------------------------------------------------ Connections
-        group = self.add(SettingsGroup("Connections"))
+        group = group_for("Accounts", "accounts")
         row = group.add(SettingRow("Crisp API", "Sends without the browser and reads delivered / read / replied. "
                                    "Token: Crisp Settings > Workspace Settings > Advanced configuration > API Token. "
                                    "Saved only on this computer."))
@@ -929,7 +980,7 @@ class SettingsPage(Page):
         self.ai_row = row
 
         # ------------------------------------------------------------ Sending
-        group = self.add(SettingsGroup("Sending"))
+        group = group_for("Sending", "sending")
         self.together = QCheckBox("On")
         self.together.setChecked(True)
         group.add(SettingRow("Run Browser, Crisp API and My email together",
@@ -958,7 +1009,7 @@ class SettingsPage(Page):
                              "default.").add_control(self.allow_resend))
 
         # ------------------------------------------------------------ This computer
-        group = self.add(SettingsGroup("This computer"))
+        group = group_for("This computer", "computer")
         self.make_shortcut = button("Create shortcut", None, "send", tm, "text_muted")
         row = group.add(SettingRow("Desktop icon", "Adds Crisp Automation to the Desktop and app menu, so it opens "
                                    "with one click and no terminal. Clicking it while the app is open (even during "
@@ -981,7 +1032,7 @@ class SettingsPage(Page):
         self.health_result.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         # ------------------------------------------------------------ App
-        group = self.add(SettingsGroup("App"))
+        group = group_for("App", "app")
         self.check_updates = button("Check for updates", None, "refresh", tm, "text_muted")
         self.install_update = button("Update now", "primary")
         self.install_update.hide()
@@ -1000,6 +1051,20 @@ class SettingsPage(Page):
             self.about.add(key, title)
         self.about.set("version", f"Crisp Automation Desktop {APP_VERSION}")
         self.finish()
+        self.show_tab("accounts")
+
+    def show_tab(self, key: str) -> None:
+        self.tabs.set_value(key)
+        for tab, groups in self._tab_groups.items():
+            for g in groups:
+                g.setVisible(tab == key)
+        self.verticalScrollBar().setValue(0)
+
+    def open_row(self, tab: str, row) -> None:
+        """Show a tab and fold out one row's form (e.g. Accounts > Your email account)."""
+        self.show_tab(tab)
+        if getattr(row, "details", None) is not None:
+            row.show_details(True)
 
 # =====================================================================
 class HistoryPage(Page):
@@ -1068,7 +1133,7 @@ def _table(columns, min_height=260) -> QTableWidget:
 class CampaignsPage(Page):
     """Saved campaigns and the run queue. Actions shown depend on the selected campaign."""
 
-    COLUMNS = ("#", "Campaign", "Status", "List", "Subject", "Shortcut(s)", "Last run", "Note")
+    COLUMNS = ("#", "Campaign", "Status", "List", "Subject", "Send with", "Last run", "Note")
 
     def __init__(self, tm: ThemeManager):
         super().__init__()

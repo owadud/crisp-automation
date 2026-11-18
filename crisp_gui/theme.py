@@ -173,6 +173,10 @@ QFrame#bannerWarning {{ background: {p.warning_soft}; border: 1px solid {p.warni
 QFrame#bannerDanger {{ background: {p.danger_soft}; border: 1px solid {p.danger}; border-radius: 8px; }}
 QFrame#bannerInfo {{ background: {p.accent_soft}; border: 1px solid {p.border}; border-radius: 8px; }}
 QLabel#bannerText {{ color: {p.text}; }}
+QLabel#pillOk {{ background: {p.success_soft}; color: {p.success}; border-radius: 9px; padding: 2px 9px;
+    font-size: 12px; font-weight: 500; }}
+QLabel#pillOff {{ background: {p.warning_soft}; color: {p.warning}; border-radius: 9px; padding: 2px 9px;
+    font-size: 12px; font-weight: 500; }}
 
 /* tables: light header, no grid, a thin line between rows ------------ */
 QTableView {{

@@ -812,5 +812,18 @@ class SettingRow(QWidget):
         self.toggle.blockSignals(True)
         self.toggle.setChecked(on)
         self.toggle.blockSignals(False)
-        self.toggle.setText("Done" if on else "Edit")
+        self.toggle.setText("Done" if on else ("Edit" if getattr(self, "ready", True) else "Set up"))
         self.details.setVisible(on)
+
+    def set_status(self, text: str, ok: bool):
+        """A small pill before the Edit button: 'Connected' (green) or 'Not set up' (amber)."""
+        if getattr(self, "pill", None) is None:
+            self.pill = QLabel()
+            self.controls.insertWidget(0, self.pill, 0, Qt.AlignVCenter)
+        self.ready = ok
+        self.pill.setText(text)
+        self.pill.setObjectName("pillOk" if ok else "pillOff")
+        self.pill.style().unpolish(self.pill)
+        self.pill.style().polish(self.pill)
+        if self.toggle is not None and not self.toggle.isChecked():
+            self.toggle.setText("Edit" if ok else "Set up")

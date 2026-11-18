@@ -197,6 +197,22 @@ try:
     AI_OPENERS = json.loads(Path(AI_OPENERS_FILE).read_text(encoding="utf-8")) if AI_OPENERS_FILE else {}
 except (OSError, ValueError):
     AI_OPENERS = {}
+# AI-written email bodies (generated, checked and approved in the app):
+# {email: {"body", "check", "state"}}. Only ready ones are sent; others are skipped.
+AI_EMAILS_FILE = os.environ.get("CRISP_AI_EMAILS", "").strip()
+try:
+    AI_EMAILS = json.loads(Path(AI_EMAILS_FILE).read_text(encoding="utf-8")) if AI_EMAILS_FILE else {}
+except (OSError, ValueError):
+    AI_EMAILS = {}
+
+
+def ai_email_ready(email) -> str:
+    """The person's AI-written body if it may be sent (checked clean, or approved by you), else ''."""
+    item = AI_EMAILS.get(rules.normalize_email(email)) or {}
+    body = str(item.get("body", "")).strip()
+    return body if body and (not item.get("check") or item.get("state") == "approved") else ""
+
+
 API_TEXT = ""         # message text for the current recipient
 API_SESSION = ""      # conversation created for the current recipient
 API_LINK = ""
@@ -348,7 +364,14 @@ def api_send(row):
         opener = str((AI_OPENERS.get(email.strip().lower()) or {}).get("opener", ""))
         if not opener:
             print("  No AI opening line for this recipient; sending without one.")
-    text, empty = pz.render(sc.insert_opener(API_TEXT, opener), name, PDATA.get(rules.normalize_email(email)))
+    base = API_TEXT
+    if AI_EMAILS_FILE:
+        body = ai_email_ready(email)
+        if not body:                     # never happens for eligible rows; a last safety net
+            raise RuntimeError("No approved AI email for this person; nothing was sent.")
+        base = sc.insert_ai_email(base, body)
+    base = sc.fix_image_links(base)     # Drive / Dropbox / Giphy share links -> the image itself (GIFs animate)
+    text, empty = pz.render(sc.insert_opener(base, opener), name, PDATA.get(rules.normalize_email(email)))
     if not text.strip():
         raise RuntimeError("The message text is empty.")
     if empty:
@@ -675,7 +698,10 @@ def classify_rows(rows):
 
 
 def get_eligible(rows):
-    return [(index, row) for index, row, outcome, _ in classify_rows(rows) if outcome == rules.ELIGIBLE]
+    out = [(index, row) for index, row, outcome, _ in classify_rows(rows) if outcome == rules.ELIGIBLE]
+    if AI_EMAILS_FILE:                   # AI-written emails: only people whose email is ready
+        out = [(i, r) for i, r in out if ai_email_ready(r.get("Contact Email"))]
+    return out
 
 
 def print_precheck(rows):
@@ -684,6 +710,13 @@ def print_precheck(rows):
         print("SEND AGAIN is ON (Settings): people already emailed get this email again "
               "(at most once in this run).")
     counts = {}
+    if AI_EMAILS_FILE:
+        waiting = [i for i, r, o, _d in classify_rows(rows)
+                   if o == rules.ELIGIBLE and not ai_email_ready(r.get("Contact Email"))]
+        if waiting:
+            print(f"AI EMAIL NOT READY: {len(waiting)} recipient(s) skipped (not written yet, or flagged and "
+                  "not approved in Lists). Rows: " + ", ".join(str(i + 1) for i in waiting[:30])
+                  + (" ..." if len(waiting) > 30 else ""))
     for index, row, outcome, detail in classify_rows(rows):
         counts[outcome] = counts.get(outcome, 0) + 1
         if outcome == rules.INVALID:

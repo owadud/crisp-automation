@@ -89,7 +89,14 @@ def build_index(grid) -> tuple[dict, list[str]]:
 
 
 def plugins_of(info) -> list[str]:
+    """Plugins from a 'Plugins' column ("WowStore, WowInvoice Pro") and from tags ("PostX Users")."""
     found = {}
+    for header, value in (info or {}).get("fields", {}).items():
+        if key(header) in ("plugins", "plugin", "pluginsused", "products"):
+            for part in re.split(r"[,;/|]+", value):
+                name = re.sub(r"\s*\((free|pro)\)\s*$|\s+(free|pro)\s*$", "", part.strip(), flags=re.I).strip()
+                if name:
+                    found.setdefault(key(name), name)
     for cell in (info or {}).get("cells", []):
         m = _PLUGIN_TAG.match(cell)
         if m and key(m.group(1).split()[0]) not in _NOT_PLUGIN:
@@ -218,7 +225,7 @@ def _render(text, name, info=None, bundle=None, escape=False) -> tuple[str, list
 
 def check(texts, headers) -> list[str]:
     """Problems in the message texts (unknown fields, unclosed {if}) before anything is sent."""
-    known = {key(s) for s in SMART} | {key(h) for h in headers} | {"aiopener"}
+    known = {key(s) for s in SMART} | {key(h) for h in headers} | {"aiopener", "aiemail"}
     problems = []
     for n, text in enumerate(texts, start=1):
         where = f"Message {n}: " if len(texts) > 1 else ""

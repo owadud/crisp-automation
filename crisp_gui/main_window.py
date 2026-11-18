@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import recipient_rules as rules  # noqa: E402
 import send_control as sc  # noqa: E402
 import sheet_source as ss  # noqa: E402  (gspread is imported only when used)
+import personal as pz  # noqa: E402  (each person's row, for AI-written emails)
 import campaign_results as cr  # noqa: E402
 import crisp_api  # noqa: E402  (Crisp REST API: read-only status tracking)
 import mail_sender  # noqa: E402  (sending from your own mail account)
@@ -42,7 +43,7 @@ from .icons import icon, logo_pixmap
 from .diagnostics import build_zip
 from .preview_dialog import preview_rows, show_preview
 from . import campaign_store as cs
-from . import ai_openers, browser, import_dialog, results_sync, schedule_dialog
+from . import ai_emails, ai_openers, browser, import_dialog, results_sync, schedule_dialog
 from .models import RowsModel
 from .pages import (ActivityPage, CampaignPage, CampaignsPage, HistoryPage, ListsPage, ResultsPage, SettingsPage,
                     TeamPage)
@@ -359,6 +360,7 @@ class MainWindow(QMainWindow):
         self._import_signal.done.connect(self._import_read)
         self.settings.make_shortcut.clicked.connect(self.make_shortcut)
         self.settings.mail_save.clicked.connect(self.save_mail_account)
+        self.campaign.send_setup.clicked.connect(lambda: self.open_account_setup(self.campaign.send_mode.value()))
         self.settings.mail_remove.clicked.connect(self.remove_mail_account)
         self.settings.mail_provider.currentIndexChanged.connect(self._mail_provider_changed)
         self._mail_signal = _SheetSignal(self)
@@ -434,11 +436,13 @@ class MainWindow(QMainWindow):
         c.send_mode.changed.connect(self._send_mode_changed)
         c.ai_enabled.toggled.connect(lambda on: (self._field_changed("ai_opener", "true" if on else "false"),
                                                  self._ai_refresh_status()))
-        c.ai_generate.clicked.connect(self.generate_ai_openers)
+        c.ai_generate.clicked.connect(self.generate_ai)
+        c.ai_kind.changed.connect(self._ai_kind_changed)
+        c.ai_products.currentTextChanged.connect(lambda t: self._field_changed("ai_products", t))
         c.ai_review.clicked.connect(lambda: self.navigate(LISTS))
         self._ai_signal = _AiSignal(self)
         self._ai_signal.progress.connect(lambda d, t: self.campaign.ai_status.setText(
-            f"Writing opening lines… {d} of {t}"))
+            f"Writing with AI… {d} of {t}"))
         self._ai_signal.done.connect(self._ai_generated)
         self._ai_busy = False
         s = self.settings
@@ -518,6 +522,8 @@ class MainWindow(QMainWindow):
             field.edit.setText(values[key])
         self.campaign.api_message.setPlainText(values.get("api_message", ""))
         self.campaign.ai_enabled.setChecked(values.get("ai_opener") == "true")
+        self.campaign.ai_kind.set_value(values.get("ai_kind") or "opener")
+        self.campaign.ai_products.setCurrentText(values.get("ai_products") or "Products")
         self._apply_send_mode(values.get("send_mode", "browser"))
         self._show_ai_settings()
         self.campaign.dry.setChecked(True)   # always start safe
@@ -579,6 +585,7 @@ class MainWindow(QMainWindow):
         self.nav_buttons[NAV_FOR[index]].setChecked(True)
         self._set_title(index)
         if index == SETTINGS:
+            self._refresh_account_pills()
             from . import desktop_shortcut as ds
             self.settings.shortcut_status.setText("Shortcut already created." if ds.installed() else "")
             exists = self.profile_dir.exists()
@@ -773,8 +780,13 @@ class MainWindow(QMainWindow):
         values["api_config"] = str(self.api_config_path)
         values["mail_config"] = str(self.mail_config_path)
         values["ai_opener"] = "true" if self.campaign.ai_enabled.isChecked() else "false"
+        values["ai_kind"] = self.campaign.ai_kind.value() or "opener"
+        values["ai_products"] = self.campaign.ai_products.currentText().strip()
+        ai_on = values["send_mode"] in TEXT_MODES and values["ai_opener"] == "true"
         values["ai_openers_file"] = (str(self._ai_store(values).path)
-                                     if values["send_mode"] in TEXT_MODES and values["ai_opener"] == "true" else "")
+                                     if ai_on and values["ai_kind"] != "body" else "")
+        values["ai_emails_file"] = (str(self._ai_email_store(values).path)
+                                    if ai_on and values["ai_kind"] == "body" else "")
         values.update(self._shared_values())
         return values
 
@@ -783,6 +795,102 @@ class MainWindow(QMainWindow):
         v = v or self.campaign_values()
         return ai_openers.OpenerStore(self.data_dir / "ai_openers", self.campaign_name(v))
 
+    def _ai_email_store(self, v: dict | None = None):
+        v = v or self.campaign_values()
+        return ai_emails.EmailStore(self.data_dir / "ai_emails", self.campaign_name(v))
+
+    def _ai_body_mode(self, v: dict | None = None) -> bool:
+        v = v or {"send_mode": self.campaign.send_mode.value(),
+                  "ai_opener": "true" if self.campaign.ai_enabled.isChecked() else "false",
+                  "ai_kind": self.campaign.ai_kind.value()}
+        return v.get("send_mode") in TEXT_MODES and v.get("ai_opener") == "true" and v.get("ai_kind") == "body"
+
+    def _ai_kind_changed(self, kind):
+        self._field_changed("ai_kind", kind or "opener")
+        self._show_ai_kind()
+        self._ai_refresh_status()
+        if self.stack.currentIndex() == LISTS:
+            self.refresh_lists()
+
+    def _show_ai_kind(self):
+        c = self.campaign
+        on = c.ai_enabled.isChecked()
+        c.ai_kind_row.setVisible(on)
+        body = c.ai_kind.value() == "body"
+        c.ai_products_label.setVisible(on and body)
+        c.ai_products.setVisible(on and body)
+
+    def generate_ai(self):
+        return self.generate_ai_emails() if self._ai_body_mode() else self.generate_ai_openers()
+
+    def _read_grid(self, v: dict, tab: str = ""):
+        """The campaign's list (or another tab / CSV file) as a grid of cells (worker thread)."""
+        target = tab or (v.get("sheet_tab") if v.get("source") == "sheet" else v.get("csv"))
+        if target and str(target).lower().endswith(".csv"):
+            return ai_emails.grid_from_csv(target)
+        if v.get("source") == "sheet":
+            src = ss.SheetSource(v.get("sheet_url", ""), target, v.get("google_key", "")).connect()
+            src.download()
+            return src.grid
+        return ai_emails.grid_from_csv(target)
+
+    def generate_ai_emails(self):
+        c = self.campaign
+        if self._ai_busy:
+            return
+        self.refresh_csv()
+        people = self._ai_recipients()
+        if not people:
+            W.inform(self, "Nothing to write", "No recipients would be sent right now (check the list).")
+            return
+        problem = ai_openers.not_ready()
+        if problem:
+            W.inform(self, "AI provider not set up", problem)
+            return
+        v = self.campaign_values()
+        products_tab = v.get("ai_products", "")
+        if not products_tab:
+            W.inform(self, "Choose the Products tab", "Pick the tab (or CSV file) that lists your plugins, "
+                     "prices, offers and links. The AI may only offer what is in it.")
+            return
+        store = self._ai_email_store(v)
+        todo = [(e, n) for e, n in people if not store.get(e)]
+        if not todo:
+            if not W.ask(self, "All emails are written", "Write them all again? Emails you approved are kept.",
+                         confirm="Write again"):
+                return
+            todo = people
+        ai = ai_openers.load_settings()
+        pname = ai_openers.provider_name(ai)
+        cost = (f"about US${max(0.01, len(todo) * ai_emails.COST_PER_RECIPIENT):.2f} on your Anthropic account "
+                "(rough)" if ai["provider"] == "anthropic" else f"set by {pname} (free tiers have rate limits)")
+        if not W.ask(self, f"Write {len(todo)} personal email(s) with {pname}?",
+                     "The AI receives your subject and message, your Products tab, and per person a first name, "
+                     "the company from the email domain and the columns of their row (plugins, plan, spend ...), "
+                     "never the email address. Every email is checked; flagged ones wait for you in Lists and "
+                     "are not sent until you approve them.",
+                     details=[("Provider", pname), ("Model", ai_openers.current_model(ai)),
+                              ("Products", products_tab), ("Recipients", str(len(todo))), ("Cost", cost)],
+                     confirm="Write emails"):
+            return
+        self._ai_busy = True
+        c.ai_generate.setEnabled(False)
+        c.ai_status.setText(f"Writing emails… 0 of {len(todo)}")
+        subject, message = v["subject"], sc.split_messages(v["api_message"])[0] if v["api_message"] else ""
+
+        def work():
+            try:
+                index, _headers = pz.build_index(self._read_grid(v))
+                products = ai_emails.products_from_grid(self._read_grid(v, products_tab))
+                if not products:
+                    raise ValueError(f"The Products tab '{products_tab}' is empty or was not found.")
+                result = ai_emails.generate(todo, index, products, subject, message,
+                                            progress=lambda d, t: self._ai_signal.progress.emit(d, t))
+                self._ai_signal.done.emit(dict(result, _kind="body"), "")
+            except Exception as exc:  # noqa: BLE001
+                self._ai_signal.done.emit({"_kind": "body"}, str(exc))
+        threading.Thread(target=work, daemon=True).start()
+
     def _ai_recipients(self) -> list:
         return [(p["email"], p["name"]) for p in self.stats.plan if p.get("send") and p.get("email")]
 
@@ -790,6 +898,10 @@ class MainWindow(QMainWindow):
         """Line for the live confirmation: how many AI opening lines are ready."""
         if v.get("send_mode") not in TEXT_MODES or v.get("ai_opener") != "true":
             return ""
+        if self._ai_body_mode(v):
+            emails = [e for e, _n in self._ai_recipients()]
+            ready, look, missing = self._ai_email_store(v).counts(emails)
+            return (f"AI emails: {ready} ready and sent; {look + missing} skipped (need a look or not written)\n")
         store = self._ai_store(v)
         emails = [e for e, _n in self._ai_recipients()]
         ready, look, missing = store.counts(emails)
@@ -802,6 +914,7 @@ class MainWindow(QMainWindow):
         if not c.ai_box.isVisibleTo(c) and c.send_mode.value() not in TEXT_MODES:
             return
         on = c.ai_enabled.isChecked()
+        self._show_ai_kind()
         c.ai_generate.setEnabled(on and not self._ai_busy)
         c.ai_review.setEnabled(on)
         if not on:
@@ -812,6 +925,13 @@ class MainWindow(QMainWindow):
             c.ai_status.setText(problem)
             return
         emails = [e for e, _n in self._ai_recipients()]
+        if self._ai_body_mode():
+            ready, look, missing = self._ai_email_store().counts(emails)
+            hint = ("" if "{ai_email}" in c.api_message.toPlainText()
+                    else " Each email goes after the greeting (or where you put {ai_email}).")
+            c.ai_status.setText(f"{ready} ready, {look} need a look (Lists), {missing} not written of "
+                                f"{len(emails)} recipients. Only ready ones are sent." + hint)
+            return
         ready, look, missing = self._ai_store().counts(emails)
         hint = "" if "{ai_opener}" in c.api_message.toPlainText() else " Goes after the greeting (or use {ai_opener})."
         c.ai_status.setText(f"{ready} ready, {look} need a look, {missing} missing of {len(emails)} recipients."
@@ -872,8 +992,15 @@ class MainWindow(QMainWindow):
         errors = list(result.pop("_errors", [])) if isinstance(result, dict) else []
         if error:
             errors.append(error)
-        n = self._ai_store().merge(result or {})
-        self._gui_line(f"AI opening lines: {n} written." + (f" {'; '.join(errors)}" if errors else ""))
+        body = isinstance(result, dict) and result.pop("_kind", "") == "body"
+        if body:
+            n = self._ai_email_store().merge(result or {})
+            look = sum(1 for k, x in (result or {}).items() if not k.startswith("_") and x.get("check"))
+            self._gui_line(f"AI emails: {n} written, {look} need a look in Lists."
+                           + (f" {'; '.join(errors)}" if errors else ""))
+        else:
+            n = self._ai_store().merge(result or {})
+            self._gui_line(f"AI opening lines: {n} written." + (f" {'; '.join(errors)}" if errors else ""))
         self._ai_refresh_status()
         if errors:
             W.inform(self, "Some lines were not written", "\n".join(errors[:6]))
@@ -888,6 +1015,17 @@ class MainWindow(QMainWindow):
         if not row or not row[1]:
             return
         email = row[1]
+        if self._ai_body_mode(v):
+            estore = self._ai_email_store(v)
+            item = estore.item(email)
+            text = ai_emails.edit_email(self, email, item.get("body", ""),
+                                        "" if ai_emails.ready(item) else item.get("check", ""))
+            if text is None:
+                return
+            estore.approve(email, text)
+            self.refresh_lists()
+            self._ai_refresh_status()
+            return
         store = self._ai_store(v)
         text = ai_openers.edit_line(self, email, store.get(email))
         if text is None:
@@ -971,6 +1109,7 @@ class MainWindow(QMainWindow):
         s.ai_save.setEnabled(True)
         s.ai_key_status.setText(f"Saved, but the test failed: {error}" if error else str(result))
         self._ai_refresh_status()
+        self._refresh_account_pills()
 
     def remove_ai_key(self):
         name = ai_openers.provider_name()
@@ -1129,6 +1268,12 @@ class MainWindow(QMainWindow):
         if tab in tabs:
             combo.setCurrentText(tab)
         combo.blockSignals(False)
+        products = c.ai_products.currentText()
+        c.ai_products.blockSignals(True)
+        c.ai_products.clear()
+        c.ai_products.addItems(tabs)
+        c.ai_products.setCurrentText(products or ("Products" if "Products" in tabs else ""))
+        c.ai_products.blockSignals(False)
         self._sheet_tab_changed(combo.currentText())
         if kind == "tabs":
             c.sheet_info.setText(f"{len(tabs)} tab(s) found. Choose one, then click Test connection.")
@@ -1282,6 +1427,11 @@ class MainWindow(QMainWindow):
                                else "Retry failed only")
         api = c.send_mode.value() in TEXT_MODES
         email_mode = c.send_mode.value() == "email"      # no Crisp segment for your own email
+        missing_account = api and (not mail_sender.configured(mail_sender.load_config(self.mail_config_path))
+                                   if email_mode else not crisp_api.configured(self._api_config()))
+        c.send_setup_hint.setText("My email isn't set up" if email_mode else "Crisp API isn't set up")
+        c.send_setup_hint.setVisible(bool(missing_account))
+        c.send_setup.setVisible(bool(missing_account))
         for key in ("subject",) + (() if email_mode else ("segment",)) + (() if api else ("shortcut",)):
             f = c.fields()[key]
             if not f.text():
@@ -1295,6 +1445,9 @@ class MainWindow(QMainWindow):
             problem = ""
             if not texts:
                 problem = "Type the message text for the Crisp API."
+            elif missing_account:
+                problem = ("Your email account isn't set up yet: click Set up next to Send with."
+                           if email_mode else "The Crisp API token isn't saved yet: click Set up next to Send with.")
             elif email_mode and mail_sender.problem(mail_sender.load_config(self.mail_config_path)):
                 problem = mail_sender.problem(mail_sender.load_config(self.mail_config_path))
             elif not email_mode and not crisp_api.configured(self._api_config()):
@@ -2106,6 +2259,26 @@ class MainWindow(QMainWindow):
             self.results_page.progress_text.setText("Stopping after the current page…")
 
     # ============================================================ Your email account
+    def _refresh_account_pills(self):
+        """Settings > Accounts: a green / amber pill on each account row, readable without opening it."""
+        s = self.settings
+        api = crisp_api.configured(self._api_config())
+        s.api_row.set_status("Connected" if api else "Not set up", api)
+        mail = mail_sender.load_config(self.mail_config_path)
+        ok = mail_sender.configured(mail)
+        s.mail_row.set_status(mail.get("email", "") if ok else "Not set up", ok)
+        try:
+            ai_ok = not ai_openers.not_ready()
+        except Exception:  # noqa: BLE001  (a broken AI settings file must not break Settings)
+            ai_ok = False
+        s.ai_row.set_status("Ready" if ai_ok else "Not set up", ai_ok)
+
+    def open_account_setup(self, mode: str):
+        """Campaign editor 'Set up' link: Settings > Accounts with that account's form open."""
+        s = self.settings
+        self.navigate(SETTINGS)
+        s.open_row("accounts", s.mail_row if mode == "email" else s.api_row)
+
     def _load_mail_fields(self):
         cfg = mail_sender.load_config(self.mail_config_path)
         s = self.settings
@@ -2131,6 +2304,7 @@ class MainWindow(QMainWindow):
                                     else "")
         s.mail_status.setText(f"Saved: {cfg['email']}. Campaigns set to Send with: My email use it."
                               if mail_sender.configured(cfg) else "No email account yet.")
+        self._refresh_account_pills()
 
     def _mail_provider_changed(self, _index):
         s = self.settings
@@ -2199,6 +2373,7 @@ class MainWindow(QMainWindow):
                               + (" Open it, then click Test tracker: it should say the test email was opened."
                                  if tracking.configured(mail_sender.load_config(self.mail_config_path)) else ""))
         self._validate_fields()
+        self._refresh_account_pills()
 
     # ============================================================ read tracking (My email, this computer)
     def copy_tracking_script(self):
@@ -2298,6 +2473,8 @@ class MainWindow(QMainWindow):
             s.api_test_subject.edit.setText((sc.split_subjects(self.campaign.subject.text()) or [""])[0])
         s.api_status.setText("Token saved. Refresh statuses reads from the Crisp API." if crisp_api.configured(cfg)
                              else "No token yet: Refresh statuses opens conversations in Chromium instead.")
+        if getattr(self.settings, "mail_row", None) is not None:
+            self._refresh_account_pills()
 
     def _website_from_history(self) -> str:
         return crisp_api.website_from_links(r.get("Link", "") for r in sc.read_history(self.history_file))
@@ -2330,6 +2507,7 @@ class MainWindow(QMainWindow):
             return
         name = (site or {}).get("name") or (site or {}).get("domain") or "your website"
         s.api_status.setText(f"Connected to {name}. Refresh statuses now reads from the Crisp API (read-only).")
+        self._refresh_account_pills()
 
     def remove_api_token(self):
         if not W.ask(self, "Remove the Crisp API token from this computer?",
@@ -2781,6 +2959,8 @@ class MainWindow(QMainWindow):
         c.skip_failed.setChecked(values.get("skip_failed") == "true")
         c.api_message.setPlainText(values.get("api_message", ""))
         c.ai_enabled.setChecked(values.get("ai_opener") == "true")
+        c.ai_kind.set_value(values.get("ai_kind") or "opener")
+        c.ai_products.setCurrentText(values.get("ai_products") or "Products")
         self._apply_send_mode(values.get("send_mode", "browser"))
         self.prefs.set_campaign_value("send_mode", values.get("send_mode", "browser") or "browser")
         source = values.get("source", "csv")
@@ -2985,8 +3165,11 @@ class MainWindow(QMainWindow):
         v["api_messages"] = json.dumps(sc.split_messages(v.get("api_message", "")))
         v["api_config"] = str(self.api_config_path)
         v["mail_config"] = str(self.mail_config_path)
+        ai_on = v.get("send_mode") in TEXT_MODES and v.get("ai_opener") == "true"
         v["ai_openers_file"] = (str(ai_openers.OpenerStore(self.data_dir / "ai_openers", c.name).path)
-                                if v.get("send_mode") in TEXT_MODES and v.get("ai_opener") == "true" else "")
+                                if ai_on and v.get("ai_kind") != "body" else "")
+        v["ai_emails_file"] = (str(ai_emails.EmailStore(self.data_dir / "ai_emails", c.name).path)
+                               if ai_on and v.get("ai_kind") == "body" else "")
         v["recent_days"] = str(sc.recent_days_value(v.get("recent_days")))   # 0 = other campaigns may email them
         profile = self._free_profile()
         if slot == 0:
@@ -3011,6 +3194,16 @@ class MainWindow(QMainWindow):
     def _queue_progress(self):
         if self.queue_ctl.busy():
             self.refresh_campaigns()
+
+    @staticmethod
+    def _send_with_text(s: dict) -> str:
+        """Campaigns table: how a campaign sends (Browser shows its shortcut)."""
+        mode = s.get("send_mode") or "browser"
+        if mode == "email":
+            return "My email"
+        if mode == "api":
+            return "Crisp API"
+        return "Browser · " + s.get("shortcut", "") if s.get("shortcut") else "Browser"
 
     def refresh_campaigns(self, select: str = ""):
         cp = self.campaigns_page
@@ -3040,7 +3233,7 @@ class MainWindow(QMainWindow):
                       else Path(s.get("csv", "")).name)
             subjects = sc.split_subjects(s.get("subject", ""))
             subject = f"{len(subjects)} subjects (A/B)" if len(subjects) > 1 else s.get("subject", "")
-            values = (pos, c.name, status, source, subject, s.get("shortcut", ""), last_text, c.note)
+            values = (pos, c.name, status, source, subject, self._send_with_text(s), last_text, c.note)
             for col, text in enumerate(values):
                 item = QTableWidgetItem(text)
                 if col == 1:
@@ -3162,7 +3355,18 @@ class MainWindow(QMainWindow):
         lp.summary.setText(st.preview())
         rows = preview_rows(st.plan, v)
         base_cols = ("Row", "Email", "Name used", "Subject", "Shortcut", "Segment", "Reference", "Action")
-        if v.get("send_mode") in TEXT_MODES and v.get("ai_opener") == "true":
+        if self._ai_body_mode(v):
+            store = self._ai_email_store(v)
+            self.list_rows.columns = base_cols + ("AI offer", "AI email (double-click to read, edit or approve)")
+
+            def cell(email, action):
+                item = store.item(email)
+                if not item.get("body"):
+                    return ("", "—" if action == "Send" else "")
+                flag = "" if ai_emails.ready(item) else f"⚠ {item.get('check')}: "
+                return (item.get("offer", ""), flag + " ".join(item["body"].split())[:160])
+            rows = [tuple(r) + cell(r[1], r[-1]) for r in rows]
+        elif v.get("send_mode") in TEXT_MODES and v.get("ai_opener") == "true":
             store = self._ai_store(v)
             self.list_rows.columns = base_cols + ("AI opening line (double-click to edit)",)
             rows = [tuple(r) + ((store.get(r[1]) or ("—" if r[-1] == "Send" else "")),) for r in rows]

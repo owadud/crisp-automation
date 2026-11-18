@@ -110,6 +110,7 @@ class AgentRunner(QObject):
             "CRISP_API_CONFIG": settings.get("api_config", ""),
             "CRISP_MAIL_CONFIG": settings.get("mail_config", ""),
             "CRISP_AI_OPENERS": settings.get("ai_openers_file", ""),
+            "CRISP_AI_EMAILS": settings.get("ai_emails_file", ""),
             "CRISP_WORKCOPY_TAG": settings.get("workcopy_tag", ""),
             "CRISP_CLAIM_BATCH": settings.get("claim_batch", "") or "10",
             "CRISP_CLAIM_EXPIRY": settings.get("claim_expiry", "") or "5",

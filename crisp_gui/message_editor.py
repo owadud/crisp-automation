@@ -35,6 +35,7 @@ from .widgets import SegmentedControl, label
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import mail_sender  # noqa: E402  (the same HTML the email gets)
 import personal as pz  # noqa: E402  (same field filling as the agent)
+import send_control as sc  # noqa: E402  (share links -> direct image links)
 
 # Insert field menu: (label, text inserted). None = a separator.
 FIELDS = (
@@ -263,11 +264,11 @@ class ImageLoader(QObject):
 
     @staticmethod
     def placeholder(text: str = "Image") -> QImage:
-        img = QImage(QSize(180, 48), QImage.Format_ARGB32)
+        img = QImage(QSize(240, 48), QImage.Format_ARGB32)
         img.fill(QColor("#EEEEF2"))
         p = QPainter(img)
         p.setPen(QColor("#888895"))
-        p.drawRect(0, 0, 179, 47)
+        p.drawRect(0, 0, 239, 47)
         p.drawText(img.rect(), Qt.AlignCenter, text)
         p.end()
         return img
@@ -280,18 +281,50 @@ class ImageLoader(QObject):
             threading.Thread(target=self._fetch, args=(url,), daemon=True).start()
         return self.placeholder("Loading image…" if url.startswith("http") else "Image")
 
+    @staticmethod
+    def gif_frame(data: bytes) -> QImage:
+        """The first frame of a GIF that shows something (many GIFs start on a blank frame)."""
+        from PySide6.QtCore import QBuffer, QByteArray
+        from PySide6.QtGui import QImageReader
+        buf = QBuffer()
+        buf.setData(QByteArray(data))
+        buf.open(QBuffer.ReadOnly)
+        reader = QImageReader(buf, b"gif")
+        first = QImage()
+        for _ in range(min(max(reader.imageCount(), 1), 40)):
+            frame = reader.read()
+            if frame.isNull():
+                break
+            first = first if not first.isNull() else frame
+            step = max(1, frame.width() // 24)
+            if len({frame.pixel(x, y) for x in range(0, frame.width(), step)
+                    for y in range(0, frame.height(), step)}) > 8:
+                return frame
+        return first
+
     def _fetch(self, url: str) -> None:
-        img = QImage()
+        img, gif = QImage(), False
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 CrispAutomation"})
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                img.loadFromData(resp.read(5_000_000))
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = resp.read(15_000_000)
+            gif = data[:4] == b"GIF8"
+            img = self.gif_frame(data) if gif else QImage.fromData(data)
         except Exception:  # noqa: BLE001
             pass
         if img.isNull():
-            img = self.placeholder("Image not reachable")
-        elif img.width() > 520:
-            img = img.scaledToWidth(520, Qt.SmoothTransformation)
+            img = self.placeholder("Drive file not shared publicly" if "drive.usercontent" in url
+                                   else "Image not reachable")
+        else:
+            if img.width() > 520:
+                img = img.scaledToWidth(520, Qt.SmoothTransformation)
+            if gif:                                   # the editor shows one frame; the email animates
+                img = img.convertToFormat(QImage.Format_ARGB32)
+                p = QPainter(img)
+                p.fillRect(6, 6, 38, 20, QColor(0, 0, 0, 150))
+                p.setPen(QColor("#FFFFFF"))
+                p.drawText(6, 6, 38, 20, Qt.AlignCenter, "GIF")
+                p.end()
         self.cache[url] = img
         self.loaded.emit(url, img)
 
@@ -412,7 +445,7 @@ class MessageEditor(QWidget):
             (("bold", "B", "Bold (Ctrl+B)"), ("italic", "I", "Italic (Ctrl+I)"),
              ("strike", "S", "Strikethrough")),
             (("bullets", "•≡", "Bulleted list"), ("numbers", "1≡", "Numbered list"), ("quote", "❝", "Quote")),
-            (("link", "Link", "Link (Ctrl+K)"), ("image", "Image", "Image from a web address"),
+            (("link", "Link", "Link (Ctrl+K)"), ("image", "Image / GIF", "Image or GIF from a web address or a Google Drive / Dropbox / Giphy link"),
              ("code", "</>", "Code")),
         )
         for g, group in enumerate(groups):
@@ -698,7 +731,7 @@ class MessageEditor(QWidget):
         if not self.preview_box.isVisible() and not self.preview_toggle.isChecked():
             return
         text = self.versions[self.current] if self.current < len(self.versions) else ""
-        filled = pz.render(text, SAMPLE_NAME, pz.SAMPLE)[0] if text.strip() else ""
+        filled = pz.render(sc.fix_image_links(text), SAMPLE_NAME, pz.SAMPLE)[0] if text.strip() else ""
         page = filled if self.mode == "html" else mail_sender.to_html(filled)
         page = page if filled else '<p style="color:#9a9aa5;font-family:Arial">The email appears here as you write.</p>'
         if page == self._page:
@@ -842,8 +875,10 @@ class MessageEditor(QWidget):
                     cur.insertText("link text", f)
                     self.visual.setCurrentCharFormat(QTextCharFormat())
         elif action == "image":
-            url = _ask(self, "Image", "Image web address (https://…):")
+            url = _ask(self, "Image or GIF", "Image or GIF web address (https://…). A Google Drive, Dropbox or "
+                       "Giphy share link works too (Drive: share it as 'Anyone with the link'):")
             if url:
+                url = sc.direct_image_url(url)
                 img = QTextImageFormat()
                 img.setName(url)
                 img.setProperty(QTextFormat.ImageAltText, "image")

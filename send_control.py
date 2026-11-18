@@ -385,6 +385,51 @@ def split_messages(text: str) -> list[str]:
     return [p for p in parts if p]
 
 
+def direct_image_url(url: str) -> str:
+    """A share link -> the image file itself, so emails can show it (GIFs keep animating):
+    Google Drive (shared 'Anyone with the link'), Dropbox and Giphy pages. Others unchanged."""
+    u = str(url or "").strip()
+    m = (re.search(r"drive\.google\.com/file/d/([\w-]{10,})", u)
+         or re.search(r"drive\.google\.com/(?:open|uc)\?(?:[^#]*&)?id=([\w-]{10,})", u))
+    if m:
+        return f"https://drive.usercontent.google.com/download?id={m.group(1)}&export=view"
+    if re.match(r"https?://(www\.)?dropbox\.com/", u):
+        u = re.sub(r"([?&])dl=0", r"\1raw=1", u)
+        return u if "raw=1" in u or "dl=1" in u else u + ("&" if "?" in u else "?") + "raw=1"
+    m = re.match(r"https?://(?:www\.)?giphy\.com/gifs/(?:[\w-]*-)?([A-Za-z0-9]+)/?(?:[?#].*)?$", u)
+    if m:
+        return f"https://media.giphy.com/media/{m.group(1)}/giphy.gif"
+    return u
+
+
+def fix_image_links(text: str) -> str:
+    """Every image in a message (Markdown ![..](url) or HTML <img src>) -> a direct image link."""
+    text = re.sub(r"(!\[[^\]]*\]\()([^)\s]+)(\))", lambda m: m.group(1) + direct_image_url(m.group(2)) + m.group(3),
+                  str(text or ""))
+    return re.sub(r"""(<img\b[^>]*?\bsrc=)(["'])(.*?)\2""",
+                  lambda m: m.group(1) + m.group(2) + direct_image_url(m.group(3)).replace("&", "&amp;")
+                  .replace("&amp;amp;", "&amp;") + m.group(2), text, flags=re.I | re.S)
+
+
+def insert_ai_email(text: str, body: str) -> str:
+    """Put the AI-written body into {ai_email}; without that placeholder, right after the
+    greeting line ("Hi {first_name},") or at the top."""
+    body = str(body or "").strip()
+    if re.search(r"<(p|div|br|table|html|body)\b", text, re.I):        # an HTML message: paragraphs + links
+        import html as _html
+        paras = [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()]
+        body = "".join("<p>" + re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r'<a href="\2">\1</a>',
+                                      _html.escape(p, quote=False)).replace("\n", "<br>") + "</p>"
+                       for p in paras)
+        return text.replace("{ai_email}", body) if "{ai_email}" in text else body + text
+    if "{ai_email}" in text:
+        return text.replace("{ai_email}", body)
+    first, _sep, rest = text.partition("\n")
+    if re.match(r"^\s*(hi|hello|hey|dear|greetings|good (morning|afternoon|evening))\b", first, re.I):
+        return f"{first}\n\n{body}\n\n{rest.lstrip(chr(10))}".rstrip() + "\n"
+    return f"{body}\n\n{text}"
+
+
 def insert_opener(text: str, opener: str) -> str:
     """Put the AI opening line into {ai_opener}; without that placeholder, right after a
     greeting line ("Hi {first_name},") or at the top. No line: the placeholder disappears."""
