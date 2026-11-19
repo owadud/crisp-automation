@@ -41,8 +41,37 @@ def _log_crash(text: str) -> None:
         print(msg, file=sys.__stderr__ or sys.stdout)
 
 from crisp_gui.config import APP_NAME, Preferences
-from crisp_gui.main_window import MainWindow
-from crisp_gui.theme import ThemeManager
+
+
+def _splash(app, logo):
+    """A small 'Opening...' window right away, while the main window is built (that takes a
+    few seconds, longer when the computer is busy). It closes when the main window shows."""
+    from PySide6.QtCore import QTimer
+    from PySide6.QtGui import QColor, QPainter, QPixmap
+    from PySide6.QtWidgets import QSplashScreen
+    card = QPixmap(360, 150)
+    card.fill(QColor("#FFFFFF"))
+    p = QPainter(card)
+    p.setPen(QColor("#E4E4EA"))
+    p.drawRect(0, 0, 359, 149)
+    p.drawPixmap(24, 43, logo)
+    font = QFont(app.font())
+    font.setPixelSize(17)
+    font.setBold(True)
+    p.setFont(font)
+    p.setPen(QColor("#1C1C24"))
+    p.drawText(104, 68, "Crisp Automation")
+    font.setPixelSize(13)
+    font.setBold(False)
+    p.setFont(font)
+    p.setPen(QColor("#6E6E7A"))
+    p.drawText(104, 94, "Opening…")
+    p.end()
+    splash = QSplashScreen(card, Qt.WindowStaysOnTopHint)
+    splash.show()
+    app.processEvents()
+    QTimer.singleShot(60_000, splash.close)          # never left behind
+    return splash
 
 
 def main() -> int:
@@ -72,6 +101,10 @@ def main() -> int:
     for size in (16, 24, 32, 48, 64, 128, 256):
         icon.addPixmap(logo_pixmap("#5b5bd6", size))
     app.setWindowIcon(icon)
+    splash = _splash(app, logo_pixmap("#5b5bd6", 64))
+    # Loaded only now: the splash shows first, and a second launch (above) returns at once.
+    from crisp_gui.main_window import MainWindow
+    from crisp_gui.theme import ThemeManager
     try:
         from crisp_gui import desktop_shortcut
         desktop_shortcut.refresh_icons()   # an older version drew the launcher icon too small
@@ -87,6 +120,7 @@ def main() -> int:
     window = MainWindow(tm, prefs)
     instance = single_instance.InstanceServer(lambda token: single_instance.bring_to_front(window, token))  # noqa: F841
     window.show()
+    splash.finish(window)
     window.check_updates_on_start()  # background, never blocks the window
     return app.exec()
 

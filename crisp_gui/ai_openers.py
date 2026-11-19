@@ -131,10 +131,12 @@ def current_model(s: dict | None = None) -> str:
 
 
 def available() -> bool:
+    """Is the Claude package installed? Only looks for it: importing it takes several seconds,
+    which made the app slow to open (it is imported when the AI is really used)."""
+    import importlib.util
     try:
-        import anthropic  # noqa: F401
-        return True
-    except ImportError:
+        return importlib.util.find_spec("anthropic") is not None
+    except (ImportError, ValueError):
         return False
 
 
