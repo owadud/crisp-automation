@@ -109,6 +109,8 @@ class AgentRunner(QObject):
             "CRISP_API_MESSAGES": settings.get("api_messages", "[]"),
             "CRISP_API_CONFIG": settings.get("api_config", ""),
             "CRISP_MAIL_CONFIG": settings.get("mail_config", ""),
+            "CRISP_ADMIN_CONFIG": settings.get("admin_config", ""),
+            "CRISP_APP_VERSION": settings.get("app_version", ""),
             "CRISP_AI_OPENERS": settings.get("ai_openers_file", ""),
             "CRISP_AI_EMAILS": settings.get("ai_emails_file", ""),
             "CRISP_WORKCOPY_TAG": settings.get("workcopy_tag", ""),

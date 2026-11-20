@@ -148,6 +148,8 @@ SEND_LIMIT = None    # shared Sheet: stop after this many sends (max per run / d
 
 # History rules (history.csv, all campaigns, all files; only real sends count).
 CAMPAIGN = os.environ.get("CRISP_CAMPAIGN", "").strip() or SUBJECT
+ADMIN_CONFIG = os.environ.get("CRISP_ADMIN_CONFIG", "").strip()
+APP_VERSION = os.environ.get("CRISP_APP_VERSION", "").strip()
 try:
     RECENT_DAYS = max(0, int(os.environ.get("CRISP_RECENT_DAYS", "7").strip() or 0))
 except ValueError:
@@ -946,6 +948,28 @@ def failure_screenshot(page, position, email):
         print(f"  Screenshot saved: {path.name}")
     except Exception:
         pass
+
+
+def report_to_admin(completed, failed, skipped, eligible_count, error=""):
+    """After a real run, send a report to the admin collector (Settings > Admin reporting on the
+    admin's computer sets this up and shares it). Dry runs and unconfigured computers do nothing.
+    Never raises: reporting must never affect sending."""
+    if DRY_RUN:
+        return
+    try:
+        import admin_report
+        cfg = admin_report.load_config(Path(ADMIN_CONFIG) if ADMIN_CONFIG else None)
+        if not admin_report.reporting(cfg):
+            return
+        run = admin_report.build_run(
+            runner=RUNNER_NAME or socket.gethostname(), host=socket.gethostname(), version=APP_VERSION,
+            campaign=CAMPAIGN, mode={"email": "My email", "api": "Crisp API"}.get(SEND_MODE, "Browser"),
+            sent=completed, failed=failed, skipped=skipped, eligible=eligible_count,
+            started=sc.stamp(RUN_STARTED), finished=sc.stamp(), error=error or "")
+        admin_report.report_from_files(cfg, run, REPORT)
+        print(f"Admin report sent ({len(REPORT)} recipient row(s)).", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  (Admin report not sent: {exc})", flush=True)
 
 
 def write_run_files():
@@ -3237,6 +3261,8 @@ def _main():
         )
 
         write_run_files()
+
+        report_to_admin(completed, failed, skipped, len(eligible))
 
         end_claims("stopped" if stop_requested() else "run ended", "Stopped" if stop_requested() else "Finished")
 

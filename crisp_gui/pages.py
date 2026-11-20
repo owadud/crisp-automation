@@ -745,7 +745,7 @@ class SettingsPage(Page):
     one part at a time (General, Accounts, Sending, This computer, App)."""
 
     TABS = (("accounts", "Accounts"), ("sending", "Sending"), ("general", "General"),
-            ("computer", "This computer"), ("app", "App"))
+            ("computer", "This computer"), ("admin", "Admin"), ("app", "App"))
 
     def __init__(self, tm: ThemeManager):
         super().__init__()
@@ -1030,6 +1030,43 @@ class SettingsPage(Page):
                                    "and the segment field. Nothing is created or sent.").add_control(self.check_crisp))
         self.health_result = row.add_below(label("", "faint", wrap=True))
         self.health_result.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        # ------------------------------------------------------------ Admin (owner only)
+        group = group_for("Admin", "admin")
+        row = group.add(SettingRow("Admin reporting", "Collect every teammate's run reports (who, computer, "
+                                   "campaign, counts, and the recipients emailed) into a private Google Sheet you "
+                                   "own. The admin key is saved only on this computer."))
+        self.admin_on = QCheckBox("Send this computer's run reports to the admin collector")
+        form = QWidget()
+        fl = QVBoxLayout(form)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.setSpacing(12)
+        fl.addWidget(self.admin_on)
+        self.admin_url = Field("Collector web address", "From Google Apps Script (steps below). Saved only on this "
+                               "computer.", placeholder="https://script.google.com/macros/s/…/exec")
+        self.admin_url.setMaximumWidth(620)
+        fl.addWidget(self.admin_url)
+        brow = QHBoxLayout()
+        self.admin_script = button("Copy setup script", None, "copy", tm, "text_muted")
+        self.admin_test = button("Test collector", "ghost")
+        self.admin_export = button("Save teammate setup file", None, "save", tm, "text_muted")
+        for b in (self.admin_script, self.admin_test, self.admin_export):
+            brow.addWidget(b)
+        brow.addStretch()
+        fl.addLayout(brow)
+        self.admin_help = label(
+            "One-time setup, under your own Google account: 1) Create a new Google Sheet only you use. "
+            "2) Extensions > Apps Script: delete what is there, paste the setup script. 3) Deploy > New "
+            "deployment > Web app, Execute as: Me, Who has access: Anyone > Deploy, and allow access. "
+            "4) Paste the Web app address above, tick the box, then Test collector. 5) For each teammate, click "
+            "Save teammate setup file and copy that file to their computer at ~/.crisp_email_agent/admin.json "
+            "(it holds the address and write key only, never your admin key). Then open the Team page to see usage.",
+            "fieldHelp", wrap=True)
+        fl.addWidget(self.admin_help)
+        row.set_details(form)
+        self.admin_status = row.add_below(label("", "faint", wrap=True))
+        self.admin_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.admin_row = row
 
         # ------------------------------------------------------------ App
         group = group_for("App", "app")
@@ -1404,4 +1441,29 @@ class TeamPage(Page):
         row.addStretch()
         card.body.addLayout(row)
         self.add(card)
+
+        # Admin: all teammates' usage (shown only when this computer has the admin key)
+        self.admin_card = Card("Admin · all usage", "Every teammate's runs reported to your private collector. "
+                               "Refresh to load the latest.")
+        self.admin_refresh = button("Refresh usage", None, "refresh", tm, "text_muted")
+        self.admin_card.head_actions.addWidget(self.admin_refresh)
+        self.admin_summary = label("", "muted", wrap=True)
+        self.admin_card.body.addWidget(self.admin_summary)
+        self.admin_people = _view(150)
+        self.admin_card.body.addWidget(label("Per teammate", "fieldLabel"))
+        self.admin_card.body.addWidget(self.admin_people)
+        self.admin_runs = _view(170)
+        self.admin_card.body.addWidget(label("Recent runs", "fieldLabel"))
+        self.admin_card.body.addWidget(self.admin_runs)
+        srow = QHBoxLayout()
+        self.admin_view_sends = button("Load recipients emailed", None, "file", tm, "text_muted")
+        self.admin_export_sends = button("Export all to CSV…", "ghost")
+        srow.addWidget(self.admin_view_sends)
+        srow.addWidget(self.admin_export_sends)
+        srow.addStretch()
+        self.admin_card.body.addLayout(srow)
+        self.admin_sends = _view(170)
+        self.admin_card.body.addWidget(self.admin_sends)
+        self.admin_card.hide()
+        self.add(self.admin_card)
         self.finish()

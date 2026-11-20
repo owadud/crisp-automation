@@ -21,6 +21,7 @@ import personal as pz  # noqa: E402  (each person's row, for AI-written emails)
 import campaign_results as cr  # noqa: E402
 import crisp_api  # noqa: E402  (Crisp REST API: read-only status tracking)
 import mail_sender  # noqa: E402  (sending from your own mail account)
+import admin_report  # noqa: E402  (admin usage reporting)
 import tracking  # noqa: E402  (read tracking for My email, this computer only)
 
 TEXT_MODES = ("api", "email")   # send modes that use the campaign's message text (no browser)
@@ -140,6 +141,7 @@ class MainWindow(QMainWindow):
         # CRISP_API_CONFIG lets tests use a temporary file instead of the real token file.
         self.api_config_path = Path(os.environ.get("CRISP_API_CONFIG") or crisp_api.CONFIG)
         self.mail_config_path = Path(os.environ.get("CRISP_MAIL_CONFIG") or mail_sender.CONFIG)
+        self.admin_config_path = Path(os.environ.get("CRISP_ADMIN_CONFIG") or admin_report.CONFIG)
         self._mail_factory = mail_sender.MailSender      # tests replace it with a fake
         self._editor_runs = False              # True while a manual run uses the campaign in the editor
         self.queue_ctl = QueueController(self.campaign_store, self.launch_campaign, self.runner,
@@ -314,6 +316,15 @@ class MainWindow(QMainWindow):
         self.team_page.table.setModel(self.team_rows)
         self.check_rows = RowsModel(("Email", "State", "Who", "Campaign", "Since"), self)
         self.team_page.checks.setModel(self.check_rows)
+        self.admin_people_rows = RowsModel(("Teammate", "Runs", "Sent", "Failed", "Skipped", "Computer(s)",
+                                            "Version(s)", "Last run"), self)
+        self.team_page.admin_people.setModel(self.admin_people_rows)
+        self.admin_runs_rows = RowsModel(("Reported", "Teammate", "Computer", "Version", "Campaign", "Mode",
+                                          "Sent", "Failed", "Skipped", "Finished", "Error"), self)
+        self.team_page.admin_runs.setModel(self.admin_runs_rows)
+        self.admin_sends_rows = RowsModel(("Teammate", "Campaign", "Email", "Name", "Result", "Time", "Link"), self)
+        self.team_page.admin_sends.setModel(self.admin_sends_rows)
+        self._admin_busy = False
         self._team_claims = []
         W.tidy_tables(self.stack)
         self.team_timer = QTimer(self)
@@ -367,6 +378,16 @@ class MainWindow(QMainWindow):
         self._mail_signal.done.connect(self._mail_tested)
         self._track_signal = _SheetSignal(self)
         self._track_signal.done.connect(self._tracking_done)
+        self._admin_signal = _SheetSignal(self)
+        self._admin_signal.done.connect(self._admin_done)
+        self.settings.admin_script.clicked.connect(self.copy_admin_script)
+        self.settings.admin_test.clicked.connect(self.test_admin_collector)
+        self.settings.admin_export.clicked.connect(self.export_teammate_file)
+        self.settings.admin_on.toggled.connect(lambda _c: self._save_admin())
+        self.settings.admin_url.edit.editingFinished.connect(self._save_admin)
+        self.team_page.admin_refresh.clicked.connect(self.refresh_admin_usage)
+        self.team_page.admin_view_sends.clicked.connect(self.load_admin_sends)
+        self.team_page.admin_export_sends.clicked.connect(self.export_admin_sends)
         self.settings.mail_track_script.clicked.connect(self.copy_tracking_script)
         self.settings.mail_track_test.clicked.connect(self.test_tracker)
         self.settings.api_save.clicked.connect(self.save_api_token)
@@ -560,6 +581,7 @@ class MainWindow(QMainWindow):
         self.settings.parallel.edit.editingFinished.connect(self._save_parallel)
         self._load_api_fields()
         self._load_mail_fields()
+        self._load_admin_fields()
         notes = self.campaign_store.restore()
         for n in notes:
             self._gui_line(n)
@@ -592,6 +614,13 @@ class MainWindow(QMainWindow):
             self.settings.profile_state.setText(
                 "Profile exists. Your Crisp login will be reused." if exists
                 else "Not created yet. It is created the first time the browser opens.")
+        if index == SETTINGS:
+            self._load_admin_fields()
+        if index == TEAM:
+            is_admin = admin_report.is_admin(self._admin_config())
+            self.team_page.admin_card.setVisible(is_admin)
+            if is_admin and not self.admin_runs_rows.rows:
+                self.refresh_admin_usage()
         if index in (EDITOR, LISTS) and not self.runner.is_running():
             self.refresh_csv()
         if index == RUNS:
@@ -779,6 +808,7 @@ class MainWindow(QMainWindow):
         values["api_messages"] = json.dumps(sc.split_messages(values["api_message"]))
         values["api_config"] = str(self.api_config_path)
         values["mail_config"] = str(self.mail_config_path)
+        values["admin_config"] = str(self.admin_config_path)
         values["ai_opener"] = "true" if self.campaign.ai_enabled.isChecked() else "false"
         values["ai_kind"] = self.campaign.ai_kind.value() or "opener"
         values["ai_products"] = self.campaign.ai_products.currentText().strip()
@@ -2447,6 +2477,146 @@ class MainWindow(QMainWindow):
         self.results_page.progress_text.setText(f"Read tracking: {opened} of your emails opened so far"
                                                 + (f", {changed} new." if changed else "."))
 
+    # ============================================================ admin reporting (owner only)
+    def _admin_config(self) -> dict:
+        return admin_report.load_config(self.admin_config_path)
+
+    def _load_admin_fields(self):
+        cfg = self._admin_config()
+        s = self.settings
+        s.admin_on.setChecked(bool(cfg.get("report")))
+        s.admin_url.edit.setText(cfg.get("report_url", ""))
+        if admin_report.is_admin(cfg):
+            s.admin_status.setText("Collector is set up. Open the Team page to see all usage.")
+        elif admin_report.reporting(cfg):
+            s.admin_status.setText("This computer reports its runs to the admin collector.")
+        else:
+            s.admin_status.setText("")
+
+    def _save_admin(self):
+        s = self.settings
+        cfg = self._admin_config()
+        cfg["report"] = s.admin_on.isChecked()
+        cfg["report_url"] = s.admin_url.text().strip()
+        admin_report.save_config(cfg, self.admin_config_path)
+
+    def copy_admin_script(self):
+        cfg = self._admin_config()
+        if not cfg.get("admin_key"):
+            cfg["admin_key"] = admin_report.new_key()
+        if not cfg.get("write_key"):
+            cfg["write_key"] = admin_report.new_key()
+        admin_report.save_config(cfg, self.admin_config_path)
+        QGuiApplication.clipboard().setText(admin_report.script_for(cfg["admin_key"], cfg["write_key"]))
+        self.flash(self.settings.admin_script, "Copied")
+        self.settings.admin_status.setText("Setup script copied. Paste it into Apps Script (step 2), deploy it "
+                                            "(step 3), then paste the Web app address above and Test.")
+
+    def test_admin_collector(self):
+        self._save_admin()
+        s = self.settings
+        cfg = self._admin_config()
+        s.admin_status.setText("Asking the collector…")
+        s.admin_test.setEnabled(False)
+
+        def work():
+            self._admin_signal.done.emit("ping", admin_report.ping(cfg), None)
+        threading.Thread(target=work, daemon=True).start()
+
+    def export_teammate_file(self):
+        cfg = self._admin_config()
+        if not admin_report.reporting(cfg) and not cfg.get("write_key"):
+            self.settings.admin_status.setText("Set up the collector first (Copy setup script, deploy, paste the "
+                                               "address).")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Save teammate setup file", "admin.json", "JSON (*.json)")
+        if not path:
+            return
+        Path(path).write_text(json.dumps(admin_report.teammate_config(cfg), indent=2), encoding="utf-8")
+        self.settings.admin_status.setText(f"Saved {path}. Copy it to each teammate's computer at "
+                                           "~/.crisp_email_agent/admin.json (Windows: C:\\Users\\<name>\\"
+                                           ".crisp_email_agent\\admin.json).")
+
+    def refresh_admin_usage(self):
+        cfg = self._admin_config()
+        if not admin_report.is_admin(cfg) or self._admin_busy:
+            return
+        self._admin_busy = True
+        self.team_page.admin_summary.setText("Loading usage…")
+
+        def work():
+            try:
+                runs = admin_report.fetch(cfg, "runs")
+                self._admin_signal.done.emit("runs", runs, None)
+            except Exception as exc:  # noqa: BLE001
+                self._admin_signal.done.emit("runs", None, str(exc))
+        threading.Thread(target=work, daemon=True).start()
+
+    def load_admin_sends(self):
+        cfg = self._admin_config()
+        if not admin_report.is_admin(cfg) or self._admin_busy:
+            return
+        self._admin_busy = True
+        self.team_page.admin_summary.setText(self.team_page.admin_summary.text() + "  Loading recipients…")
+
+        def work():
+            try:
+                self._admin_signal.done.emit("sends", admin_report.fetch(cfg, "sends"), None)
+            except Exception as exc:  # noqa: BLE001
+                self._admin_signal.done.emit("sends", None, str(exc))
+        threading.Thread(target=work, daemon=True).start()
+
+    def export_admin_sends(self):
+        rows = self.admin_sends_rows.rows
+        if not rows:
+            self.team_page.admin_summary.setText("Load the recipients first, then export.")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Export recipients", "team_sends.csv", "CSV (*.csv)")
+        if not path:
+            return
+        import csv as _csv
+        with open(path, "w", encoding="utf-8-sig", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(self.admin_sends_rows.columns)
+            w.writerows(rows)
+        self.team_page.admin_summary.setText(f"Exported {len(rows)} recipient row(s) to {path}.")
+
+    def _admin_done(self, kind, result, error):
+        if kind == "ping":
+            self.settings.admin_test.setEnabled(True)
+            self.settings.admin_status.setText(result or "The collector works. Teammates: click Save teammate setup "
+                                               "file and copy it to their computer. Admin usage is on the Team page.")
+            return
+        self._admin_busy = False
+        if error:
+            self.team_page.admin_summary.setText(f"Could not reach the collector ({error}).")
+            return
+        if kind == "runs":
+            people = admin_report.summarize_runs(result)
+            self.admin_people_rows.set_rows([(s["runner"], s["runs"], s["sent"], s["failed"], s["skipped"],
+                                              s["hosts"], s["versions"], s["last"]) for s in people])
+            cols, rows = result.get("columns", []), result.get("rows", [])
+            idx = {c: cols.index(c) for c in cols}
+
+            def g(r, c):
+                return r[idx[c]] if c in idx and idx[c] < len(r) else ""
+            self.admin_runs_rows.set_rows([(g(r, "Reported")[:16].replace("T", " "), g(r, "Runner"), g(r, "Host"),
+                                            g(r, "Version"), g(r, "Campaign"), g(r, "Mode"), g(r, "Sent"),
+                                            g(r, "Failed"), g(r, "Skipped"), g(r, "Finished"), g(r, "Error"))
+                                           for r in reversed(rows)])
+            total = sum(int(float(s["sent"] or 0)) for s in people)
+            self.team_page.admin_summary.setText(f"{len(people)} teammate(s), {len(rows)} run(s), "
+                                                 f"{total} email(s) sent in total.")
+        else:
+            cols, rows = result.get("columns", []), result.get("rows", [])
+            idx = {c: cols.index(c) for c in cols}
+
+            def g(r, c):
+                return r[idx[c]] if c in idx and idx[c] < len(r) else ""
+            self.admin_sends_rows.set_rows([(g(r, "Runner"), g(r, "Campaign"), g(r, "Email"), g(r, "Name"),
+                                             g(r, "Result"), g(r, "Time"), g(r, "Link")) for r in reversed(rows)])
+            self.team_page.admin_summary.setText(f"{len(rows)} recipient(s) emailed across the team.")
+
     def remove_mail_account(self):
         if not W.ask(self, "Remove your email account from this computer?",
                      "Campaigns set to Send with: My email can't send until you add it again. For Gmail, you can "
@@ -3165,6 +3335,7 @@ class MainWindow(QMainWindow):
         v["api_messages"] = json.dumps(sc.split_messages(v.get("api_message", "")))
         v["api_config"] = str(self.api_config_path)
         v["mail_config"] = str(self.mail_config_path)
+        v["admin_config"] = str(self.admin_config_path)
         ai_on = v.get("send_mode") in TEXT_MODES and v.get("ai_opener") == "true"
         v["ai_openers_file"] = (str(ai_openers.OpenerStore(self.data_dir / "ai_openers", c.name).path)
                                 if ai_on and v.get("ai_kind") != "body" else "")
