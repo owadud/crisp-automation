@@ -44,7 +44,7 @@ def test_send_report_posts_run_and_rows_in_batches():
                            "2026-11-20 10:00", "2026-11-20 10:05", "")
         rows = [{"Row": i, "Email": f"u{i}@x.com", "Name": f"U{i}", "Result": "Sent", "Error": "",
                  "Time": "10:01", "Conversation link": ""} for i in range(ar.MAX_ROWS_PER_POST + 10)]
-        ar.report_from_files(cfg(), run, rows)
+        ar.report_from_files(cfg(include_recipients=True), run, rows)
     finally:
         admin_report._post = orig
     assert posts[0]["write"] == "wk" and posts[0]["run"]["campaign"] == "Promo"
@@ -85,6 +85,47 @@ def test_agent_reports_after_a_live_run_only(tmp_path, monkeypatch):
     mod.report_to_admin(1, 0, 0, 1)
     assert sent["run"]["campaign"] == "Promo" and sent["run"]["mode"] == "My email"
     assert sent["run"]["version"] == "3.32" and sent["rows"][0]["Email"] == "a@x.com"
+
+
+def test_builtin_auto_reports_summaries_only(tmp_path, monkeypatch):
+    import admin_report
+    # built-in collector filled, no per-PC admin.json
+    rc = tmp_path / "report_config.json"
+    rc.write_text('{"auto": true, "report_url": "%s", "write_key": "wk", "include_recipients": false}' % URL)
+    monkeypatch.setattr(admin_report, "REPORT_CONFIG", rc)
+    empty = {}                                   # a teammate PC with no admin.json
+    assert not ar.reporting(empty)               # not explicitly set up...
+    auto = ar.auto_config(empty)
+    assert auto and auto["report_url"] == URL and auto["include_recipients"] is False
+    # recipients are dropped from the silent feed
+    posts = []
+    monkeypatch.setattr(admin_report, "_post", lambda url, payload, timeout=30: posts.append(payload) or {"ok": True})
+    run = ar.build_run("Rakib", "PC1", "3.34", "Promo", "My email", 2, 0, 0, 2, "s", "f", "")
+    ar.report_from_files(auto, run, [{"Email": "a@x.com", "Name": "Ann", "Result": "Sent"}])
+    assert posts[0]["run"]["sent"] == 2 and posts[0]["rows"] == []        # summary yes, contacts no
+    # explicit opt-out respected
+    assert ar.auto_config({"report": False}) is None
+    # built-in unfilled -> inert
+    rc.write_text('{"auto": true, "report_url": "", "write_key": ""}')
+    assert ar.auto_config({}) is None
+
+
+def test_sidebar_notice_shows_only_when_reporting(win, monkeypatch, tmp_path):
+    import admin_report
+    win.admin_config_path = tmp_path / "admin.json"
+    rc = tmp_path / "report_config.json"
+    monkeypatch.setattr(admin_report, "REPORT_CONFIG", rc)
+    # built-in unfilled, no admin.json -> no reporting -> notice hidden
+    rc.write_text('{"auto": true, "report_url": "", "write_key": ""}')
+    assert not win._will_report()
+    # built-in filled -> this computer will report -> notice shows
+    rc.write_text('{"auto": true, "report_url": "%s", "write_key": "wk"}' % URL)
+    assert win._will_report()
+    win.report_notice.setVisible(win._will_report())
+    assert "shared with your admin" in win.report_notice.text()
+    # explicit local opt-out -> hidden again
+    admin_report.save_config({"report": False}, win.admin_config_path)
+    assert not win._will_report()
 
 
 def test_settings_setup_and_team_admin_view(win, dialogs, monkeypatch, tmp_path):

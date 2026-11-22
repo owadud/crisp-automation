@@ -1060,7 +1060,7 @@ class SettingsPage(Page):
             "deployment > Web app, Execute as: Me, Who has access: Anyone > Deploy, and allow access. "
             "4) Paste the Web app address above, tick the box, then Test collector. 5) For each teammate, click "
             "Save teammate setup file and copy that file to their computer at ~/.crisp_email_agent/admin.json "
-            "(it holds the address and write key only, never your admin key). Then open the Team page to see usage.",
+            "(it holds the address and write key only, never your admin key). Then open the Team page to see usage. To skip the per-teammate file entirely, paste the same address and write key into report_config.json once — then every build reports run summaries automatically.",
             "fieldHelp", wrap=True)
         fl.addWidget(self.admin_help)
         row.set_details(form)

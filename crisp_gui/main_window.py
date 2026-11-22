@@ -220,6 +220,9 @@ class MainWindow(QMainWindow):
         side.addSpacing(6)
         self.version_label = W.label(f"Version {APP_VERSION}", "sidebarFoot", wrap=True)
         side.addWidget(self.version_label)
+        self.report_notice = W.label("Run summaries are shared with your admin.", "sidebarFoot", wrap=True)
+        self.report_notice.setVisible(self._will_report())     # only on computers that actually report
+        side.addWidget(self.report_notice)
         h.addWidget(self.sidebar)
 
         # content ----------------------------------------------------------
@@ -2480,6 +2483,11 @@ class MainWindow(QMainWindow):
     # ============================================================ admin reporting (owner only)
     def _admin_config(self) -> dict:
         return admin_report.load_config(self.admin_config_path)
+
+    def _will_report(self) -> bool:
+        """True when this computer sends run summaries to an admin collector (explicit or built-in)."""
+        cfg = self._admin_config()
+        return admin_report.reporting(cfg) or admin_report.auto_config(cfg) is not None
 
     def _load_admin_fields(self):
         cfg = self._admin_config()

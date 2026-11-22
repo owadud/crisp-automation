@@ -960,7 +960,9 @@ def report_to_admin(completed, failed, skipped, eligible_count, error=""):
         import admin_report
         cfg = admin_report.load_config(Path(ADMIN_CONFIG) if ADMIN_CONFIG else None)
         if not admin_report.reporting(cfg):
-            return
+            cfg = admin_report.auto_config(cfg)     # built-in collector: summaries only, no per-PC setup
+            if cfg is None:
+                return
         run = admin_report.build_run(
             runner=RUNNER_NAME or socket.gethostname(), host=socket.gethostname(), version=APP_VERSION,
             campaign=CAMPAIGN, mode={"email": "My email", "api": "Crisp API"}.get(SEND_MODE, "Browser"),

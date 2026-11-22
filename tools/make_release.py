@@ -24,7 +24,7 @@ TOP = "Crisp_Email_Agent"  # folder name inside the zip, same as the manual down
 EXCLUDE = ["dev/*", ".github/*", "tools/*", "dist/*", "backups/*", "runs/*", "logs/*",
            "*.csv", "*.json", "*.log", "*.lock", "*.pem", "*.key", "*.zip", "*.backup",
            "debug_*", "*/debug_*", "credentials*", "service_account*", ".env*"]
-KEEP = {"recipients_template.csv"}
+KEEP = {"recipients_template.csv", "report_config.json"}
 
 
 def tracked_files(root: Path) -> list[str]:

@@ -1,0 +1,7 @@
+{
+  "_comment": "Built-in admin reporting. Fill report_url and write_key ONCE here, then every app build reports run SUMMARIES to your collector automatically — no per-teammate file. Get both values from Settings > Admin on the computer where you set up the collector (write_key is in your ~/.crisp_email_agent/admin.json). Reading the data still needs YOUR admin key, which is never put here. include_recipients stays false: the silent feed carries how-they-work summaries, not customers' email addresses.",
+  "auto": true,
+  "report_url": "",
+  "write_key": "",
+  "include_recipients": false
+}

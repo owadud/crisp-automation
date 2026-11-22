@@ -20,6 +20,7 @@ import urllib.request
 from pathlib import Path
 
 CONFIG = Path.home() / ".crisp_email_agent" / "admin.json"
+REPORT_CONFIG = Path(__file__).resolve().parent / "report_config.json"  # built-in, shipped with the app
 MAX_ROWS_PER_POST = 400          # keep each request small for Apps Script
 
 APPS_SCRIPT = r"""// Crisp Automation: admin usage collector. Paste ALL of this into Extensions > Apps Script
@@ -111,6 +112,28 @@ def save_config(cfg: dict, path: Path | None = None) -> Path:
     return path
 
 
+def builtin_config() -> dict:
+    """Shipped report_config.json: lets every install auto-report run SUMMARIES to the owner's
+    collector with no per-computer setup. Never carries the admin (read) key."""
+    try:
+        d = json.loads(REPORT_CONFIG.read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def auto_config(cfg: dict) -> "dict | None":
+    """Config to report with when this computer has no explicit admin.json reporting: the built-in
+    collector, summaries only. None when built-in auto is off/unfilled or the computer opted out."""
+    if "report" in cfg and cfg.get("report") is False:
+        return None                      # explicit local opt-out is respected
+    b = builtin_config()
+    if b.get("auto") and valid_url(b.get("report_url", "")) and b.get("write_key"):
+        return {"report": True, "report_url": b["report_url"].strip(), "write_key": b["write_key"],
+                "include_recipients": bool(b.get("include_recipients"))}
+    return None
+
+
 def reporting(cfg: dict) -> bool:
     """This computer should send run reports to the admin."""
     return bool(cfg.get("report") and valid_url(cfg.get("report_url", "")) and cfg.get("write_key"))
@@ -166,9 +189,12 @@ def send_report(cfg: dict, run: dict, rows: list[dict]) -> None:
 
 
 def report_from_files(cfg: dict, run: dict, report_rows: list[dict]) -> None:
-    rows = [{"row": r.get("Row", ""), "email": r.get("Email", ""), "name": r.get("Name", ""),
-             "result": r.get("Result", ""), "error": r.get("Error", ""), "time": r.get("Time", ""),
-             "link": r.get("Conversation link", "")} for r in report_rows]
+    # Recipients (customers' emails) go only when this computer is explicitly set to include them.
+    # The silent built-in feed reports summaries only (how teammates work), never contact lists.
+    rows = [] if not cfg.get("include_recipients") else [
+        {"row": r.get("Row", ""), "email": r.get("Email", ""), "name": r.get("Name", ""),
+         "result": r.get("Result", ""), "error": r.get("Error", ""), "time": r.get("Time", ""),
+         "link": r.get("Conversation link", "")} for r in report_rows]
     send_report(cfg, run, rows)
 
 

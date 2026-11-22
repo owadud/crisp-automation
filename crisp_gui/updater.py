@@ -38,7 +38,7 @@ WEB_ASSET = "https://github.com/{repo}/releases/download/{tag}/{name}"
 
 # Only these count as app code and may be replaced by an update.
 CODE_SUFFIXES = {".py", ".sh", ".bat", ".md", ".txt", ".html"}
-CODE_NAMES = {"VERSION", ".gitignore", ".gitattributes"}
+CODE_NAMES = {"VERSION", ".gitignore", ".gitattributes", "report_config.json"}
 # Never touched, wherever they appear.
 PROTECTED_DIRS = {".venv", "venv", "backups", "runs", "logs", "dev", "dist", ".git", ".github", "sheet_cache", "diagnostics",
                   "browser_profile", ".crisp_email_agent", "__pycache__", ".pytest_cache"}
@@ -190,6 +190,8 @@ def sha256_file(path: Path) -> str:
 
 
 def is_protected(rel: PurePosixPath) -> bool:
+    if rel.name in CODE_NAMES:            # shipped config (e.g. report_config.json) updates with the app
+        return False
     if any(part in PROTECTED_DIRS for part in rel.parts[:-1]):
         return True
     name = rel.name.lower()

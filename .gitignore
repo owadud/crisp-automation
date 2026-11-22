@@ -4,6 +4,7 @@
 *.bak.csv
 *.json
 !version.json
+!report_config.json
 *.pem
 *.key
 credentials*
