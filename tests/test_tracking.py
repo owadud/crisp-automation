@@ -110,3 +110,26 @@ def test_settings_setup_script_test_and_results_sync(win, dialogs, monkeypatch, 
     rec = win.results.recipients[cr.rkey("Promo", "ann@x.com")]
     assert rec["status"] == cr.READ and rec["read_at"] == "2026-11-17 10:10"
     assert "1 of your emails opened" in win.results_page.progress_text.text()
+
+
+# ------------------------------------------------------------------ one tracker, several computers
+URL2 = "https://script.google.com/macros/s/AKfycbAbc123_-x/exec"
+
+
+def test_link_for_another_computer_carries_the_key():
+    cfg = {"track_url": URL2, "track_key": "k3y-abc"}
+    link = tracking.share_link(cfg)
+    assert tracking.split_link(link) == (URL2, "k3y-abc") and tracking.valid_url(link)
+    assert tracking.valid_url("https://script.google.com/a/macros/wpxpo.com/s/AKfyc_1/exec")   # Workspace
+
+
+def test_ping_says_what_is_really_wrong():
+    cfg = {"track_url": URL2, "track_key": "k"}
+    assert "no tracker key" in tracking.ping({"track_url": URL2, "track_key": ""})
+    assert "Copy for another computer" in tracking.ping(cfg, get=lambda u: "wrong key")
+    assert tracking.ping(cfg, get=lambda u: "ok") == ""
+
+    def cert(u):
+        raise OSError("<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed>")
+    assert "Install Certificates" in tracking.ping(cfg, get=cert)
+    assert "Who has access" in tracking.ping(cfg, get=lambda u: "<html><title>Sign in</title>accounts.google</html>")

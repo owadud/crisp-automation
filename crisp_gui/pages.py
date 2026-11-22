@@ -903,8 +903,12 @@ class SettingsPage(Page):
         trow = QHBoxLayout()
         self.mail_track_script = button("Copy setup script", None, "copy", tm, "text_muted")
         self.mail_track_test = button("Test tracker", "ghost")
+        self.mail_track_share = button("Copy for another computer", "ghost")
+        self.mail_track_share.setToolTip("The tracker address with its key. Paste it into 'Tracker web address' on "
+                                         "your other computer (Mac, laptop ...) to use the same tracker there.")
         trow.addWidget(self.mail_track_script)
         trow.addWidget(self.mail_track_test)
+        trow.addWidget(self.mail_track_share)
         trow.addStretch()
         fl.addLayout(trow)
         self.mail_track_help = label(

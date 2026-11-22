@@ -83,8 +83,24 @@ def configured(cfg: dict) -> bool:
     return bool(cfg.get("track") and valid_url(cfg.get("track_url", "")) and cfg.get("track_key"))
 
 
+_URL = r"^https://script\.google\.com/(?:a/macros/[^/]+|macros)/s/[\w-]+/exec$"
+
+
 def valid_url(url: str) -> bool:
-    return bool(re.match(r"^https://script\.google\.com/macros/s/[\w-]+/exec$", str(url or "").strip()))
+    """The Apps Script web app address (also a Google Workspace one: /a/macros/<domain>/s/...)."""
+    return bool(re.match(_URL, split_link(url)[0]))
+
+
+def split_link(text: str) -> tuple[str, str]:
+    """'https://script.google.com/.../exec#key=ABC' (Copy for another computer) -> (address, key)."""
+    url, _sep, frag = str(text or "").strip().partition("#")
+    key = urllib.parse.parse_qs(frag).get("key", [""])[0]
+    return url.strip(), key.strip()
+
+
+def share_link(cfg: dict) -> str:
+    """The tracker address with its key, to paste on another computer (same tracker, same key)."""
+    return f"{str(cfg.get('track_url', '')).strip()}#key={cfg.get('track_key', '')}"
 
 
 # ------------------------------------------------------------------ the email
@@ -134,9 +150,20 @@ def read_ledger(data_dir) -> dict[str, dict]:
 
 
 # ------------------------------------------------------------------ reading the tracker
+def _ssl_context():
+    """Certificates from the certifi package when it is there: Python from python.org on a Mac
+    often cannot check website certificates until 'Install Certificates' is run."""
+    import ssl
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:  # noqa: BLE001
+        return ssl.create_default_context()
+
+
 def _get(url: str, timeout: float = 30) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": "CrispAutomation"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
         return resp.read().decode("utf-8", "replace")
 
 
@@ -144,18 +171,41 @@ def ping(cfg: dict, get=_get) -> str:
     """'' when the tracker answers with the right key, else what is wrong."""
     url = str(cfg.get("track_url", "")).strip()
     if not valid_url(url):
-        return "Paste the web app address from Apps Script (it starts with https://script.google.com/macros/s/ " \
+        return "Paste the web app address from Apps Script (it starts with https://script.google.com/ " \
                "and ends with /exec)."
+    if not cfg.get("track_key"):
+        return ("This computer has no tracker key yet. If the tracker was set up on another computer: there, "
+                "click 'Copy for another computer' and paste that here. Otherwise click Copy setup script, "
+                "paste it in Apps Script and deploy a new version.")
     try:
         said = get(_with(url, ping=1, key=cfg.get("track_key", ""))).strip()
     except Exception as exc:  # noqa: BLE001
-        return f"The tracker did not answer ({exc}). Check that it is deployed with access: Anyone."
+        text = str(exc)
+        if "CERTIFICATE_VERIFY_FAILED" in text or "certificate" in text.lower():
+            return ("This computer could not check Google's security certificate, so the tracker could not be "
+                    "reached (your deployment is probably fine). On a Mac: open Applications > Python 3.x and run "
+                    "'Install Certificates.command', then test again.")
+        if "401" in text or "403" in text:
+            return ("Google refused the request: in Apps Script, Deploy > Manage deployments > edit, set "
+                    "'Who has access' to Anyone (not 'Anyone with a Google account' or your company only).")
+        if "404" in text:
+            return "Google does not know this address: copy the Web app address again from Deploy > Manage deployments."
+        return f"The tracker did not answer ({exc}). Check your internet connection and the address."
     if said == "ok":
         return ""
     if said == "wrong key":
-        return "The tracker answers, but with a different key: copy the setup script again, paste it over the " \
-               "old one in Apps Script, and deploy a new version."
-    return "That address did not answer like the tracker. Deploy it as a Web app with access: Anyone."
+        return ("The tracker works, but it was set up with a different key (from another computer, or the setup "
+                "script was copied again later). Easiest: on the computer where it works, click 'Copy for another "
+                "computer' and paste that here. Or click Copy setup script here, paste it over the old script in "
+                "Apps Script and deploy a new version (then the other computer needs this one's link).")
+    low = said.lower()
+    if "<html" in low and ("sign in" in low or "accounts.google" in low or "signin" in low):
+        return ("Google asked for a sign-in instead of running the tracker: in Apps Script, Deploy > Manage "
+                "deployments > edit, set 'Who has access' to Anyone and 'Execute as' to Me, then Deploy.")
+    if "script function not found" in low or "doget" in low:
+        return ("The address belongs to a deployment without the tracker code: paste the setup script, then "
+                "Deploy > Manage deployments > edit > Version: New version > Deploy.")
+    return "That address did not answer like the tracker. Check it is the Web app address (ends with /exec)."
 
 
 def fetch_events(cfg: dict, get=_get) -> list[dict]:

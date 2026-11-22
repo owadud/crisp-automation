@@ -393,6 +393,7 @@ class MainWindow(QMainWindow):
         self.team_page.admin_export_sends.clicked.connect(self.export_admin_sends)
         self.settings.mail_track_script.clicked.connect(self.copy_tracking_script)
         self.settings.mail_track_test.clicked.connect(self.test_tracker)
+        self.settings.mail_track_share.clicked.connect(self.copy_tracker_link)
         self.settings.api_save.clicked.connect(self.save_api_token)
         self.settings.api_remove.clicked.connect(self.remove_api_token)
         self.settings.api_test_send.clicked.connect(self.send_api_test)
@@ -2362,7 +2363,8 @@ class MainWindow(QMainWindow):
                 "daily_limit": int(s.mail_daily.text()) if s.mail_daily.text().isdigit() else 0,
                 "unsubscribe": s.mail_unsubscribe.isChecked(),
                 "track": s.mail_track.isChecked(), "track_clicks": s.mail_track_clicks.isChecked(),
-                "track_url": s.mail_track_url.text().strip(), "track_key": getattr(self, "_track_key", "")}
+                "track_url": tracking.split_link(s.mail_track_url.text())[0],
+                "track_key": tracking.split_link(s.mail_track_url.text())[1] or getattr(self, "_track_key", "")}
 
     def save_mail_account(self):
         """Save the account, then send ONE test email to the account's own address."""
@@ -2376,6 +2378,8 @@ class MainWindow(QMainWindow):
             s.mail_status.setText(problem)
             return
         mail_sender.save_config(cfg, self.mail_config_path)
+        self._track_key = cfg.get("track_key", "")               # a pasted 'another computer' link brings its key
+        s.mail_track_url.edit.setText(cfg.get("track_url", ""))  # the field shows the plain address
         s.mail_save.setEnabled(False)
         s.mail_status.setText(f"Saved. Logging in and sending a test email to {cfg['email']}…")
 
@@ -2423,6 +2427,19 @@ class MainWindow(QMainWindow):
         self.flash(self.settings.mail_track_script, "Copied")
         self.settings.mail_track_status.setText("Setup script copied. Paste it in Apps Script (step 2), deploy it "
                                                 "(step 3), then paste the Web app address above.")
+
+    def copy_tracker_link(self):
+        """The tracker address with this computer's key, for the user's other computer."""
+        cfg = self._mail_form()
+        if not tracking.valid_url(cfg.get("track_url", "")) or not cfg.get("track_key"):
+            self.settings.mail_track_status.setText("Set up the tracker on this computer first (Copy setup script, "
+                                                    "deploy, paste the Web app address).")
+            return
+        QGuiApplication.clipboard().setText(tracking.share_link(cfg))
+        self.flash(self.settings.mail_track_share, "Copied")
+        self.settings.mail_track_status.setText("Copied. On your other computer: Settings > Accounts > Your email "
+                                                "account, paste it into Tracker web address, tick Track, Save. It "
+                                                "includes the tracker's key, so keep it private.")
 
     def test_tracker(self):
         s = self.settings
