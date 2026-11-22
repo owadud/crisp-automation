@@ -1415,6 +1415,9 @@ class MainWindow(QMainWindow):
             problem = ss.key_problem(c.google_key.text(), ROOT)
             c.google_key.set_state("error", problem) if problem else c.google_key.set_state("help")
             ok = ok and not problem
+            if ss.is_internal_tab(c.sheet_tab.currentText()):          # e.g. _crisp_claims: the app's own log
+                c.sheet_url.set_state("error", ss.internal_tab_problem(c.sheet_tab.currentText()))
+                return False
         if st.ok and st.range_error:
             target.set_state("ok", f"{st.total} rows in the file")
             field = c.row_from if st.range_error_field == "from" else c.row_to

@@ -35,6 +35,17 @@ import recipient_rules as rules  # noqa: E402  (same column rules as CSV files)
 
 REQUIRED_COLUMNS = ("Contact Email",)   # only the email column is required
 CONTROL_TAB = "_crisp_control"
+INTERNAL_PREFIX = "_crisp"   # the app's own tabs: _crisp_claims, _crisp_runners, _crisp_control ...
+
+
+def is_internal_tab(name) -> bool:
+    """One of the app's own bookkeeping tabs (never a recipient list)."""
+    return str(name or "").strip().lower().startswith(INTERNAL_PREFIX)
+
+
+def internal_tab_problem(name) -> str:
+    return (f"Tab '{str(name).strip()}' is the app's own log tab, not a recipient list. "
+            "Choose the tab with your recipients (Campaign > Google Sheet > Tab).")
 STALE_MINUTES = 5
 SHARED_OWNER = "__claims__"     # control-tab owner written by claim-aware (3.8+) runners
 SHARED_TEXT = "Running: shared mode (app 3.8+). Older app versions must update before sending."
@@ -233,12 +244,15 @@ class SheetSource:
         return self
 
     def tabs(self) -> list[str]:
-        return [ws.title for ws in self.pacer.call(self.sh.worksheets) if ws.title != CONTROL_TAB]
+        """The Sheet's tabs people can choose (the app's own _crisp_ tabs are left out)."""
+        return [ws.title for ws in self.pacer.call(self.sh.worksheets) if not is_internal_tab(ws.title)]
 
     def worksheet(self):
         if self.ws is None:
             if not self.tab:
                 raise SheetError("Choose the Sheet tab.")
+            if is_internal_tab(self.tab):
+                raise SheetError(internal_tab_problem(self.tab))
             try:
                 self.ws = self.pacer.call(self.sh.worksheet, self.tab)
             except SheetError as exc:
