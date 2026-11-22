@@ -1087,6 +1087,16 @@ def click_first_visible(locators):
 # CRISP: WAIT / NEW CONVERSATION
 # ============================================================
 
+def inbox_is_open(url, body_text, password_fields=0):
+    """The logged-in Crisp Inbox is showing: its address (/website/<id>/inbox), its controls
+    have loaded (Filters), and no login form. Crisp no longer shows the word 'Inbox' on the
+    page (November 2026), so that word is not required any more."""
+    url = str(url or "").lower()
+    body = str(body_text or "").lower()
+    return (bool(re.search(r"/website/[^/]+/inbox", url)) and "filter" in body
+            and not password_fields and not re.search(r"\b(sign in|log in|login)\b", body))
+
+
 def wait_for_crisp(page, timeout_seconds=300):
     """Wait until the authenticated Crisp Inbox is actually available.
 
@@ -1106,10 +1116,7 @@ def wait_for_crisp(page, timeout_seconds=300):
         try:
             current_url = page.url.lower()
             body_text = page.locator("body").inner_text(timeout=1500).lower()
-            inbox_route = "/inbox" in current_url
-            inbox_navigation = "inbox" in body_text and "filters" in body_text
-
-            if inbox_route and inbox_navigation:
+            if inbox_is_open(current_url, body_text, page.locator("input[type='password']").count()):
                 # Let the SPA finish rendering the Inbox controls.
                 page.wait_for_timeout(1200)
                 print("Crisp Inbox detected. Starting automatically.")

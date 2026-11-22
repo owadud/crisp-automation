@@ -156,7 +156,7 @@ def wait_for_inbox(page, seconds=300) -> bool:
         try:
             if "/inbox" in page.url.lower():
                 body = page.locator("body").inner_text(timeout=1500).lower()
-                if "inbox" in body and "filters" in body:
+                if "filter" in body and not page.locator("input[type='password']").count():
                     return True
         except Exception:
             pass
