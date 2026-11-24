@@ -3,7 +3,7 @@ MainWindow wires behaviour so all logic lives in one place."""
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QIntValidator
 from PySide6.QtWidgets import (
     QComboBox,
@@ -18,7 +18,7 @@ from .config import APP_VERSION
 from .message_editor import MessageEditor
 from .theme import ThemeManager
 from .widgets import (
-    AutoHideLabel, Banner, Card, ChipDelegate, Collapsible, Field, FlowRow, KeyValueList, MetricCard, ResponsiveRow,
+    AutoHideLabel, Banner, Card, ChipDelegate, Field, FlowRow, KeyValueList, MetricCard, ResponsiveRow,
     SegmentedControl, SettingRow, SettingsGroup, StatChip, ToggleSwitch, button, label,
 )
 
@@ -330,8 +330,23 @@ class RecentRule(QWidget):
 
 
 class CampaignPage(Page):
+    """The campaign editor, in four steps shown one at a time (the step bar on top, Back / Next at the bottom):
+      1 Recipients  the list, which rows, who is targeted, plugin data from WPXPO
+      2 Message     send with, versions / message, AI personalizing
+      3 Review      every row and what a run would do (the Lists table, added by MainWindow)
+      4 Send        safety limits, pace and timing; then Save, or Start in the top bar
+    Every control keeps its attribute name, so saving / loading campaigns is unchanged."""
+
+    STEPS = (("recipients", "Recipients"), ("message", "Message"), ("review", "Review"), ("send", "Send"))
+    HINTS = {"recipients": "Who gets the email: the list, which rows, and each person's plugin data.",
+             "message": "What they get: how it is sent, the subject and message, and AI personalizing.",
+             "review": "Every row and what a run would do with it. Nothing is sent from here.",
+             "send": "Safety limits and pace. Then Save, or Start in the top bar (a Dry run first)."}
+    step_changed = Signal(str)
+
     def __init__(self, tm: ThemeManager):
         super().__init__()
+        self._step = ""
         self.locked_banner = self.add(Banner(tm, "info", "Settings are locked while a run is in progress."))
         self.locked_banner.hide()
         self.csv_banner = self.add(Banner(tm, "danger"))
@@ -349,7 +364,29 @@ class CampaignPage(Page):
             self.metrics.add(m)
         self.add(self.metrics)
 
-        # recipients ---------------------------------------------------------
+        # the four steps: a bar on top, one box per step ------------------------
+        self.steps = SegmentedControl([(k, f"{i}   {t}", None) for i, (k, t) in enumerate(self.STEPS, start=1)], tm)
+        self.steps.changed.connect(self.show_step)
+        self.step_hint = label("", "muted", wrap=True)
+        bar = QHBoxLayout()
+        bar.setContentsMargins(0, 0, 0, 0)
+        bar.setSpacing(14)
+        bar.addWidget(self.steps)
+        bar.addWidget(self.step_hint, 1)
+        holder = QWidget()
+        holder.setLayout(bar)
+        self.add(holder)
+        self.step_boxes: dict[str, QWidget] = {}
+        for key, _title in self.STEPS:
+            box = QWidget()
+            box.setObjectName("page")
+            lay = QVBoxLayout(box)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(16)
+            self.step_boxes[key] = self.add(box)
+        self.review_box = self.step_boxes["review"].layout()      # MainWindow puts the Lists table here
+
+        # 1 recipients ---------------------------------------------------------
         card = Card("Recipients")
         src_row = QHBoxLayout()
         src_row.addWidget(label("Source", "fieldLabel"))
@@ -435,15 +472,16 @@ class CampaignPage(Page):
         retry_row = QHBoxLayout()
         self.retry_failed = button("Retry failed only", None, "refresh", tm, "text_muted")
         self.retry_failed.setToolTip("Only rows whose Status is Failed or Skipped. Unconfirmed rows are never retried.")
-        self.preview = button("See the list…", None, "file", tm, "text_muted")
-        self.preview.setToolTip("Per-row table of exactly what a run would do (Lists). Nothing is sent or written.")
+        self.preview = button("Review the list", None, "file", tm, "text_muted")
+        self.preview.setToolTip("Step 3: every row and exactly what a run would do. Nothing is sent or written.")
         retry_row.addWidget(self.preview)
         retry_row.addWidget(self.retry_failed)
         retry_row.addStretch()
         card.body.addLayout(retry_row)
-        self.add(card)
+        self._put("recipients", card)
+        self._put("recipients", rows_card)
 
-        # message ------------------------------------------------------------
+        # 2 message ------------------------------------------------------------
         card = Card("Message")
         self.campaign_name = Field("Campaign name", "Saved in history: one person is never emailed twice in "
                                    "the same campaign. Blank = the subject.", placeholder="Same as the subject")
@@ -521,7 +559,7 @@ class CampaignPage(Page):
         ai.addWidget(self.ai_kind_row)
         arow = QHBoxLayout()
         self.ai_generate = button("Generate with AI…", None, "send", tm, "text_muted")
-        self.ai_review = button("Review in Lists", "ghost")
+        self.ai_review = button("Review AI emails", "ghost")
         arow.addWidget(self.ai_generate)
         arow.addWidget(self.ai_review)
         arow.addStretch()
@@ -531,9 +569,9 @@ class CampaignPage(Page):
         for w in (self.api_message_label, self.api_message, self.api_message_help, self.ai_box):
             card.body.addWidget(w)
             w.hide()
-        self.add(card)
+        self._put("message", card)
 
-        # targeting ----------------------------------------------------------
+        # 1 recipients: targeting --------------------------------------------
         card = Card("Targeting")
         grid = ResponsiveRow(min_item_width=240, spacing=16)
         self.reference = Field("Reference filter", "Only rows whose Reference matches are sent (not case-sensitive).")
@@ -544,13 +582,29 @@ class CampaignPage(Page):
         self.recent_rule = RecentRule(tm)
         self.recent_days = self.recent_rule.days        # saved as before: N days, 0 = send them too
         card.body.addWidget(self.recent_rule)
-        self.add(card)
+        self._put("recipients", card)
 
-        # advanced (collapsed) ------------------------------------------------------
-        self.advanced = self.add(Collapsible("Advanced options"))
-        self.advanced.add(rows_card)
+        # 1 recipients: plugin data from the WPXPO account (wpxpo_account.py) -----
+        card = Card("Plugin data", "Adds what each person bought to your list: Pro Plugins, Remaining Plugins "
+                    "(not bought, expired, refunded, pending, abandoned), Plan, licences and spend. The key goes in "
+                    "Settings > Accounts > WPXPO account.")
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.fill_plugins = button("Fill plugins from WPXPO", None, "refresh", tm, "text_muted")
+        self.fill_plugins.setToolTip("Looks up every person of this list in the WPXPO account and writes the "
+                                     "columns into the list (kept together at the right).")
+        self.fill_stop = button("Stop", "ghost")
+        self.fill_stop.hide()
+        row.addWidget(self.fill_plugins)
+        row.addWidget(self.fill_stop)
+        row.addStretch()
+        card.body.addLayout(row)
+        self.fill_status = label("", "faint", wrap=True)
+        self.fill_status.hide()
+        card.body.addWidget(self.fill_status)
+        self._put("recipients", card)
 
-        # safety ---------------------------------------------------------------
+        # 4 send: safety ---------------------------------------------------------
         card = Card("Safety", "Duplicate emails, invalid addresses and do-not-contact emails are always skipped "
                     "before the run starts.")
         self.dnc = Field("Do-not-contact list (optional)",
@@ -586,9 +640,9 @@ class CampaignPage(Page):
             f.edit.setValidator(QIntValidator(1, 1000, f.edit))
             limits.add(f)
         card.body.addWidget(limits)
-        self.advanced.add(card)
+        self._put("send", card)
 
-        # sending control ------------------------------------------------------
+        # 4 send: pace and timing ------------------------------------------------
         card = Card("Pace and timing", "The delay and the daily cap apply to all campaigns together. Times are "
                     "Dhaka time; a scheduled start and a send window need this computer on and the Crisp login "
                     "still valid.")
@@ -616,13 +670,27 @@ class CampaignPage(Page):
         self.random_delay.setAccessibleName("Random delay 20 to 60 seconds")
         line.addWidget(self.random_delay, 0, Qt.AlignVCenter)
         card.body.addLayout(line)
-        self.advanced.add(card)
+        self._put("send", card)
 
         # Dry Run switch: shown in the top bar of the window (always visible).
         self.dry = ToggleSwitch(tm)
         self.dry.setAccessibleName("Dry Run")
         self.dry.setToolTip("Dry Run: creates each conversation and inserts the shortcut, but skips Send, the "
                             "segment, resolving and marking the list.")
+
+        # Back / Next between the steps -----------------------------------------
+        nav = QHBoxLayout()
+        nav.setContentsMargins(0, 0, 0, 0)
+        self.back = button("Back", None)
+        self.next = button("Next", None)
+        self.back.clicked.connect(lambda: self._move(-1))
+        self.next.clicked.connect(lambda: self._move(1))
+        nav.addWidget(self.back)
+        nav.addStretch()
+        nav.addWidget(self.next)
+        holder = QWidget()
+        holder.setLayout(nav)
+        self.add(holder)
 
         # footer -----------------------------------------------------------------
         footer = ResponsiveRow(min_item_width=150, spacing=8)
@@ -636,6 +704,51 @@ class CampaignPage(Page):
         self.start = button("Start dry run", "primary", "play", tm)   # the top-bar button is the visible one
         self.start.hide()
         self.finish()
+        self.show_step("recipients")
+
+    # ------------------------------------------------------------ steps
+    def _put(self, step: str, widget):
+        self.step_boxes[step].layout().addWidget(widget)
+        return widget
+
+    def step(self) -> str:
+        return self._step
+
+    def show_step(self, key: str) -> None:
+        keys = [k for k, _t in self.STEPS]
+        if key not in keys:
+            return
+        for k, box in self.step_boxes.items():
+            box.setVisible(k == key)
+        self.steps.set_value(key)
+        self.step_hint.setText(self.HINTS[key])
+        i = keys.index(key)
+        self.back.setVisible(i > 0)
+        self.next.setVisible(i < len(keys) - 1)
+        if i > 0:
+            self.back.setText(f"←  {self.STEPS[i - 1][1]}")
+        if i < len(keys) - 1:
+            self.next.setText(f"Next: {self.STEPS[i + 1][1]}  →")
+        self.verticalScrollBar().setValue(0)
+        if key != self._step:
+            self._step = key
+            self.step_changed.emit(key)
+
+    def _move(self, delta: int) -> None:
+        keys = [k for k, _t in self.STEPS]
+        i = keys.index(self._step) + delta
+        if 0 <= i < len(keys):
+            self.show_step(keys[i])
+
+    def show_step_of(self, widget) -> None:
+        """Open the step that holds this widget (e.g. a field marked red)."""
+        w = widget
+        while w is not None:
+            for key, box in self.step_boxes.items():
+                if w is box:
+                    self.show_step(key)
+                    return
+            w = w.parentWidget()
 
     def fields(self):
         return {"csv": self.csv, "subject": self.subject, "shortcut": self.shortcut,
@@ -1415,9 +1528,14 @@ class ListsPage(Page):
 
     def __init__(self, tm: ThemeManager):
         super().__init__()
-        self.error = self.add(Banner(tm, "danger"))
+        self.body = QWidget()                 # shown in the campaign editor, step 3 Review
+        body = QVBoxLayout(self.body)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(16)
+        self.error = Banner(tm, "danger")
+        body.addWidget(self.error)
         self.error.hide()
-        card = Card("Recipients")
+        card = Card("Every row")
         self.source = label("", "muted", wrap=True)
         self.summary = label("", "kvValue", wrap=True)
         card.body.addWidget(self.source)
@@ -1430,24 +1548,15 @@ class ListsPage(Page):
         self.filter.set_value("all")
         row.addWidget(self.filter)
         row.addStretch()
-        self.fill_plugins = button("Fill plugins from WPXPO", None, "refresh", tm, "text_muted")
-        self.fill_plugins.setToolTip("Look up every person in the WPXPO account and add columns to this list: "
-                                     "Pro Plugins, Plan, licenses, purchase dates, account total.")
-        self.fill_stop = button("Stop", "ghost")
-        self.fill_stop.hide()
-        row.addWidget(self.fill_plugins)
-        row.addWidget(self.fill_stop)
         self.refresh = button("Re-read", None, "refresh", tm, "text_muted")
         row.addWidget(self.refresh)
         card.body.addLayout(row)
-        self.fill_status = label("", "faint", wrap=True)
-        self.fill_status.hide()
-        card.body.addWidget(self.fill_status)
-        self.table = _view()
+        self.table = _view(420)
         card.body.addWidget(self.table)
-        self.empty = label("Choose a recipient list in the campaign (Campaigns > Open).", "faint", wrap=True)
+        self.empty = label("Choose a recipient list in step 1 (Recipients).", "faint", wrap=True)
         card.body.addWidget(self.empty)
-        self.add(card, 1)
+        body.addWidget(card, 1)
+        self.add(self.body, 1)
 
 
 class TeamPage(Page):

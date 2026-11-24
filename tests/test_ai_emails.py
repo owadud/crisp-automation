@@ -103,6 +103,7 @@ def test_lists_shows_flagged_emails_and_double_click_approves(tmp_path, monkeypa
     w = MainWindow(ThemeManager(app, "light"), prefs, agent_script=tg.FAKE, data_dir=tmp_path / "data")
     try:
         c = w.campaign
+        c.show_step("message")                    # the AI options are in step 2
         w._send_mode_changed("api")
         c.api_message.setPlainText("Hi {first_name},\n\nOwadud")
         c.ai_enabled.setChecked(True)

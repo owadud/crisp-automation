@@ -183,7 +183,7 @@ def test_lists_button_fills_a_csv_list(tmp_path, monkeypatch):
                 break
             import time
             time.sleep(0.01)
-        assert "with plugins" in w.lists_page.fill_status.text()
+        assert "with plugins" in w.campaign.fill_status.text()
         rows = list(csv.DictReader(path.open(encoding="utf-8-sig")))
         assert rows[0]["Pro Plugins"] == "WowStore, WholesaleX" and "Expired: WowRevenue" in rows[0][wa.REMAINING]
         assert "no orders" in rows[1][wa.CHECKED]

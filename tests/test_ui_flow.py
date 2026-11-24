@@ -94,10 +94,21 @@ def test_run_button_is_on_every_page(win):
         assert win.run_button.isVisible() is visible, page
 
 
-def test_advanced_is_collapsed_and_opens_with_the_keyboard(win):
+def test_editor_shows_one_step_at_a_time(win):
     c, st = win.campaign, win.settings
-    assert not c.advanced.is_open()
-    assert not c.delay.isVisibleTo(c) and c.versions.isVisibleTo(c)      # common visible, rest folded
+    assert c.step() == "recipients" and c.fill_plugins.isVisibleTo(c) and not c.versions.isVisibleTo(c)
+    c.next.click()
+    assert c.step() == "message" and c.versions.isVisibleTo(c) and not c.delay.isVisibleTo(c)
+    win.navigate(LISTS)                                   # Lists = step 3 of the editor
+    assert win.stack.currentIndex() == EDITOR and c.step() == "review"
+    assert win.lists_page.table.isVisibleTo(c) and win.nav_buttons[0].isChecked()
+    c.next.click()
+    assert c.step() == "send" and c.delay.isVisibleTo(c) and not c.next.isVisibleTo(c)
+    c.back.click()
+    assert c.step() == "review"
+    c.delay.set_state("error", "Not a number")
+    c.show_step_of(c.delay)
+    assert c.step() == "send"
     # Settings: one tab at a time; inside a tab every row shows, only the long account forms fold out
     assert st.tabs.value() == "accounts" and not st.runner_name.isVisibleTo(st)
     st.show_tab("general")
@@ -108,9 +119,6 @@ def test_advanced_is_collapsed_and_opens_with_the_keyboard(win):
     assert not st.api_key.isVisibleTo(st) and not st.ai_key.isVisibleTo(st)
     st.ai_row.toggle.click()
     assert st.ai_key.isVisibleTo(st) and st.ai_row.toggle.text() == "Done"
-    c.advanced.head.setFocus()
-    QTest.keyClick(c.advanced.head, Qt.Key_Space)
-    assert c.advanced.is_open() and c.delay.isVisibleTo(c)
 
 
 def test_campaign_actions_follow_the_selected_status(win):

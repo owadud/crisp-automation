@@ -85,7 +85,7 @@ CHIP_TONE = {cs.RUNNING: "accent", cs.QUEUED: "neutral", cs.FINISHED: "success",
              cs.PAUSED: "warning", cs.FAILED: "danger", cs.UNCONFIRMED: "danger", cs.STOPPED: "muted",
              cs.READY: "muted", cs.DRAFT: "muted"}
 TITLES = ("Campaigns", "Campaign", "Run", "Results", "Lists", "Team", "Settings", "Runs and diagnostics")
-SUBTITLES = ("All campaigns, the queue and schedules", "Edit the campaign, then Start",
+SUBTITLES = ("All campaigns, the queue and schedules", "Four steps: recipients, message, review, send",
              "Live progress of the current run", "Delivered, read and replied, from Crisp",
              "Every row of the recipient list", "Who is sending from the shared Sheet",
              "Accounts, connections and app options", "Every run gets its own folder")
@@ -94,13 +94,13 @@ PAGES = (
     ("campaigns", "Campaigns", "list", CAMPAIGNS),
     ("run", "Run", "play", RUN),
     ("results", "Results", "send", RESULTS),
-    ("lists", "Lists", "file", LISTS),
     ("team", "Team", "people", TEAM),
     ("settings", "Settings", "settings", SETTINGS),
 )
-TEAM_NAV = 4
+TEAM_NAV = 3
 TRACK_TEST_CAMPAIGN = "Test email (tracking)"
-NAV_FOR = {CAMPAIGNS: 0, EDITOR: 0, RUN: 1, RESULTS: 2, LISTS: 3, TEAM: 4, SETTINGS: 5, RUNS: 2}
+# Lists is not in the sidebar any more: it is step 3 (Review) of the campaign editor.
+NAV_FOR = {CAMPAIGNS: 0, EDITOR: 0, RUN: 1, RESULTS: 2, LISTS: 0, TEAM: 3, SETTINGS: 4, RUNS: 2}
 # The top-bar Start/Stop button: on every page, like the prototype. It starts the campaign open in the editor.
 RUN_BUTTON_PAGES = (CAMPAIGNS, EDITOR, RUN, RESULTS, LISTS, TEAM, SETTINGS, RUNS)
 
@@ -315,6 +315,8 @@ class MainWindow(QMainWindow):
         self.list_rows = RowsModel(("Row", "Email", "Name used", "Subject", "Shortcut", "Segment", "Reference",
                                     "Action"), self)
         self.lists_page.table.setModel(self.list_rows)
+        self.campaign.review_box.addWidget(self.lists_page.body, 1)     # Lists = the editor's step 3
+        self.campaign.step_changed.connect(self._editor_step_changed)
         self.team_rows = RowsModel(("Who", "Campaign", "State", "Sent", "Holding", "Needs a check", "Last seen"),
                                    self)
         self.team_page.table.setModel(self.team_rows)
@@ -361,8 +363,8 @@ class MainWindow(QMainWindow):
         lp = self.lists_page
         lp.filter.changed.connect(lambda _v: self.refresh_lists())
         lp.refresh.clicked.connect(lambda: (self.refresh_csv(), self.refresh_lists()))
-        lp.fill_plugins.clicked.connect(self.fill_plugins_from_wpxpo)
-        lp.fill_stop.clicked.connect(lambda: setattr(self, "_wpx_stop", True))
+        self.campaign.fill_plugins.clicked.connect(self.fill_plugins_from_wpxpo)
+        self.campaign.fill_stop.clicked.connect(lambda: setattr(self, "_wpx_stop", True))
         self._wpx_signal = _AiSignal(self)
         self._wpx_signal.progress.connect(lambda d, t: self._wpx_status(f"Looking up in the WPXPO account… {d} of {t}"))
         self._wpx_signal.done.connect(self._wpxpo_filled)
@@ -619,6 +621,9 @@ class MainWindow(QMainWindow):
     def navigate(self, index: int):
         if not 0 <= index < len(TITLES):
             return
+        if index == LISTS:                       # Lists lives in the campaign editor, step 3 Review
+            index = EDITOR
+            self.campaign.show_step("review")
         self.stack.setCurrentIndex(index)
         self.nav_buttons[NAV_FOR[index]].setChecked(True)
         self._set_title(index)
@@ -637,13 +642,13 @@ class MainWindow(QMainWindow):
             self.team_page.admin_card.setVisible(is_admin)
             if is_admin and not self.admin_runs_rows.rows:
                 self.refresh_admin_usage()
-        if index in (EDITOR, LISTS) and not self.runner.is_running():
+        if index == EDITOR and not self.runner.is_running():
             self.refresh_csv()
         if index == RUNS:
             self.refresh_history()
         if index == RESULTS:
             self.refresh_results()
-        if index == LISTS:
+        if index == EDITOR and self.campaign.step() == "review":
             self.refresh_lists()
         if index == CAMPAIGNS:
             self.refresh_campaigns()
@@ -654,6 +659,15 @@ class MainWindow(QMainWindow):
             self.team_timer.stop()
         self._refresh_nav_icons()
         self._style_run_button()
+
+    def _lists_visible(self) -> bool:
+        return self.stack.currentIndex() == EDITOR and self.campaign.step() == "review"
+
+    def _editor_step_changed(self, step: str):
+        if step == "review" and self.stack.currentIndex() == EDITOR:
+            if not self.runner.is_running():
+                self.refresh_csv()
+            self.refresh_lists()
 
     def make_shortcut(self):
         from . import desktop_shortcut as ds
@@ -855,7 +869,7 @@ class MainWindow(QMainWindow):
         self._field_changed("ai_kind", kind or "opener")
         self._show_ai_kind()
         self._ai_refresh_status()
-        if self.stack.currentIndex() == LISTS:
+        if self._lists_visible():
             self.refresh_lists()
 
     def _show_ai_kind(self):
@@ -1050,7 +1064,7 @@ class MainWindow(QMainWindow):
         self._ai_refresh_status()
         if errors:
             W.inform(self, "Some lines were not written", "\n".join(errors[:6]))
-        if self.stack.currentIndex() == LISTS:
+        if self._lists_visible():
             self.refresh_lists()
 
     def _edit_ai_line(self, index):
@@ -1685,7 +1699,7 @@ class MainWindow(QMainWindow):
             self.activity.last_run.setText("No runs yet. Open a campaign and start a dry run.")
         if self.stack.currentIndex() == EDITOR:
             self._set_title(EDITOR)
-        if self.stack.currentIndex() == LISTS:
+        if self._lists_visible():
             self.refresh_lists()
 
     # ================================================================== run
@@ -1695,6 +1709,16 @@ class MainWindow(QMainWindow):
         else:
             self.start_run()
 
+    def _show_first_problem(self):
+        """Open the editor step holding the first field marked red (or step 1 for list problems)."""
+        c = self.campaign
+        bad = next((f for f in c.fields().values()
+                    if hasattr(f, "edit") and f.edit.property("invalid")), None)
+        if bad is not None:
+            c.show_step_of(bad)
+        elif not self.stats.ok or self.stats.range_error:
+            c.show_step("recipients")
+
     def start_run(self, retry_only: bool = False):
         retry_only = retry_only is True   # clicked(bool) passes False here
         if self.runner.is_running() or self.updater.busy:
@@ -1702,6 +1726,7 @@ class MainWindow(QMainWindow):
         self.refresh_csv()
         if not self._validate_fields():
             self.navigate(EDITOR)
+            self._show_first_problem()
             problem = (self.stats.error if not self.stats.ok
                        else self.stats.range_error or self.stats.dnc_error or "Fix the fields marked in red.")
             W.inform(self, "Check the campaign settings", problem)
@@ -2359,9 +2384,9 @@ class MainWindow(QMainWindow):
         self._refresh_account_pills()
 
     def _wpx_status(self, text: str):
-        lp = self.lists_page
-        lp.fill_status.setText(text)
-        lp.fill_status.setVisible(bool(text))
+        c = self.campaign
+        c.fill_status.setText(text)
+        c.fill_status.setVisible(bool(text))
 
     def fill_plugins_from_wpxpo(self):
         """Look up everyone in the open campaign's list and write the plugin columns into it."""
@@ -2394,9 +2419,9 @@ class MainWindow(QMainWindow):
                      confirm="Fill plugins"):
             return
         self._wpx_busy, self._wpx_stop = True, False
-        lp = self.lists_page
-        lp.fill_plugins.setEnabled(False)
-        lp.fill_stop.show()
+        c = self.campaign
+        c.fill_plugins.setEnabled(False)
+        c.fill_stop.show()
         self._wpx_status("Reading the list…")
 
         def work():
@@ -2429,9 +2454,9 @@ class MainWindow(QMainWindow):
 
     def _wpxpo_filled(self, out, error):
         self._wpx_busy = False
-        lp = self.lists_page
-        lp.fill_plugins.setEnabled(True)
-        lp.fill_stop.hide()
+        c = self.campaign
+        c.fill_plugins.setEnabled(True)
+        c.fill_stop.hide()
         if error:
             self._wpx_status(f"Stopped: {error}")
             return
@@ -3227,6 +3252,7 @@ class MainWindow(QMainWindow):
         self.prefs.set_editing_campaign("")
         self._editor_runs = False
         self._update_editor_lock()
+        self.campaign.show_step("recipients")
         self.navigate(EDITOR)
         self.campaign.campaign_name.edit.setFocus()
 
@@ -3289,6 +3315,7 @@ class MainWindow(QMainWindow):
         self._editor_runs = False
         self._apply_campaign_values(c.settings)
         self._update_editor_lock()
+        self.campaign.show_step("recipients")
         self.navigate(EDITOR)
 
     def _apply_campaign_values(self, values: dict):

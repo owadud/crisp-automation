@@ -119,7 +119,7 @@ def run_to_end(w, timeout=20):
 
 # ================================================================ navigation
 def test_every_nav_item_works(win):
-    nav = [("Campaigns", 0), ("Run", 2), ("Results", 3), ("Lists", 4), ("Team", 5), ("Settings", 6)]
+    nav = [("Campaigns", 0), ("Run", 2), ("Results", 3), ("Team", 5), ("Settings", 6)]   # Lists: editor step 3
     assert [b.text() for b in win.nav_buttons] == [t for t, _ in nav]
     for b, (title, page) in zip(win.nav_buttons, nav):
         QTest.mouseClick(b, Qt.LeftButton)
