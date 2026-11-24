@@ -131,6 +131,7 @@ class MainWindow(QMainWindow):
         self._results_campaign = ""
         self.run_dir: Path | None = None
         self._sheet_busy = False
+        self._sheet_auto_tried = None     # (link, tab, key) read on its own last: a failure is not retried in a loop
         self._sheet_signal = _SheetSignal(self)
         self._run_log = None
         self._sent7 = 0
@@ -1363,6 +1364,27 @@ class MainWindow(QMainWindow):
     def _sheet_shared_path(self) -> Path:
         return self.data_dir / "sheet_cache" / "preview_shared.json"
 
+    def _auto_read_sheet(self, v: dict) -> bool:
+        """The link and key are saved: read the Sheet on its own (at launch, on opening a campaign, on
+        choosing a tab) instead of waiting for Test connection. Each link + tab is tried once; after a
+        failure the message stays and Test connection tries again."""
+        c = self.campaign
+        runner = getattr(self, "runner", None)
+        if self._sheet_busy or getattr(self, "_loading", False) or (runner and runner.is_running()):
+            return False
+        url, key, tab = c.sheet_url.text(), c.google_key.text(), c.sheet_tab.currentText().strip()
+        if not url or not key or ss.key_problem(key, ROOT):
+            return False
+        try:
+            ss.sheet_id(url)
+        except ss.SheetError:
+            return False
+        if (url, tab, key) == self._sheet_auto_tried:
+            return False
+        self._sheet_auto_tried = (url, tab, key)
+        self.test_sheet()
+        return self._sheet_busy
+
     def test_sheet(self):
         """Connect, list tabs (pick the first if none chosen), download, show
         '120 rows, 45 eligible, 3 duplicates'. Runs in the background."""
@@ -1423,7 +1445,8 @@ class MainWindow(QMainWindow):
                                 claim_expiry=v.get("claim_expiry") or 5,
                                 allow_resend=self.settings.allow_resend.isChecked())
         if self.source() == "sheet" and not path:
-            self.stats.error = "Click Test connection to read the Sheet."
+            self.stats.error = ("Reading the Sheet…" if self._auto_read_sheet(v)
+                                else "Click Test connection to read the Sheet.")
         self._validate_fields()
         self._update_metrics()
         self._update_summary()
