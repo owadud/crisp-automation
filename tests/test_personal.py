@@ -74,3 +74,11 @@ def test_unknown_field_stops_before_any_send(api_agent, tmp_path):
     with pytest.raises(RuntimeError, match="Country"):
         mod.main()
     assert not [c for c in FakeAPI.calls if c[0] in ("create", "send")]
+
+
+def test_an_if_without_endif_is_named_not_called_a_missing_column():
+    import personal as pz
+    text = "{if Pro Plugins}A{endif}\n{if Remaining Plugins}Try {Remaining Plugins}.\nSee: https://x.test/?ref=1"
+    problems = pz.check([text], ["Pro Plugins", "Remaining Plugins"])
+    assert any(p.startswith("{if Remaining Plugins} has no {endif}") for p in problems)
+    assert not any("not a column" in p for p in problems)

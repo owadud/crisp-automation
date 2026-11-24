@@ -249,9 +249,12 @@ def check(texts, headers) -> list[str]:
             if key(field) not in known:
                 problems.append(f"{where}{{if {m.group(1)}}} uses '{field.strip()}', which is not a column.")
         plain = _IF.sub(lambda m: m.group(2) + (m.group(3) or ""), body)
+        for m in re.finditer(r"\{\s*if\s+([^{}]+?)\s*\}", plain, re.I):     # an {if} with no {endif} after it
+            problems.append(f"{where}{{if {m.group(1)}}} has no {{endif}} after it. Put {{endif}} where that "
+                            "part should end (e.g. after the last sentence or link of that paragraph).")
         for m in _FIELD.finditer(plain):
             field = m.group(1).partition("|")[0].strip()
-            if key(field) in ("else", "endif"):
+            if key(field) in ("else", "endif") or re.match(r"if\s", field, re.I):
                 continue
             if key(field) not in known:
                 problems.append(f"{where}{{{field}}} is not a column in the file or a known field.")
