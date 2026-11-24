@@ -6,8 +6,9 @@ recipient list, so message fields ({plugins}, {if ...}) and AI-written emails kn
 which plugins each person owns:
 
   Pro Plugins        WowRevenue, WowStore, WholesaleX, WowAddons   (paid and licence active)
-  Remaining Plugins  Expired: WowOptin · Refunded: PostX · Not bought: WowShipping, ...
-                     (every bundle plugin this person does not have now, grouped by why)
+  Remaining Plugins  Expired: WowOptin · Refunded: PostX · Abandoned: WowInvoice
+                     (ordered once but not active now, grouped by why)
+  Not Bought Plugins WowShipping, WowRecommend, ...   (bundle plugins never ordered at all)
   Plugin Count       4
   Plan               Lifetime | Yearly | Mixed
   Expired Plugins    (paid, but every licence expired: renewal offers)
@@ -43,11 +44,12 @@ from pathlib import Path
 API_URL = "https://account.wpxpo.com/wp-json/license/v1/validate"
 CONFIG = Path.home() / ".crisp_email_agent" / "wpxpo.json"
 PAUSE = 1.2                   # seconds between lookups: gentle on the account server
-COLUMNS = ["Pro Plugins", "Remaining Plugins", "Plugin Count", "Plan", "Expired Plugins", "Near Site Limit",
+COLUMNS = ["Pro Plugins", "Remaining Plugins", "Not Bought Plugins", "Plugin Count", "Plan", "Expired Plugins", "Near Site Limit",
            "Active Licenses", "Expired Licenses", "First Purchase", "Last Purchase", "Account Total",
            "Account Orders", "Plugin Details", "WPXPO Checked"]
 CHECKED = "WPXPO Checked"
 REMAINING = "Remaining Plugins"
+NOT_BOUGHT = "Not Bought Plugins"
 
 # The 10 plugins of the WPXPO bundle (wpxpo.com/bundle): what "Remaining Plugins" is measured against.
 BUNDLE = ["PostX", "WowStore", "WowAddons", "WowRevenue", "WholesaleX", "WowShipping", "WowOptin",
@@ -59,12 +61,13 @@ PAID = {"complete", "completed", "processing", "partially-refunded", "partially 
 UNPAID = {"refunded": "Refunded", "pending": "Pending", "on-hold": "Pending", "on hold": "Pending",
           "pending payment": "Pending", "abandoned": "Abandoned", "checkout-draft": "Abandoned",
           "draft": "Abandoned", "cancelled": "Cancelled", "canceled": "Cancelled", "failed": "Failed"}
-GROUPS = ["Expired", "Refunded", "Pending", "Abandoned", "Cancelled", "Failed", "Not bought"]
+GROUPS = ["Expired", "Refunded", "Pending", "Abandoned", "Cancelled", "Failed"]
 # Header notes in the Google Sheet (hover a header to read them)
 NOTES = {
     "Pro Plugins": "Filled by Crisp Automation from the WPXPO account: paid orders with an active licence.",
-    REMAINING: "Bundle plugins this person does not have now, grouped by why: Expired, Refunded, Pending, "
-               "Abandoned, Cancelled, Failed, Not bought. Bundle = " + ", ".join(BUNDLE) + ".",
+    REMAINING: "Plugins this person ordered but does not have now, grouped by why: Expired, Refunded, "
+               "Pending, Abandoned, Cancelled, Failed.",
+    NOT_BOUGHT: "Bundle plugins this person never ordered. Bundle = " + ", ".join(BUNDLE) + ".",
     "Account Total": "Paid orders only (refunded, pending and abandoned orders are left out).",
     CHECKED: "When this row was looked up. Rows looked up in the last 30 days are skipped next time.",
 }
@@ -245,7 +248,7 @@ def _money_text(total: float) -> str:
 
 
 def remaining(orders: list[dict], owned: list[str]) -> str:
-    """Every bundle plugin not in `owned`, grouped by why: 'Expired: A · Refunded: B · Not bought: C, D'."""
+    """Ordered plugins not in `owned`, grouped by why: 'Expired: A · Refunded: B · Abandoned: C'."""
     why: dict[str, str] = {}
     for o in sorted(orders, key=lambda o: o["date"]):
         name = o["plugin"]
@@ -255,9 +258,6 @@ def remaining(orders: list[dict], owned: list[str]) -> str:
             why[name] = "Expired"              # paid but no active licence left
         elif why.get(name) != "Expired":       # a later refund or abandoned cart never hides an expiry
             why[name] = UNPAID.get(o.get("status", ""), "Pending")
-    for name in BUNDLE:
-        if name not in owned and name not in why:
-            why[name] = "Not bought"
     order = {n: i for i, n in enumerate(BUNDLE)}
     parts = []
     for group in GROUPS:
@@ -267,13 +267,19 @@ def remaining(orders: list[dict], owned: list[str]) -> str:
     return " · ".join(parts)
 
 
+def not_bought(orders: list[dict], owned: list[str]) -> str:
+    """Bundle plugins with no order at all (paid or not) and not owned: 'PostX, WowShipping'."""
+    ordered = {o["plugin"] for o in orders}
+    return ", ".join(n for n in BUNDLE if n not in owned and n not in ordered)
+
+
 def summarize(orders: list[dict], today: str | None = None) -> dict:
     """Orders -> the columns above (as text, ready for a Sheet or CSV).
     Owned = a paid order (complete / processing) with an active licence. A bundle order owns all 10."""
     today = today or datetime.now().strftime("%Y-%m-%d")
     if not orders:
         return dict({c: "" for c in COLUMNS}, **{"Plugin Count": "0", "Account Orders": "0", "Account Total": "$0",
-                                                  REMAINING: remaining([], []), CHECKED: f"{today} · no orders"})
+                                                  NOT_BOUGHT: not_bought([], []), CHECKED: f"{today} · no orders"})
     paid = [o for o in orders if is_paid(o)]
     by_plugin: dict[str, dict] = {}
     for o in sorted(paid, key=lambda o: o["date"]):
@@ -309,6 +315,7 @@ def summarize(orders: list[dict], today: str | None = None) -> dict:
     return {
         "Pro Plugins": ", ".join(owned),
         REMAINING: remaining(orders, owned + covered),
+        NOT_BOUGHT: not_bought(orders, owned + covered),
         "Plugin Count": str(len(owned)),
         "Plan": (plans.pop() if len(plans) == 1 else "Mixed" if plans else ""),
         "Expired Plugins": ", ".join(expired_plugins),

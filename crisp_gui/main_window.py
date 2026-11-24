@@ -2412,7 +2412,7 @@ class MainWindow(QMainWindow):
         if not W.ask(self, f"Fill plugins for {len(emails)} people?",
                      "Each email is looked up in the WPXPO account, one at a time. The results go into "
                      f"{len(wa.COLUMNS)} columns kept together at the right of your list (tinted header): Pro "
-                     "Plugins, Remaining Plugins (not bought, expired, refunded, pending, abandoned), Plan, "
+                     "Plugins, Remaining Plugins (expired, refunded, pending, abandoned), Not Bought Plugins, Plan, "
                      "licences, purchase dates and account total. People looked up in the last 30 days are "
                      "skipped. Results are saved every 25 people, so you can stop at any time.",
                      details=[("List", where), ("People", str(len(emails))), ("Time", f"about {minutes} min")],
@@ -2440,9 +2440,11 @@ class MainWindow(QMainWindow):
                     def write(part):
                         wa.write_csv(v["csv"], part)
                 index = pz.build_index(grid)[0]
-                def fresh(e):      # looked up lately AND already has every column (e.g. Remaining Plugins)
+                def fresh(e):      # looked up lately AND filled by this version (Not Bought has its own column)
                     f = (index.get(e) or {}).get("fields", {})
-                    return wa.checked_recently(f.get(wa.CHECKED, "")) and bool(f.get(wa.REMAINING))
+                    rem, nb = f.get(wa.REMAINING, ""), f.get(wa.NOT_BOUGHT, "")
+                    return (wa.checked_recently(f.get(wa.CHECKED, "")) and "Not bought" not in rem
+                            and bool(rem or nb or f.get("Plugin Count") == str(len(wa.BUNDLE))))
                 todo = [e for e in emails if not fresh(e)]
                 results, problems = wa.fill(todo, key, stop=lambda: self._wpx_stop, on_batch=write,
                                             progress=lambda d, t: self._wpx_signal.progress.emit(d, t))
