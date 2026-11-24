@@ -218,3 +218,11 @@ def test_new_columns_widen_a_full_sheet_tab_first():
     src.pacer = type("P", (), {"call": staticmethod(lambda fn, *a, **k: fn(*a, **k))})()
     src.ensure_columns(wa.COLUMNS)
     assert src.ws.calls == [("add_cols", len(wa.COLUMNS)), ("update", "AA1")]
+
+
+def test_message_using_plugin_columns_on_an_unfilled_list_says_how_to_fill_it():
+    import personal as pz
+    text = "{if Not Bought Plugins}Try {Not Bought Plugins}.{endif}"
+    problems = pz.check([text], ["Full Name", "Contact Email"])
+    assert any("Fill plugins from WPXPO" in p and p.startswith("Not Bought Plugins") for p in problems)
+    assert pz.check([text], ["Full Name", "Contact Email", wa.NOT_BOUGHT]) == []

@@ -33,6 +33,10 @@ _BUNDLE = re.compile(r"\{\s*bundle\s*:([^{}]*)\}[ \t]*\n?", re.I)
 _IF = re.compile(r"\{\s*if\s+([^{}]+?)\s*\}(.*?)(?:\{\s*else\s*\}(.*?))?\{\s*endif\s*\}", re.I | re.S)
 _FIELD = re.compile(r"\{([^{}]+)\}")
 _COND = re.compile(r"^(.+?)\s+(not contains|contains|>=|<=|!=|=|>|<)\s+(.+)$", re.I)
+# Columns that "Fill plugins from WPXPO" adds (wpxpo_account.COLUMNS): a message using one on a list
+# that was not filled yet gets a hint saying how to add them.
+WPXPO_COLUMNS = ("Pro Plugins", "Remaining Plugins", "Not Bought Plugins", "Expired Plugins", "Plan",
+                 "Near Site Limit", "Account Total")
 SAMPLE = {"fields": {"Full Name": "Ann Lee", "Order Value": "$820.50", "Order Count": "5",
                      "Country": "Canada", "User Details": "PostX Users, WowStore Users, All WooCommerce Users"},
           "cells": ["PostX Users", "WowStore Users", "All WooCommerce Users"]}
@@ -253,4 +257,9 @@ def check(texts, headers) -> list[str]:
                 problems.append(f"{where}{{{field}}} is not a column in the file or a known field.")
             if key(field) in ("missingplugins", "missingcount") and not bundle_of(text):
                 problems.append(f"{where}{{{field}}} needs the bundle list: add {{bundle: PostX, WowStore, ...}}.")
+    missing_wpxpo = [c for c in WPXPO_COLUMNS if key(c) not in known and any(
+        re.search(r"\{[^{}]*" + re.escape(c), str(t or ""), re.I) for t in texts)]
+    if missing_wpxpo:
+        problems.append(f"{', '.join(missing_wpxpo)}: this list has no such column yet. Fill it first: "
+                        "campaign step 1 Recipients > Plugin data > Fill plugins from WPXPO.")
     return list(dict.fromkeys(problems))

@@ -1,0 +1,17 @@
+Hi {first_name|there},
+
+{if Pro Plugins}Thank you for building your store with {plugins}. We hope your WPXPO plugins have been making your work easier.{else}Thank you for your interest in WPXPO plugins.{endif}
+
+{if Expired Plugins}Your licence for {Expired Plugins} has expired, so your site is no longer getting updates, new features or priority support. Renewing keeps everything secure and compatible with the latest WordPress and WooCommerce releases.{endif}
+
+{if Remaining Plugins contains Abandoned}We noticed one of your recent checkouts was not completed. If something got in the way, just reply to this email and we will help you complete it.{endif}
+
+{if Remaining Plugins contains Pending}One of your orders is still waiting for payment. Reply to this email if you need a hand completing it.{endif}
+
+{if Not Bought Plugins}To get even more from your store, you might also like: {Not Bought Plugins}. Every WPXPO plugin is built to work together, and the WPXPO Bundle includes them all at the best value.
+See the bundle: https://www.wpxpo.com/bundle/ {endif}
+
+If you have any questions or want a recommendation for your store, just reply. We are happy to help.
+
+Best regards,
+The WPXPO Team
