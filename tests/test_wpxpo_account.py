@@ -189,3 +189,29 @@ def test_lists_button_fills_a_csv_list(tmp_path, monkeypatch):
         assert "no orders" in rows[1][wa.CHECKED]
     finally:
         w.close()
+
+
+def test_new_columns_widen_a_full_sheet_tab_first():
+    """A tab with only A-Z (26 columns) used up: the WPXPO columns need more, so columns are added first."""
+    import sheet_source as ss
+
+    class WS:
+        col_count = 26
+
+        def __init__(self):
+            self.calls = []
+
+        def add_cols(self, n):
+            self.calls.append(("add_cols", n))
+            self.col_count += n
+
+        def update(self, values=None, range_name="A1", value_input_option="RAW"):
+            assert self.col_count >= 26 + len(values[0]), "wrote past the grid"
+            self.calls.append(("update", range_name))
+
+    src = ss.SheetSource.__new__(ss.SheetSource)
+    src.header, src.colmap, src.data_rows = [f"C{i}" for i in range(26)], {}, 0
+    src.ws = WS()
+    src.pacer = type("P", (), {"call": staticmethod(lambda fn, *a, **k: fn(*a, **k))})()
+    src.ensure_columns(wa.COLUMNS)
+    assert src.ws.calls == [("add_cols", len(wa.COLUMNS)), ("update", "AA1")]

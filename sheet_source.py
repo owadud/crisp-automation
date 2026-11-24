@@ -293,7 +293,13 @@ class SheetSource:
         if not missing:
             return []
         start = len(self.header) + 1
-        self.pacer.call(self.worksheet().update, values=[missing], range_name=_a1(1, start),
+        ws = self.worksheet()
+        # A tab has a fixed grid (often A-Z = 26 columns): writing past it fails, so widen it first.
+        have = getattr(ws, "col_count", None)
+        need = start + len(missing) - 1
+        if isinstance(have, int) and need > have:
+            self.pacer.call(ws.add_cols, need - have)
+        self.pacer.call(ws.update, values=[missing], range_name=_a1(1, start),
                         value_input_option="RAW")
         self.header.extend(missing)
         for c in missing:
