@@ -1096,7 +1096,7 @@ class SettingsPage(Page):
         self.ai_key_status = row.add_below(label("", "faint", wrap=True))
         self.ai_row = row
 
-        row = group.add(SettingRow("WPXPO account", "Fills the plugins each person bought (Lists > Fill plugins "
+        row = group.add(SettingRow("WPXPO account", "Fills the plugins each person bought (campaign step 1 > Fill plugins "
                                    "from WPXPO), like the License Checker extension. The key is saved only on "
                                    "this computer."))
         form = QWidget()

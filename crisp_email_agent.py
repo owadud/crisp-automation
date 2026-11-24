@@ -717,7 +717,7 @@ def print_precheck(rows):
                    if o == rules.ELIGIBLE and not ai_email_ready(r.get("Contact Email"))]
         if waiting:
             print(f"AI EMAIL NOT READY: {len(waiting)} recipient(s) skipped (not written yet, or flagged and "
-                  "not approved in Lists). Rows: " + ", ".join(str(i + 1) for i in waiting[:30])
+                  "not approved in step 3 Review). Rows: " + ", ".join(str(i + 1) for i in waiting[:30])
                   + (" ..." if len(waiting) > 30 else ""))
     for index, row, outcome, detail in classify_rows(rows):
         counts[outcome] = counts.get(outcome, 0) + 1

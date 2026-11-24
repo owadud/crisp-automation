@@ -927,7 +927,7 @@ class MainWindow(QMainWindow):
         if not W.ask(self, f"Write {len(todo)} personal email(s) with {pname}?",
                      "The AI receives your subject and message, your Products tab, and per person a first name, "
                      "the company from the email domain and the columns of their row (plugins, plan, spend ...), "
-                     "never the email address. Every email is checked; flagged ones wait for you in Lists and "
+                     "never the email address. Every email is checked; flagged ones wait for you in step 3 Review and "
                      "are not sent until you approve them.",
                      details=[("Provider", pname), ("Model", ai_openers.current_model(ai)),
                               ("Products", products_tab), ("Recipients", str(len(todo))), ("Cost", cost)],
@@ -989,7 +989,7 @@ class MainWindow(QMainWindow):
             ready, look, missing = self._ai_email_store().counts(emails)
             hint = ("" if "{ai_email}" in c.api_message.toPlainText()
                     else " Each email goes after the greeting (or where you put {ai_email}).")
-            c.ai_status.setText(f"{ready} ready, {look} need a look (Lists), {missing} not written of "
+            c.ai_status.setText(f"{ready} ready, {look} need a look (step 3 Review), {missing} not written of "
                                 f"{len(emails)} recipients. Only ready ones are sent." + hint)
             return
         ready, look, missing = self._ai_store().counts(emails)
@@ -1028,7 +1028,7 @@ class MainWindow(QMainWindow):
             cost = f"set by {pname} (free tiers have rate limits)"
         if not W.ask(self, f"Write {len(todo)} opening line(s) with {pname}?",
                      "The AI receives your subject and message, and per person only a first name and the company "
-                     "from the email domain (not the email address). You review the lines in Lists before sending.",
+                     "from the email domain (not the email address). You review the lines in step 3 Review before sending.",
                      details=[("Provider", pname), ("Model", ai_openers.current_model(ai)),
                               ("Recipients", str(len(todo))), ("Cost", cost)],
                      confirm="Write lines"):
@@ -1056,7 +1056,7 @@ class MainWindow(QMainWindow):
         if body:
             n = self._ai_email_store().merge(result or {})
             look = sum(1 for k, x in (result or {}).items() if not k.startswith("_") and x.get("check"))
-            self._gui_line(f"AI emails: {n} written, {look} need a look in Lists."
+            self._gui_line(f"AI emails: {n} written, {look} need a look in step 3 Review."
                            + (f" {'; '.join(errors)}" if errors else ""))
         else:
             n = self._ai_store().merge(result or {})
@@ -2375,7 +2375,7 @@ class MainWindow(QMainWindow):
             return
         wa.save_key(key)
         s.wpxpo_key.edit.clear()
-        s.wpxpo_status.setText("Saved. Lists > Fill plugins from WPXPO now works.")
+        s.wpxpo_status.setText("Saved. Campaign step 1 Recipients > Fill plugins from WPXPO now works.")
         self._refresh_account_pills()
 
     def remove_wpxpo_key(self):
