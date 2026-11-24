@@ -46,12 +46,10 @@ def test_columns_for_one_person():
     assert cols["First Purchase"] == "2024-09-11" and cols["Last Purchase"] == "2025-04-17"
     assert cols["Account Total"] == "$489.50" and cols[wa.CHECKED] == "2026-11-24"
     assert "WowStore · Lifetime · active · 3/Unlimited sites" in cols["Plugin Details"]
-    assert cols[wa.REMAINING] == "Expired: WowRevenue"                          # its own column...
-    assert cols[wa.NOT_BOUGHT] == ("PostX, WowAddons, WowShipping, WowOptin, "    # ...apart from never ordered
-                                   "WowInvoice, WowRecommend, WowSubscription")
+    assert cols[wa.REMAINING] == ("PostX, WowAddons, WowShipping, WowOptin, "    # plain names; WowRevenue is
+                                  "WowInvoice, WowRecommend, WowSubscription")    # in Expired Plugins instead
     empty = wa.summarize([], today="2026-11-24")
-    assert empty[wa.CHECKED] == "2026-11-24 · no orders" and empty[wa.REMAINING] == ""
-    assert empty[wa.NOT_BOUGHT].startswith("PostX, WowStore")
+    assert empty[wa.CHECKED] == "2026-11-24 · no orders" and empty[wa.REMAINING] == ", ".join(wa.BUNDLE)
 
 
 def test_refunded_pending_and_abandoned_orders_are_not_owned():
@@ -68,8 +66,8 @@ def test_refunded_pending_and_abandoned_orders_are_not_owned():
     cols = wa.summarize(orders, today="2026-11-24")
     assert cols["Pro Plugins"] == "WowStore" and cols["Account Total"] == "$209" and cols["Account Orders"] == "2"
     rem = cols[wa.REMAINING]
-    assert rem == "Expired: WowRevenue · Refunded: WholesaleX · Pending: WowOptin"
-    assert cols[wa.NOT_BOUGHT].startswith("PostX, WowAddons") and "WowOptin" not in cols[wa.NOT_BOUGHT]
+    assert rem.startswith("PostX, WowAddons, WholesaleX") and "WowOptin" in rem      # refunded / pending: remaining
+    assert "WowRevenue" not in rem and cols["Expired Plugins"] == "WowRevenue"
     assert "WowStore" not in rem                       # owned: an abandoned second cart does not matter
 
 
@@ -78,7 +76,7 @@ def test_a_bundle_order_owns_all_ten():
  Unlimited Sites (complete)</div><div><strong>Date:</strong> June 1, 2025</div>
 <div><strong>License:</strong> """ + "d" * 32 + """ (active)[1/Unlimited]</div><div><strong>Price:</strong> $ 599</div>"""
     cols = wa.summarize(wa.parse_orders(page), today="2026-11-24")
-    assert cols["Plugin Count"] == "10" and cols[wa.REMAINING] == cols[wa.NOT_BOUGHT] == ""
+    assert cols["Plugin Count"] == "10" and cols[wa.REMAINING] == ""
 
 
 def test_many_people_with_pauses_batches_and_a_bad_key():
@@ -188,7 +186,7 @@ def test_lists_button_fills_a_csv_list(tmp_path, monkeypatch):
             time.sleep(0.01)
         assert "with plugins" in w.campaign.fill_status.text()
         rows = list(csv.DictReader(path.open(encoding="utf-8-sig")))
-        assert rows[0]["Pro Plugins"] == "WowStore, WholesaleX" and "Expired: WowRevenue" in rows[0][wa.REMAINING]
+        assert rows[0]["Pro Plugins"] == "WowStore, WholesaleX" and "WowRevenue" not in rows[0][wa.REMAINING]
         assert "no orders" in rows[1][wa.CHECKED]
     finally:
         w.close()
@@ -222,7 +220,7 @@ def test_new_columns_widen_a_full_sheet_tab_first():
 
 def test_message_using_plugin_columns_on_an_unfilled_list_says_how_to_fill_it():
     import personal as pz
-    text = "{if Not Bought Plugins}Try {Not Bought Plugins}.{endif}"
+    text = "{if Remaining Plugins}Try {Remaining Plugins}.{endif}"
     problems = pz.check([text], ["Full Name", "Contact Email"])
-    assert any("Fill plugins from WPXPO" in p and p.startswith("Not Bought Plugins") for p in problems)
-    assert pz.check([text], ["Full Name", "Contact Email", wa.NOT_BOUGHT]) == []
+    assert any("Fill plugins from WPXPO" in p and p.startswith("Remaining Plugins") for p in problems)
+    assert pz.check([text], ["Full Name", "Contact Email", wa.REMAINING]) == []

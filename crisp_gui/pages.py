@@ -586,7 +586,7 @@ class CampaignPage(Page):
 
         # 1 recipients: plugin data from the WPXPO account (wpxpo_account.py) -----
         card = Card("Plugin data", "Adds what each person bought to your list: Pro Plugins, Remaining Plugins "
-                    "(expired, refunded, pending, abandoned), Not Bought Plugins, Plan, licences and spend. The key goes in "
+                    "(not bought yet), Expired Plugins, Plan, licences and spend. The key goes in "
                     "Settings > Accounts > WPXPO account.")
         row = QHBoxLayout()
         row.setSpacing(8)

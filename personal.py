@@ -35,7 +35,7 @@ _FIELD = re.compile(r"\{([^{}]+)\}")
 _COND = re.compile(r"^(.+?)\s+(not contains|contains|>=|<=|!=|=|>|<)\s+(.+)$", re.I)
 # Columns that "Fill plugins from WPXPO" adds (wpxpo_account.COLUMNS): a message using one on a list
 # that was not filled yet gets a hint saying how to add them.
-WPXPO_COLUMNS = ("Pro Plugins", "Remaining Plugins", "Not Bought Plugins", "Expired Plugins", "Plan",
+WPXPO_COLUMNS = ("Pro Plugins", "Remaining Plugins", "Expired Plugins", "Plan",
                  "Near Site Limit", "Account Total")
 SAMPLE = {"fields": {"Full Name": "Ann Lee", "Order Value": "$820.50", "Order Count": "5",
                      "Country": "Canada", "User Details": "PostX Users, WowStore Users, All WooCommerce Users"},
