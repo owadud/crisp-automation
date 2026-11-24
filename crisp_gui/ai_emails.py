@@ -160,6 +160,9 @@ def owned_pro(info: dict | None) -> list[str]:
     """Plugins this person has in Pro: a Plan column saying Pro covers what they use; 'X Pro' names one."""
     fields = (info or {}).get("fields", {})
     plan = next((v for h, v in fields.items() if pz.key(h) == "plan"), "")
+    pro_col = next((v for h, v in fields.items() if pz.key(h) == "proplugins"), "")
+    if pro_col:                       # filled from the WPXPO account: every one of them is a paid Pro plugin
+        return [p.strip() for p in pro_col.split(",") if p.strip()]
     listed = " , ".join(v for h, v in fields.items() if pz.key(h) in ("plugins", "plugin", "pluginsused", "products"))
     used = pz.plugins_of(info)
     named = [m.group(1) for m in re.finditer(r"([A-Za-z][\w-]*)\s*\(?Pro\b", plan + " , " + listed)

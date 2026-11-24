@@ -983,6 +983,29 @@ class SettingsPage(Page):
         self.ai_key_status = row.add_below(label("", "faint", wrap=True))
         self.ai_row = row
 
+        row = group.add(SettingRow("WPXPO account", "Fills the plugins each person bought (Lists > Fill plugins "
+                                   "from WPXPO), like the License Checker extension. The key is saved only on "
+                                   "this computer."))
+        form = QWidget()
+        fl = QVBoxLayout(form)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.setSpacing(10)
+        self.wpxpo_key = Field("API key", "The same key as in the License Checker extension.",
+                               placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
+        self.wpxpo_key.edit.setEchoMode(QLineEdit.Password)
+        self.wpxpo_key.setMaximumWidth(520)
+        fl.addWidget(self.wpxpo_key)
+        krow = QHBoxLayout()
+        self.wpxpo_save = button("Save and test", None, "check", tm, "text_muted")
+        self.wpxpo_remove = button("Remove key", "ghost")
+        krow.addWidget(self.wpxpo_save)
+        krow.addWidget(self.wpxpo_remove)
+        krow.addStretch()
+        fl.addLayout(krow)
+        row.set_details(form)
+        self.wpxpo_status = row.add_below(label("", "faint", wrap=True))
+        self.wpxpo_row = row
+
         # ------------------------------------------------------------ Sending
         group = group_for("Sending", "sending")
         self.together = QCheckBox("On")
@@ -1407,9 +1430,19 @@ class ListsPage(Page):
         self.filter.set_value("all")
         row.addWidget(self.filter)
         row.addStretch()
+        self.fill_plugins = button("Fill plugins from WPXPO", None, "refresh", tm, "text_muted")
+        self.fill_plugins.setToolTip("Look up every person in the WPXPO account and add columns to this list: "
+                                     "Pro Plugins, Plan, licenses, purchase dates, account total.")
+        self.fill_stop = button("Stop", "ghost")
+        self.fill_stop.hide()
+        row.addWidget(self.fill_plugins)
+        row.addWidget(self.fill_stop)
         self.refresh = button("Re-read", None, "refresh", tm, "text_muted")
         row.addWidget(self.refresh)
         card.body.addLayout(row)
+        self.fill_status = label("", "faint", wrap=True)
+        self.fill_status.hide()
+        card.body.addWidget(self.fill_status)
         self.table = _view()
         card.body.addWidget(self.table)
         self.empty = label("Choose a recipient list in the campaign (Campaigns > Open).", "faint", wrap=True)

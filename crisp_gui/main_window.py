@@ -18,6 +18,7 @@ import recipient_rules as rules  # noqa: E402
 import send_control as sc  # noqa: E402
 import sheet_source as ss  # noqa: E402  (gspread is imported only when used)
 import personal as pz  # noqa: E402  (each person's row, for AI-written emails)
+import wpxpo_account as wa  # noqa: E402  (plugin columns from the WPXPO account)
 import campaign_results as cr  # noqa: E402
 import crisp_api  # noqa: E402  (Crisp REST API: read-only status tracking)
 import mail_sender  # noqa: E402  (sending from your own mail account)
@@ -360,6 +361,17 @@ class MainWindow(QMainWindow):
         lp = self.lists_page
         lp.filter.changed.connect(lambda _v: self.refresh_lists())
         lp.refresh.clicked.connect(lambda: (self.refresh_csv(), self.refresh_lists()))
+        lp.fill_plugins.clicked.connect(self.fill_plugins_from_wpxpo)
+        lp.fill_stop.clicked.connect(lambda: setattr(self, "_wpx_stop", True))
+        self._wpx_signal = _AiSignal(self)
+        self._wpx_signal.progress.connect(lambda d, t: self._wpx_status(f"Looking up in the WPXPO account… {d} of {t}"))
+        self._wpx_signal.done.connect(self._wpxpo_filled)
+        self._wpx_key_signal = _SheetSignal(self)
+        self._wpx_key_signal.done.connect(lambda _k, key, err: self._wpxpo_key_tested(key, err))
+        self.settings.wpxpo_save.clicked.connect(self.save_wpxpo_key)
+        self.settings.wpxpo_remove.clicked.connect(self.remove_wpxpo_key)
+        self._wpx_busy = False
+        self._wpx_stop = False
         tp = self.team_page
         tp.refresh.clicked.connect(self.refresh_team)
         tp.open_check.clicked.connect(self.open_check_in_crisp)
@@ -2309,12 +2321,138 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001  (a broken AI settings file must not break Settings)
             ai_ok = False
         s.ai_row.set_status("Ready" if ai_ok else "Not set up", ai_ok)
+        wpx = bool(wa.load_key())
+        s.wpxpo_row.set_status("Connected" if wpx else "Not set up", wpx)
+
+    # ============================================================ WPXPO account (plugin columns)
+    def save_wpxpo_key(self):
+        s = self.settings
+        key = s.wpxpo_key.edit.text().strip()
+        if not key:
+            s.wpxpo_status.setText("Paste the API key first.")
+            return
+        s.wpxpo_save.setEnabled(False)
+        s.wpxpo_status.setText("Testing the key with the WPXPO account…")
+
+        def work():
+            try:            # an address that has no orders: tests the key without touching a customer
+                wa.lookup("key-test@example.com", key)
+                self._wpx_key_signal.done.emit("wpxpo_key", key, None)
+            except wa.LookupError_ as exc:
+                self._wpx_key_signal.done.emit("wpxpo_key", None, str(exc))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _wpxpo_key_tested(self, key, error):
+        s = self.settings
+        s.wpxpo_save.setEnabled(True)
+        if error:
+            s.wpxpo_status.setText(f"Not saved: {error}")
+            return
+        wa.save_key(key)
+        s.wpxpo_key.edit.clear()
+        s.wpxpo_status.setText("Saved. Lists > Fill plugins from WPXPO now works.")
+        self._refresh_account_pills()
+
+    def remove_wpxpo_key(self):
+        wa.remove_key()
+        self.settings.wpxpo_status.setText("Removed from this computer.")
+        self._refresh_account_pills()
+
+    def _wpx_status(self, text: str):
+        lp = self.lists_page
+        lp.fill_status.setText(text)
+        lp.fill_status.setVisible(bool(text))
+
+    def fill_plugins_from_wpxpo(self):
+        """Look up everyone in the open campaign's list and write the plugin columns into it."""
+        if self._wpx_busy:
+            return
+        key = wa.load_key()
+        if not key:
+            W.inform(self, "Add the WPXPO API key first",
+                     "Settings > Accounts > WPXPO account: paste the key from the License Checker extension.")
+            self.open_account_setup("wpxpo")
+            return
+        v = self.campaign_values()
+        sheet = v.get("source") == "sheet"
+        where = (f"Google Sheet, tab '{v.get('sheet_tab')}'" if sheet else Path(v.get("csv") or "").name)
+        if (sheet and not (v.get("sheet_url") and v.get("sheet_tab"))) or (not sheet and not v.get("csv")):
+            W.inform(self, "Choose a recipient list first", "Open a campaign with a CSV file or a Google Sheet tab.")
+            return
+        emails = list(dict.fromkeys(p["email"].strip().lower() for p in self.stats.plan if p.get("email")))
+        if not emails:
+            W.inform(self, "Nothing to look up", "The list has no email addresses.")
+            return
+        minutes = max(1, round(len(emails) * (wa.PAUSE + 0.6) / 60))
+        if not W.ask(self, f"Fill plugins for {len(emails)} people?",
+                     "Each email is looked up in the WPXPO account (one at a time, with a pause). New columns are "
+                     "added to your list: " + ", ".join(wa.COLUMNS) + ". People looked up in the last 30 days are "
+                     "skipped. Results are saved every 25 people, so you can stop at any time.",
+                     details=[("List", where), ("People", str(len(emails))), ("Time", f"about {minutes} min")],
+                     confirm="Fill plugins"):
+            return
+        self._wpx_busy, self._wpx_stop = True, False
+        lp = self.lists_page
+        lp.fill_plugins.setEnabled(False)
+        lp.fill_stop.show()
+        self._wpx_status("Reading the list…")
+
+        def work():
+            try:
+                if sheet:
+                    src = ss.SheetSource(v["sheet_url"], v["sheet_tab"], v.get("google_key", "")).connect()
+                    src.download()
+                    grid = src.grid
+                    src.ensure_columns(wa.COLUMNS)
+
+                    def write(part):
+                        src.push_many([(e, cols, None) for e, cols in part.items()])
+                else:
+                    grid = ai_emails.grid_from_csv(v["csv"])
+
+                    def write(part):
+                        wa.write_csv(v["csv"], part)
+                index = pz.build_index(grid)[0]
+                todo = [e for e in emails
+                        if not wa.checked_recently((index.get(e) or {}).get("fields", {}).get(wa.CHECKED, ""))]
+                results, problems = wa.fill(todo, key, stop=lambda: self._wpx_stop, on_batch=write,
+                                            progress=lambda d, t: self._wpx_signal.progress.emit(d, t))
+                self._wpx_signal.done.emit({"results": results, "problems": problems,
+                                            "skipped": len(emails) - len(todo)}, "")
+            except Exception as exc:  # noqa: BLE001
+                self._wpx_signal.done.emit({}, str(exc))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _wpxpo_filled(self, out, error):
+        self._wpx_busy = False
+        lp = self.lists_page
+        lp.fill_plugins.setEnabled(True)
+        lp.fill_stop.hide()
+        if error:
+            self._wpx_status(f"Stopped: {error}")
+            return
+        results = out.get("results", {})
+        with_plugins = sum(1 for c in results.values() if c.get("Pro Plugins"))
+        no_orders = sum(1 for c in results.values() if "no orders" in c.get(wa.CHECKED, ""))
+        errors = sum(1 for c in results.values() if c.get(wa.CHECKED, "").startswith("error"))
+        text = (f"Done: {len(results)} looked up · {with_plugins} with plugins · {no_orders} without orders"
+                + (f" · {errors} errors" if errors else "")
+                + (f" · {out.get('skipped')} skipped (looked up in the last 30 days)" if out.get("skipped") else "")
+                + ". The new columns are in your list; use {plugins} or AI-written emails.")
+        problems = [p for p in out.get("problems", []) if p != "Stopped."]
+        if "Stopped." in out.get("problems", []):
+            text = "Stopped. " + text
+        if problems and not results:
+            text = problems[0]
+        self._wpx_status(text)
+        self.refresh_csv()
+        self.refresh_lists()
 
     def open_account_setup(self, mode: str):
         """Campaign editor 'Set up' link: Settings > Accounts with that account's form open."""
         s = self.settings
         self.navigate(SETTINGS)
-        s.open_row("accounts", s.mail_row if mode == "email" else s.api_row)
+        s.open_row("accounts", s.mail_row if mode == "email" else s.wpxpo_row if mode == "wpxpo" else s.api_row)
 
     def _load_mail_fields(self):
         cfg = mail_sender.load_config(self.mail_config_path)

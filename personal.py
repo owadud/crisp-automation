@@ -92,7 +92,7 @@ def plugins_of(info) -> list[str]:
     """Plugins from a 'Plugins' column ("WowStore, WowInvoice Pro") and from tags ("PostX Users")."""
     found = {}
     for header, value in (info or {}).get("fields", {}).items():
-        if key(header) in ("plugins", "plugin", "pluginsused", "products"):
+        if key(header) in ("plugins", "plugin", "pluginsused", "products", "proplugins"):
             for part in re.split(r"[,;/|]+", value):
                 name = re.sub(r"\s*\((free|pro)\)\s*$|\s+(free|pro)\s*$", "", part.strip(), flags=re.I).strip()
                 if name:
