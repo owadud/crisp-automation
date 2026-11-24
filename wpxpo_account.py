@@ -5,19 +5,24 @@ licenses (status, sites used / limit). This module turns them into plain columns
 recipient list, so message fields ({plugins}, {if ...}) and AI-written emails know exactly
 which plugins each person owns:
 
-  Pro Plugins       WowRevenue, WowStore, WholesaleX, WowAddons
-  Plugin Count      4
-  Plan              Lifetime | Yearly | Mixed
-  Plugin Details    WowStore · Lifetime · active · 3/Unlimited sites; ...
-  Active Licenses   4
-  Expired Licenses  0
-  Expired Plugins   (plugins whose licenses all expired: renewal offers)
-  Near Site Limit   WholesaleX (20/20)
-  First Purchase    2024-08-28
-  Last Purchase     2025-04-17
-  Account Total     $580
-  Account Orders    4
-  WPXPO Checked     2026-11-24 (or "no orders" / an error)
+  Pro Plugins        WowRevenue, WowStore, WholesaleX, WowAddons   (paid and licence active)
+  Remaining Plugins  Expired: WowOptin · Refunded: PostX · Not bought: WowShipping, ...
+                     (every bundle plugin this person does not have now, grouped by why)
+  Plugin Count       4
+  Plan               Lifetime | Yearly | Mixed
+  Expired Plugins    (paid, but every licence expired: renewal offers)
+  Near Site Limit    WholesaleX (20/20)
+  Active Licenses    4
+  Expired Licenses   0
+  First Purchase     2024-08-28
+  Last Purchase      2025-04-17
+  Account Total      $580   (paid orders only: refunded / pending / abandoned are left out)
+  Account Orders     4
+  Plugin Details     WowStore · Lifetime · active · 3/Unlimited sites; ...
+  WPXPO Checked      2026-11-24 (or "no orders" / an error)
+
+Each order's status is the word in brackets in its product name: "(complete)", "(refunded)" ...
+The columns sit together at the right of the list, in this order (see organize()).
 
 The API key is saved only on this computer (~/.crisp_email_agent/wpxpo.json), never in the app.
 """
@@ -38,10 +43,31 @@ from pathlib import Path
 API_URL = "https://account.wpxpo.com/wp-json/license/v1/validate"
 CONFIG = Path.home() / ".crisp_email_agent" / "wpxpo.json"
 PAUSE = 1.2                   # seconds between lookups: gentle on the account server
-COLUMNS = ["Pro Plugins", "Plugin Count", "Plan", "Plugin Details", "Active Licenses", "Expired Licenses",
-           "Expired Plugins", "Near Site Limit", "First Purchase", "Last Purchase", "Account Total",
-           "Account Orders", "WPXPO Checked"]
+COLUMNS = ["Pro Plugins", "Remaining Plugins", "Plugin Count", "Plan", "Expired Plugins", "Near Site Limit",
+           "Active Licenses", "Expired Licenses", "First Purchase", "Last Purchase", "Account Total",
+           "Account Orders", "Plugin Details", "WPXPO Checked"]
 CHECKED = "WPXPO Checked"
+REMAINING = "Remaining Plugins"
+
+# The 10 plugins of the WPXPO bundle (wpxpo.com/bundle): what "Remaining Plugins" is measured against.
+BUNDLE = ["PostX", "WowStore", "WowAddons", "WowRevenue", "WholesaleX", "WowShipping", "WowOptin",
+          "WowInvoice", "WowRecommend", "WowSubscription"]
+ALIASES = {"productx": "WowStore", "wowsubscriptions": "WowSubscription", "wowrecommendation": "WowRecommend",
+           "wowshippings": "WowShipping"}
+PAID = {"complete", "completed", "processing", "partially-refunded", "partially refunded"}
+# Not-paid order statuses -> the group shown in Remaining Plugins (first listed = shown first)
+UNPAID = {"refunded": "Refunded", "pending": "Pending", "on-hold": "Pending", "on hold": "Pending",
+          "pending payment": "Pending", "abandoned": "Abandoned", "checkout-draft": "Abandoned",
+          "draft": "Abandoned", "cancelled": "Cancelled", "canceled": "Cancelled", "failed": "Failed"}
+GROUPS = ["Expired", "Refunded", "Pending", "Abandoned", "Cancelled", "Failed", "Not bought"]
+# Header notes in the Google Sheet (hover a header to read them)
+NOTES = {
+    "Pro Plugins": "Filled by Crisp Automation from the WPXPO account: paid orders with an active licence.",
+    REMAINING: "Bundle plugins this person does not have now, grouped by why: Expired, Refunded, Pending, "
+               "Abandoned, Cancelled, Failed, Not bought. Bundle = " + ", ".join(BUNDLE) + ".",
+    "Account Total": "Paid orders only (refunded, pending and abandoned orders are left out).",
+    CHECKED: "When this row was looked up. Rows looked up in the last 30 days are skipped next time.",
+}
 
 
 class LookupError_(RuntimeError):
@@ -161,7 +187,21 @@ def parse_orders(page: str) -> list[dict]:
             _add_licenses(cur, line)
     for o in orders:
         o["plugin"], o["plan"] = plugin_and_plan(o["product"])
+        o["status"] = order_status(o["product"])
     return orders
+
+
+def order_status(product: str) -> str:
+    """'WowAddons Pro – Lifetime (complete) - ...' -> 'complete' ('' when the name has no status)."""
+    for m in re.finditer(r"\(([A-Za-z][A-Za-z -]{2,24})\)", str(product or "")):
+        word = m.group(1).strip().lower()
+        if word in PAID or word in UNPAID:
+            return word
+    return ""
+
+
+def is_paid(order: dict) -> bool:
+    return order.get("status", "") in PAID or not order.get("status")
 
 
 def _add_licenses(order: dict, text: str) -> None:
@@ -191,6 +231,8 @@ def plugin_and_plan(product: str) -> tuple[str, str]:
     p = str(product or "")
     m = re.match(r"^\s*(.+?)\s+Pro\b", p, re.I) or re.match(r"^\s*(.+?)\s*[–—\-]\s", p)
     name = (m.group(1) if m else p).strip()
+    name = ALIASES.get(re.sub(r"[^a-z]", "", name.lower()), name)
+    name = next((b for b in BUNDLE if b.lower() == re.sub(r"\s", "", name.lower())), name)
     low = p.lower()
     plan = ("Lifetime" if "lifetime" in low else "Yearly" if re.search(r"year|annual", low)
             else "Monthly" if "month" in low else "")
@@ -198,26 +240,56 @@ def plugin_and_plan(product: str) -> tuple[str, str]:
 
 
 # ------------------------------------------------------------------ one row of columns
+def _money_text(total: float) -> str:
+    return f"${total:,.0f}" if total == int(total) else f"${total:,.2f}"
+
+
+def remaining(orders: list[dict], owned: list[str]) -> str:
+    """Every bundle plugin not in `owned`, grouped by why: 'Expired: A · Refunded: B · Not bought: C, D'."""
+    why: dict[str, str] = {}
+    for o in sorted(orders, key=lambda o: o["date"]):
+        name = o["plugin"]
+        if name in owned:
+            continue
+        if is_paid(o):
+            why[name] = "Expired"              # paid but no active licence left
+        elif why.get(name) != "Expired":       # a later refund or abandoned cart never hides an expiry
+            why[name] = UNPAID.get(o.get("status", ""), "Pending")
+    for name in BUNDLE:
+        if name not in owned and name not in why:
+            why[name] = "Not bought"
+    order = {n: i for i, n in enumerate(BUNDLE)}
+    parts = []
+    for group in GROUPS:
+        names = sorted((n for n, g in why.items() if g == group), key=lambda n: order.get(n, 99))
+        if names:
+            parts.append(f"{group}: {', '.join(names)}")
+    return " · ".join(parts)
+
+
 def summarize(orders: list[dict], today: str | None = None) -> dict:
-    """Orders -> the columns above (as text, ready for a Sheet or CSV)."""
+    """Orders -> the columns above (as text, ready for a Sheet or CSV).
+    Owned = a paid order (complete / processing) with an active licence. A bundle order owns all 10."""
     today = today or datetime.now().strftime("%Y-%m-%d")
     if not orders:
-        return dict({c: "" for c in COLUMNS}, **{"Plugin Count": "0", "Account Orders": "0",
-                                                  "Account Total": "$0", CHECKED: f"{today} · no orders"})
+        return dict({c: "" for c in COLUMNS}, **{"Plugin Count": "0", "Account Orders": "0", "Account Total": "$0",
+                                                  REMAINING: remaining([], []), CHECKED: f"{today} · no orders"})
+    paid = [o for o in orders if is_paid(o)]
     by_plugin: dict[str, dict] = {}
-    for o in sorted(orders, key=lambda o: o["date"]):
+    for o in sorted(paid, key=lambda o: o["date"]):
         p = by_plugin.setdefault(o["plugin"], {"plans": [], "licenses": []})
         if o["plan"] and o["plan"] not in p["plans"]:
             p["plans"].append(o["plan"])
         p["licenses"] += o["licenses"]
-    statuses = [lic["status"] for o in orders for lic in o["licenses"]]
-    plans = {pl for p in by_plugin.values() for pl in p["plans"]}
-    details, expired_plugins, near = [], [], []
+    owned, covered, expired_plugins, details, near = [], [], [], [], []
     for name, p in by_plugin.items():
         lic = p["licenses"]
-        state = ("active" if any(x["status"] == "active" for x in lic)
-                 else (lic[-1]["status"] if lic else "no license"))
-        if lic and all(x["status"] == "expired" for x in lic):
+        active = not lic or any(x["status"] == "active" for x in lic)
+        state = "active" if lic and active else (lic[-1]["status"] if lic else "no licence")
+        if active:
+            owned += BUNDLE if "bundle" in name.lower() else [name]
+            covered.append(name)
+        elif all(x["status"] == "expired" for x in lic):
             expired_plugins.append(name)
         best = next((x for x in lic if x["status"] == "active"), lic[-1] if lic else None)
         sites = f"{best['used']}/{best['limit']} sites" if best else ""
@@ -227,23 +299,36 @@ def summarize(orders: list[dict], today: str | None = None) -> dict:
                     and int(x["used"]) >= int(x["limit"]):
                 near.append(f"{name} ({x['used']}/{x['limit']})")
                 break
-    dates = [o["date"] for o in orders if o["date"]]
-    total = sum(o["price"] for o in orders)
+    owned = list(dict.fromkeys(owned))
+    for o in orders:                                   # unpaid orders: listed in details with their status
+        if not is_paid(o):
+            details.append(f"{o['plugin']} · {o['status']} order")
+    statuses = [lic["status"] for o in paid for lic in o["licenses"]]
+    plans = {pl for name, p in by_plugin.items() for pl in p["plans"]}
+    dates = [o["date"] for o in paid if o["date"]]
     return {
-        "Pro Plugins": ", ".join(by_plugin),
-        "Plugin Count": str(len(by_plugin)),
+        "Pro Plugins": ", ".join(owned),
+        REMAINING: remaining(orders, owned + covered),
+        "Plugin Count": str(len(owned)),
         "Plan": (plans.pop() if len(plans) == 1 else "Mixed" if plans else ""),
-        "Plugin Details": "; ".join(details),
-        "Active Licenses": str(statuses.count("active")),
-        "Expired Licenses": str(statuses.count("expired")),
         "Expired Plugins": ", ".join(expired_plugins),
         "Near Site Limit": ", ".join(near),
+        "Active Licenses": str(statuses.count("active")),
+        "Expired Licenses": str(statuses.count("expired")),
         "First Purchase": min(dates) if dates else "",
         "Last Purchase": max(dates) if dates else "",
-        "Account Total": f"${total:,.0f}" if total == int(total) else f"${total:,.2f}",
-        "Account Orders": str(len(orders)),
+        "Account Total": _money_text(sum(o["price"] for o in paid)),
+        "Account Orders": str(len(paid)),
+        "Plugin Details": "; ".join(details),
         CHECKED: today,
     }
+
+
+def organize(header: list[str]) -> list[str]:
+    """The header with the WPXPO columns moved together to the right, in COLUMNS order
+    (everything else keeps its place). Missing WPXPO columns are added."""
+    others = [h for h in header if h not in COLUMNS]
+    return others + COLUMNS
 
 
 def checked_recently(value: str, days: int = 30, today: datetime | None = None) -> bool:
@@ -304,9 +389,18 @@ def write_csv(path, results: dict) -> int:
     email_col = next((keys.index(k) for k in ("contactemail", "email", "emailaddress") if k in keys), None)
     if email_col is None:
         raise ValueError("No email column in the list.")
-    for c in COLUMNS:
-        if c not in header:
-            header.append(c)
+    # rebuild every row in the organised column order (cells move with their column)
+    old = list(header)
+    new = organize(old)
+    if new != old:
+        taken, order = set(), []
+        for h in new:                       # each new column -> the old column it comes from (None = new)
+            i = next((i for i, x in enumerate(old) if x == h and i not in taken), None)
+            if i is not None:
+                taken.add(i)
+            order.append(i)
+        grid = [[(r[i] if i is not None and i < len(r) else "") for i in order] for r in grid]
+        header = grid[0] = list(new)
     index = {c: header.index(c) for c in COLUMNS}
     n = 0
     for row in grid[1:]:

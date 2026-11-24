@@ -304,6 +304,48 @@ class SheetSource:
                             range_name=_a1(2, col), value_input_option="USER_ENTERED")
         return missing
 
+    def arrange_block(self, columns, notes: dict | None = None, tint=(0.89, 0.95, 0.99)) -> bool:
+        """Keep a group of columns (e.g. the WPXPO ones) together at the right of the tab, in this order,
+        with a tinted bold header and optional header notes. Cells move with their column; nothing is
+        overwritten. Returns True when columns were moved. Formatting problems never stop the caller."""
+        columns = list(columns)
+        self.ensure_columns(columns)
+        header = list(self.header)
+        requests, moved = [], False
+        ws = self.worksheet()
+        if header[-len(columns):] != columns:
+            for c in columns:                       # each one to the end, in order -> together and ordered
+                i = header.index(c)
+                if i == len(header) - 1:
+                    continue
+                requests.append({"moveDimension": {
+                    "source": {"sheetId": ws.id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
+                    "destinationIndex": len(header)}})
+                header.append(header.pop(i))
+            moved = bool(requests)
+        start = len(header) - len(columns)
+        fmt = [{"repeatCell": {
+            "range": {"sheetId": ws.id, "startRowIndex": 0, "endRowIndex": 1,
+                      "startColumnIndex": start, "endColumnIndex": len(header)},
+            "cell": {"userEnteredFormat": {"backgroundColor": dict(zip(("red", "green", "blue"), tint)),
+                                           "textFormat": {"bold": True}}},
+            "fields": "userEnteredFormat(backgroundColor,textFormat.bold)"}}]
+        for name, text in (notes or {}).items():
+            if name in header:
+                col = header.index(name)
+                fmt.append({"updateCells": {
+                    "range": {"sheetId": ws.id, "startRowIndex": 0, "endRowIndex": 1,
+                              "startColumnIndex": col, "endColumnIndex": col + 1},
+                    "rows": [{"values": [{"note": text}]}], "fields": "note"}})
+        if requests:
+            self.pacer.call(self.sh.batch_update, {"requests": requests})
+            self.header = header
+        try:
+            self.pacer.call(self.sh.batch_update, {"requests": fmt})
+        except Exception:  # noqa: BLE001  (a protected header row: the data is still right)
+            pass
+        return moved
+
     def _col(self, canon: str) -> str:
         return self.colmap.get(canon, canon)
 

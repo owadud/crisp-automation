@@ -2385,8 +2385,10 @@ class MainWindow(QMainWindow):
             return
         minutes = max(1, round(len(emails) * (wa.PAUSE + 0.6) / 60))
         if not W.ask(self, f"Fill plugins for {len(emails)} people?",
-                     "Each email is looked up in the WPXPO account (one at a time, with a pause). New columns are "
-                     "added to your list: " + ", ".join(wa.COLUMNS) + ". People looked up in the last 30 days are "
+                     "Each email is looked up in the WPXPO account, one at a time. The results go into "
+                     f"{len(wa.COLUMNS)} columns kept together at the right of your list (tinted header): Pro "
+                     "Plugins, Remaining Plugins (not bought, expired, refunded, pending, abandoned), Plan, "
+                     "licences, purchase dates and account total. People looked up in the last 30 days are "
                      "skipped. Results are saved every 25 people, so you can stop at any time.",
                      details=[("List", where), ("People", str(len(emails))), ("Time", f"about {minutes} min")],
                      confirm="Fill plugins"):
@@ -2403,7 +2405,7 @@ class MainWindow(QMainWindow):
                     src = ss.SheetSource(v["sheet_url"], v["sheet_tab"], v.get("google_key", "")).connect()
                     src.download()
                     grid = src.grid
-                    src.ensure_columns(wa.COLUMNS)
+                    src.arrange_block(wa.COLUMNS, notes=wa.NOTES)   # together, in order, tinted header
 
                     def write(part):
                         src.push_many([(e, cols, None) for e, cols in part.items()])
@@ -2413,8 +2415,10 @@ class MainWindow(QMainWindow):
                     def write(part):
                         wa.write_csv(v["csv"], part)
                 index = pz.build_index(grid)[0]
-                todo = [e for e in emails
-                        if not wa.checked_recently((index.get(e) or {}).get("fields", {}).get(wa.CHECKED, ""))]
+                def fresh(e):      # looked up lately AND already has every column (e.g. Remaining Plugins)
+                    f = (index.get(e) or {}).get("fields", {})
+                    return wa.checked_recently(f.get(wa.CHECKED, "")) and bool(f.get(wa.REMAINING))
+                todo = [e for e in emails if not fresh(e)]
                 results, problems = wa.fill(todo, key, stop=lambda: self._wpx_stop, on_batch=write,
                                             progress=lambda d, t: self._wpx_signal.progress.emit(d, t))
                 self._wpx_signal.done.emit({"results": results, "problems": problems,

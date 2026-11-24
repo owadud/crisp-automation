@@ -40,13 +40,42 @@ def test_orders_are_read_from_the_accounts_html():
 
 def test_columns_for_one_person():
     cols = wa.summarize(wa.parse_orders(PAGE), today="2026-11-24")
-    assert cols["Pro Plugins"] == "WowStore, WholesaleX, WowRevenue" and cols["Plugin Count"] == "3"
+    assert cols["Pro Plugins"] == "WowStore, WholesaleX" and cols["Plugin Count"] == "2"     # expired: not owned
     assert cols["Plan"] == "Mixed" and cols["Active Licenses"] == "2" and cols["Expired Licenses"] == "1"
     assert cols["Expired Plugins"] == "WowRevenue" and cols["Near Site Limit"] == "WholesaleX (20/20)"
     assert cols["First Purchase"] == "2024-09-11" and cols["Last Purchase"] == "2025-04-17"
     assert cols["Account Total"] == "$489.50" and cols[wa.CHECKED] == "2026-11-24"
     assert "WowStore · Lifetime · active · 3/Unlimited sites" in cols["Plugin Details"]
-    assert wa.summarize([], today="2026-11-24")[wa.CHECKED] == "2026-11-24 · no orders"
+    assert cols[wa.REMAINING] == ("Expired: WowRevenue · Not bought: PostX, WowAddons, WowShipping, WowOptin, "
+                                  "WowInvoice, WowRecommend, WowSubscription")
+    empty = wa.summarize([], today="2026-11-24")
+    assert empty[wa.CHECKED] == "2026-11-24 · no orders" and empty[wa.REMAINING].startswith("Not bought: PostX, WowStore")
+
+
+def test_refunded_pending_and_abandoned_orders_are_not_owned():
+    page = PAGE.replace("WholesaleX Pro – Yearly 20 Sites (complete)", "WholesaleX Pro – Yearly 20 Sites (refunded)")
+    page += f"""<div><strong>ID:</strong> #103</div>
+<div><strong>Product Name:</strong> WowOptin Pro – Yearly 1 Site (pending)</div>
+<div><strong>Date:</strong> May 1, 2025</div><div><strong>Price:</strong> $ 49</div>
+<div><strong>ID:</strong> #104</div>
+<div><strong>Product Name:</strong> ProductX Pro – Yearly 1 Site (abandoned)</div>
+<div><strong>Date:</strong> May 2, 2025</div><div><strong>Price:</strong> $ 49</div>"""
+    orders = wa.parse_orders(page)
+    assert [o["status"] for o in orders] == ["complete", "refunded", "complete", "pending", "abandoned"]
+    assert orders[4]["plugin"] == "WowStore"                                     # old name ProductX
+    cols = wa.summarize(orders, today="2026-11-24")
+    assert cols["Pro Plugins"] == "WowStore" and cols["Account Total"] == "$209" and cols["Account Orders"] == "2"
+    rem = cols[wa.REMAINING]
+    assert rem.startswith("Expired: WowRevenue · Refunded: WholesaleX · Pending: WowOptin · Not bought: PostX")
+    assert "WowStore" not in rem                       # owned: an abandoned second cart does not matter
+
+
+def test_a_bundle_order_owns_all_ten():
+    page = """<div><strong>ID:</strong> #1</div><div><strong>Product Name:</strong> WPXPO Bundle – Lifetime
+ Unlimited Sites (complete)</div><div><strong>Date:</strong> June 1, 2025</div>
+<div><strong>License:</strong> """ + "d" * 32 + """ (active)[1/Unlimited]</div><div><strong>Price:</strong> $ 599</div>"""
+    cols = wa.summarize(wa.parse_orders(page), today="2026-11-24")
+    assert cols["Plugin Count"] == "10" and cols[wa.REMAINING] == ""
 
 
 def test_many_people_with_pauses_batches_and_a_bad_key():
@@ -73,9 +102,48 @@ def test_csv_gets_the_columns_and_keeps_everything_else(tmp_path):
     assert wa.write_csv(path, {"ann@shop.test": cols}) == 1
     grid = list(csv.reader(path.open(encoding="utf-8-sig")))
     assert grid[0][:5] == ["Full Name", "Email", "User List", "", "Status"] and grid[0][5:] == wa.COLUMNS
-    assert grid[1][3] == "WowStore Users" and grid[1][5] == "WowStore, WholesaleX, WowRevenue"
+    assert grid[1][3] == "WowStore Users" and grid[1][5] == "WowStore, WholesaleX"
     info = pz.build_index(grid)[0]["ann@shop.test"]
-    assert pz.plugins_of(info)[:3] == ["WowStore", "WholesaleX", "WowRevenue"]      # {plugins} uses them
+    assert pz.plugins_of(info)[:2] == ["WowStore", "WholesaleX"]      # {plugins} uses them
+
+
+def test_csv_columns_from_an_older_version_are_moved_together(tmp_path):
+    path = tmp_path / "list.csv"
+    old = ["Email", "Pro Plugins", "Plan", "Notes", "WPXPO Checked"]       # v3.36 order, a user column between
+    with path.open("w", encoding="utf-8-sig", newline="") as f:
+        csv.writer(f).writerows([old, ["bo@x.test", "PostX", "Yearly", "call him", "2026-01-01"]])
+    wa.write_csv(path, {})
+    grid = list(csv.reader(path.open(encoding="utf-8-sig")))
+    assert grid[0] == ["Email", "Notes"] + wa.COLUMNS
+    row = dict(zip(grid[0], grid[1]))
+    assert row["Notes"] == "call him" and row["Pro Plugins"] == "PostX" and row[wa.CHECKED] == "2026-01-01"
+
+
+def test_sheet_block_is_moved_together_and_tinted():
+    import sheet_source as ss
+
+    class WS:
+        id = 7
+
+    class SH:
+        def __init__(self):
+            self.calls = []
+
+        def batch_update(self, body):
+            self.calls.append(body["requests"])
+
+    src = ss.SheetSource.__new__(ss.SheetSource)
+    src.header, src.colmap, src.data_rows = ["Email", "Pro Plugins", "Notes", "Plan"], {}, 1
+    src.ws, src.sh = WS(), SH()
+    src.pacer = type("P", (), {"call": staticmethod(lambda fn, *a, **k: fn(*a, **k))})()
+    src.ensure_columns = lambda cols: [src.header.append(c) for c in cols if c not in src.header]
+    assert src.arrange_block(["Pro Plugins", "Plan", "Checked"], notes={"Plan": "hi"})
+    assert src.header == ["Email", "Notes", "Pro Plugins", "Plan", "Checked"]
+    moves, fmt = src.sh.calls
+    assert [m["moveDimension"]["source"]["startIndex"] for m in moves] == [1, 2, 2]
+    assert fmt[0]["repeatCell"]["range"]["startColumnIndex"] == 2 and "note" in str(fmt[1])
+    src.sh.calls.clear()
+    assert not src.arrange_block(["Pro Plugins", "Plan", "Checked"]) and len(src.sh.calls) == 1   # only format
 
 
 def test_recently_checked_people_are_skipped():
@@ -117,7 +185,7 @@ def test_lists_button_fills_a_csv_list(tmp_path, monkeypatch):
             time.sleep(0.01)
         assert "with plugins" in w.lists_page.fill_status.text()
         rows = list(csv.DictReader(path.open(encoding="utf-8-sig")))
-        assert rows[0]["Pro Plugins"] == "WowStore, WholesaleX, WowRevenue"
+        assert rows[0]["Pro Plugins"] == "WowStore, WholesaleX" and "Expired: WowRevenue" in rows[0][wa.REMAINING]
         assert "no orders" in rows[1][wa.CHECKED]
     finally:
         w.close()
